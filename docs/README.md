@@ -88,6 +88,12 @@ These are not requirements. They are the kind of problems you will hit in produc
 - You rotate the database password. Do all nine deployments restart? Is there a way to avoid that?
 - A single-zone managed disk becomes a problem when the zone goes down. What is your answer?
 
+## Backlog
+
+The backlog is in [GitHub Issues](https://github.com/tahmidachoudhury/aks-v2-platform/issues), one issue per card, with a milestone per phase (`P00 Foundations and Decisions` to `P12 Teardown`). Labels show priority, type and area. Each issue lists the cards it depends on.
+
+PR descriptions use `Closes #N` so the card closes on merge. One PR may close several related cards.
+
 ## Local Development
 
 ```bash
