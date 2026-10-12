@@ -1,0 +1,404 @@
+<mxfile host="Electron" pages="2">
+  <diagram name="Runtime" id="runtime">
+    <mxGraphModel dx="1453" dy="1282" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1760" pageHeight="1300" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="user" parent="1" style="rounded=1;whiteSpace=wrap;" value="User&#xa;(browser)" vertex="1">
+          <mxGeometry height="60" width="120" x="40" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="le" parent="1" style="rounded=1;whiteSpace=wrap;" value="Let&#39;s Encrypt&#xa;(ACME)" vertex="1">
+          <mxGeometry height="60" width="160" x="1480" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" parent="1" style="rounded=1;whiteSpace=wrap;align=left;spacingLeft=8;" value="Legend&#xa;solid = data path&#xa;dashed = identity / auth&#xa;dotted = control plane" vertex="1">
+          <mxGeometry height="80" width="260" x="600" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="sub" parent="1" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="Azure subscription" vertex="1">
+          <mxGeometry height="1120" width="1700" x="20" y="140" as="geometry" />
+        </mxCell>
+        <mxCell id="dns" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Azure DNS zone&#xa;(public, real domain)" vertex="1">
+          <mxGeometry height="60" width="170" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lb" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Azure Standard LB&#xa;static public IP&#xa;outbound rules (no NAT GW)" vertex="1">
+          <mxGeometry height="70" width="200" x="220" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="vnet" parent="sub" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="VNet" vertex="1">
+          <mxGeometry height="980" width="1400" x="20" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="nodesub" parent="vnet" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="AKS node subnet (private, Azure CNI Overlay)" vertex="1">
+          <mxGeometry height="740" width="1140" x="20" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="aks" parent="nodesub" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="AKS cluster (1.33+, OIDC issuer + Workload ID, Entra auth)" vertex="1">
+          <mxGeometry height="690" width="1100" x="20" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="sys" parent="aks" style="rounded=1;whiteSpace=wrap;" value="System node pool&#xa;zones 1 / 2 / 3" vertex="1">
+          <mxGeometry height="45" width="300" x="20" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="napod" parent="aks" style="rounded=1;whiteSpace=wrap;" value="NAP NodePool: on-demand&#xa;zones 1 / 2 / 3 (stateful + core)" vertex="1">
+          <mxGeometry height="45" width="340" x="340" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="napspot" parent="aks" style="rounded=1;whiteSpace=wrap;" value="NAP NodePool: spot&#xa;(eviction-tolerant only)" vertex="1">
+          <mxGeometry height="45" width="300" x="700" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="nsplat" parent="aks" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="ns: platform" vertex="1">
+          <mxGeometry height="110" width="1060" x="20" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="traefik" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="Traefik" vertex="1">
+          <mxGeometry height="55" width="118" x="15" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="certmgr" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="cert-manager" vertex="1">
+          <mxGeometry height="55" width="118" x="145" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="extdns" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="ExternalDNS" vertex="1">
+          <mxGeometry height="55" width="118" x="275" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="eso" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="External Secrets&#xa;Operator" vertex="1">
+          <mxGeometry height="55" width="118" x="405" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="argocd" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="ArgoCD&#xa;(App-of-Apps)" vertex="1">
+          <mxGeometry height="55" width="118" x="535" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="keda" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="KEDA" vertex="1">
+          <mxGeometry height="55" width="118" x="665" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="snapctl" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="snapshot-&#xa;controller" vertex="1">
+          <mxGeometry height="55" width="118" x="795" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="diskcsi" parent="nsplat" style="rounded=1;whiteSpace=wrap;" value="Azure Disk&#xa;CSI driver" vertex="1">
+          <mxGeometry height="55" width="118" x="925" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="nsapps" parent="aks" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="ns: apps (Deployments, one ServiceAccount + UAMI each)" vertex="1">
+          <mxGeometry height="270" width="1060" x="20" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="ingress" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="Ingress (TLS)&#xa;single host, path routing" vertex="1">
+          <mxGeometry height="60" width="150" x="20" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="apigw" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="api-gateway&#xa;auth, rate limit" vertex="1">
+          <mxGeometry height="60" width="140" x="210" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="dash" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="dashboard-api&#xa;admin UI" vertex="1">
+          <mxGeometry height="60" width="140" x="210" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="order" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="order-service" vertex="1">
+          <mxGeometry height="45" width="150" x="420" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="inventory" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="inventory-service" vertex="1">
+          <mxGeometry height="45" width="150" x="420" y="88" as="geometry" />
+        </mxCell>
+        <mxCell id="payment" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="payment-service" vertex="1">
+          <mxGeometry height="45" width="150" x="420" y="146" as="geometry" />
+        </mxCell>
+        <mxCell id="shipping" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="shipping-service" vertex="1">
+          <mxGeometry height="45" width="150" x="420" y="204" as="geometry" />
+        </mxCell>
+        <mxCell id="notify" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="notification-service&#xa;email / SMS" vertex="1">
+          <mxGeometry height="55" width="160" x="630" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="worker" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="worker&#xa;SB consumer&#xa;KEDA: queue depth" vertex="1">
+          <mxGeometry height="65" width="180" x="850" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="sched" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="scheduler&#xa;(CronJobs)" vertex="1">
+          <mxGeometry height="55" width="180" x="850" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="migrate" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="DB migration Job&#xa;(ArgoCD PreSync hook)" vertex="1">
+          <mxGeometry height="60" width="180" x="850" y="185" as="geometry" />
+        </mxCell>
+        <mxCell id="nsdata" parent="aks" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="ns: data (on-demand nodes, PDBs)" vertex="1">
+          <mxGeometry height="150" width="1060" x="20" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="pg" parent="nsdata" style="rounded=1;whiteSpace=wrap;" value="PostgreSQL&#xa;StatefulSet (1 replica)" vertex="1">
+          <mxGeometry height="60" width="170" x="20" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pgpvc" parent="nsdata" style="rounded=1;whiteSpace=wrap;" value="PVC 20Gi&#xa;Premium_ZRS, encrypted&#xa;(default StorageClass)" vertex="1">
+          <mxGeometry height="70" width="200" x="210" y="45" as="geometry" />
+        </mxCell>
+        <mxCell id="redis" parent="nsdata" style="rounded=1;whiteSpace=wrap;" value="Redis&#xa;StatefulSet, AOF" vertex="1">
+          <mxGeometry height="60" width="170" x="650" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="redispvc" parent="nsdata" style="rounded=1;whiteSpace=wrap;" value="PVC 10Gi&#xa;Premium_ZRS, encrypted" vertex="1">
+          <mxGeometry height="70" width="190" x="840" y="45" as="geometry" />
+        </mxCell>
+        <mxCell id="vsc" parent="nsdata" style="rounded=1;whiteSpace=wrap;" value="VolumeSnapshotClass&#xa;(incremental)" vertex="1">
+          <mxGeometry height="60" width="170" x="440" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="pesub" parent="vnet" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="Private endpoint subnet" vertex="1">
+          <mxGeometry height="920" width="200" x="1180" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pesb" parent="pesub" style="rounded=1;whiteSpace=wrap;" value="PE: Service Bus" vertex="1">
+          <mxGeometry height="50" width="160" x="20" y="190" as="geometry" />
+        </mxCell>
+        <mxCell id="pekv" parent="pesub" style="rounded=1;whiteSpace=wrap;" value="PE: Key Vault" vertex="1">
+          <mxGeometry height="50" width="160" x="20" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="peacr" parent="pesub" style="rounded=1;whiteSpace=wrap;" value="PE: ACR" vertex="1">
+          <mxGeometry height="50" width="160" x="20" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="peblob" parent="pesub" style="rounded=1;whiteSpace=wrap;" value="PE: tfstate blob" vertex="1">
+          <mxGeometry height="50" width="160" x="20" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="pdns" parent="pesub" style="rounded=1;whiteSpace=wrap;" value="Private DNS zones&#xa;privatelink: acr,&#xa;vaultcore, servicebus,&#xa;blob (VNet-linked)" vertex="1">
+          <mxGeometry height="90" width="180" x="10" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="entra" parent="sub" style="rounded=1;whiteSpace=wrap;align=left;spacingLeft=8;" value="Microsoft Entra ID&#xa;UAMI per Azure-touching&#xa;service + ESO, ExternalDNS,&#xa;cert-manager; federated to&#xa;K8s SA; kubelet id (AcrPull)" vertex="1">
+          <mxGeometry height="120" width="230" x="1450" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="law" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Log Analytics&#xa;(control plane diagnostics)" vertex="1">
+          <mxGeometry height="55" width="230" x="1450" y="190" as="geometry" />
+        </mxCell>
+        <mxCell id="sbq" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Service Bus (Premium)&#xa;queue: order-events" vertex="1">
+          <mxGeometry height="60" width="230" x="1450" y="335" as="geometry" />
+        </mxCell>
+        <mxCell id="dlq" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Dead-letter queue&#xa;max_delivery_count = 3" vertex="1">
+          <mxGeometry height="50" width="230" x="1450" y="415" as="geometry" />
+        </mxCell>
+        <mxCell id="kv" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Key Vault (RBAC)&#xa;DB creds, JWT, API keys" vertex="1">
+          <mxGeometry height="60" width="230" x="1450" y="475" as="geometry" />
+        </mxCell>
+        <mxCell id="acr" parent="sub" style="rounded=1;whiteSpace=wrap;" value="ACR (Premium)&#xa;9 repos, admin user off" vertex="1">
+          <mxGeometry height="60" width="230" x="1450" y="615" as="geometry" />
+        </mxCell>
+        <mxCell id="tfstate" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Storage account&#xa;Terraform state&#xa;(blob, lease locking)" vertex="1">
+          <mxGeometry height="70" width="230" x="1450" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="snaps" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Managed disk snapshots" vertex="1">
+          <mxGeometry height="50" width="230" x="1450" y="900" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="user" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="dns" value="resolve">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="user" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="lb" value="HTTPS">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="lb" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="traefik" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="traefik" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="ingress" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="ingress" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="apigw" value="/api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="ingress" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="dash" value="/">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="dash" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="apigw" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" edge="1" parent="1" source="apigw" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="order" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="apigw" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="inventory" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" edge="1" parent="1" source="apigw" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="payment" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" edge="1" parent="1" source="apigw" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="shipping" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="order" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pesb" value="send">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" edge="1" parent="1" source="inventory" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pesb" value="send">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" edge="1" parent="1" source="payment" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pesb" value="send">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" edge="1" parent="1" source="shipping" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pesb" value="send">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" edge="1" parent="1" source="pesb" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="worker" value="receive">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" edge="1" parent="1" source="sbq" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="dlq" value="after 3 failures">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" edge="1" parent="1" source="worker" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="notify" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e19" edge="1" parent="1" source="worker" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="order" value="orchestrate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" edge="1" parent="1" source="nsapps" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pg" value="7 services (SQL)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" edge="1" parent="1" source="nsapps" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="redis" value="cache / locks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" edge="1" parent="1" source="migrate" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pg" value="schema">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" edge="1" parent="1" source="pg" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="pgpvc" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e24" edge="1" parent="1" source="redis" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" target="redispvc" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e25" edge="1" parent="1" source="vsc" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;dashPattern=1 3;" target="pgpvc" value="snapshot">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e26" edge="1" parent="1" source="snapctl" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;dashPattern=1 3;" target="snaps" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e27" edge="1" parent="1" source="eso" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="pekv" value="Workload ID">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e28" edge="1" parent="1" source="pekv" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="kv" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e29" edge="1" parent="1" source="aks" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="peacr" value="image pull (AcrPull)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e30" edge="1" parent="1" source="peacr" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="acr" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e31" edge="1" parent="1" source="pesb" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="sbq" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e32" edge="1" parent="1" source="peblob" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="tfstate" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e33" edge="1" parent="1" source="nsapps" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" target="entra" value="federated token exchange">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e34" edge="1" parent="1" source="certmgr" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;dashPattern=1 3;" target="le" value="ACME">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e35" edge="1" parent="1" source="extdns" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;dashPattern=1 3;" target="dns" value="A / TXT records">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e36" edge="1" parent="1" source="aks" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;dashPattern=1 3;" target="law" value="diagnostics">
+          <mxGeometry relative="1" x="-0.1631" y="5" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Delivery" id="delivery">
+    <mxGraphModel grid="1" gridSize="10" page="1" pageWidth="1760" pageHeight="1300">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="dev" value="Developer push / PR" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="640" y="30" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gh" value="GitHub repo&#xa;(apps/, infra/, k8s/, argocd/)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="620" y="120" width="240" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="infra" value="Infra workflow  (paths: infra/**)" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="240" width="520" height="400" as="geometry" />
+        </mxCell>
+        <mxCell id="i0" value="azure/login via OIDC&#xa;(infra identity, no client secret)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
+          <mxGeometry x="40" y="40" width="440" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="i1" value="terraform fmt / validate / plan&#xa;(plan posted on PR)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
+          <mxGeometry x="40" y="125" width="440" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="i2" value="apply on merge to main&#xa;(manual approval: environment gate)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
+          <mxGeometry x="40" y="210" width="440" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="i3" value="state: azurerm blob backend&#xa;lease-based locking" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
+          <mxGeometry x="40" y="295" width="440" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="app" value="App workflow  (paths: apps/&lt;svc&gt;/**, matrix = changed services only)" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="240" width="560" height="480" as="geometry" />
+        </mxCell>
+        <mxCell id="a0" value="azure/login via OIDC&#xa;(app identity, AcrPush only)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="app">
+          <mxGeometry x="40" y="40" width="480" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="a1" value="multi-stage docker build" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="app">
+          <mxGeometry x="40" y="125" width="480" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" value="Trivy scan&#xa;(fail on HIGH / CRITICAL)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="app">
+          <mxGeometry x="40" y="210" width="480" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" value="push to ACR&#xa;tag = git sha" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="app">
+          <mxGeometry x="40" y="295" width="480" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="a4" value="bump image tag in&#xa;k8s/overlays/dev (commit)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="app">
+          <mxGeometry x="40" y="380" width="480" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="azure" value="Azure resources&#xa;(VNet, AKS, ACR, SB, KV, DNS, identities)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="110" y="700" width="420" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="acr" value="ACR" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="640" y="900" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="argo" value="ArgoCD in cluster (App-of-Apps, auto-sync on dev overlay)" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="780" width="560" height="330" as="geometry" />
+        </mxCell>
+        <mxCell id="g0" value="detects manifest change in git" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
+          <mxGeometry x="40" y="40" width="480" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="g1" value="PreSync: DB migration Job" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
+          <mxGeometry x="40" y="110" width="480" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="g2" value="rolling update (maxUnavailable 0)&#xa;readiness gates" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
+          <mxGeometry x="40" y="180" width="480" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="g3" value="health check fails -&gt; rollback&#xa;(git revert / Argo history)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
+          <mxGeometry x="40" y="250" width="480" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="live" value="Live traffic via Traefik" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1170" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="dev" target="gh">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="infra/** changed" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="gh" target="infra">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="apps/** changed" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="gh" target="app">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="i0" target="i1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="i1" target="i2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="i2" target="i3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a0" target="a1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a1" target="a2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a2" target="a3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a3" target="a4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="terraform apply" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="infra" target="azure">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="push" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a3" target="acr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="git change" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a4" target="argo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="g0" target="g1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="g1" target="g2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="g2" target="g3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="argo" target="live">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="kubelet pulls image" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;dashed=1;" edge="1" parent="1" source="acr" target="argo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
