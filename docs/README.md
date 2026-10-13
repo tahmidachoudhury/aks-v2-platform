@@ -90,7 +90,7 @@ These are not requirements. They are the kind of problems you will hit in produc
 
 ## Backlog
 
-The backlog is in [GitHub Issues](https://github.com/tahmidachoudhury/aks-v2-platform/issues), one issue per card, with a milestone per phase (`P00 Foundations and Decisions` to `P12 Teardown`). Labels show priority, type and area. Each issue lists the cards it depends on.
+The backlog is on the [AKS v2 Platform board](https://github.com/users/tahmidachoudhury/projects/1/views/2): one [issue](https://github.com/tahmidachoudhury/aks-v2-platform/issues) per card, with a milestone per phase (`P00 Foundations and Decisions` to `P12 Teardown`). Labels show priority, type and area. Each issue lists the cards it depends on.
 
 PR descriptions use `Closes #N` so the card closes on merge. One PR may close several related cards.
 
