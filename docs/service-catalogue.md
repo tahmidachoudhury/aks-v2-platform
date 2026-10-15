@@ -4,26 +4,29 @@
 
 ## Summary
 
-| Service                                       | Language | Port | Tables                     | Publishes                               | Consumes | Calls                            |
-| --------------------------------------------- | -------- | ---- | -------------------------- | --------------------------------------- | -------- | -------------------------------- |
-| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`   | `order.created`, `order.status_changed` | none     | none                             |
-| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                       | none                                    | none     | Proxies to the six HTTP services |
-| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations` | none                                    | none     | none                             |
-| [payment-service](#payment-service)           |          |      |                            |                                         |          |                                  |
-| [notification-service](#notification-service) |          |      |                            |                                         |          |                                  |
-| [shipping-service](#shipping-service)         |          |      |                            |                                         |          |                                  |
-| [worker](#worker)                             |          |      |                            |                                         |          |                                  |
-| [scheduler](#scheduler)                       |          |      |                            |                                         |          |                                  |
-| [dashboard-api](#dashboard-api)               |          |      |                            |                                         |          |                                  |
+| Service                                       | Language | Port | Tables                       | Publishes                                                 | Consumes | Calls                            |
+| --------------------------------------------- | -------- | ---- | ---------------------------- | --------------------------------------------------------- | -------- | -------------------------------- |
+| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`     | `order.created`, `order.status_changed`                   | none     | none                             |
+| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                         | none                                                      | none     | Proxies to the six HTTP services |
+| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations`   | none                                                      | none     | none                             |
+| [payment-service](#payment-service)           | Go 1.22  | 8083 | `payments`, `ledger_entries` | `payment.completed`, `payment.failed`, `payment.refunded` | none     | none                             |
+| [notification-service](#notification-service) |          |      |                              |                                                           |          |                                  |
+| [shipping-service](#shipping-service)         |          |      |                              |                                                           |          |                                  |
+| [worker](#worker)                             |          |      |                              |                                                           |          |                                  |
+| [scheduler](#scheduler)                       |          |      |                              |                                                           |          |                                  |
+| [dashboard-api](#dashboard-api)               |          |      |                              |                                                           |          |                                  |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
 ## Event flow
 
-| Event                  | Published by  | Consumed by |
-| ---------------------- | ------------- | ----------- |
-| `order.created`        | order-service |             |
-| `order.status_changed` | order-service |             |
+| Event                  | Published by    | Consumed by       |
+| ---------------------- | --------------- | ----------------- |
+| `order.created`        | order-service   |                   |
+| `order.status_changed` | order-service   |                   |
+| `payment.completed`    | payment-service | worker (log only) |
+| `payment.failed`       | payment-service | worker (log only) |
+| `payment.refunded`     | payment-service | none              |
 
 ## Services
 
@@ -187,6 +190,47 @@ Product catalogue and stock reservations.
 - Schema migrations run on every pod start.
 
 ### payment-service
+
+Simulated charges and refunds, with a double-entry ledger.
+
+|               |                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **Language**  | Go 1.22, `lib/pq`                                                                                                                     |
+| **Port**      | `PORT`, default `8083`                                                                                                                |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                                       |
+| **Called by** | api-gateway (proxies `/api/payments`), worker (intends `POST /charge` and `POST /refund`, stubbed), scheduler (comment only, no code) |
+
+**Endpoints**
+
+| Method | Path                     | Purpose                                                                                                                                                                       |
+| ------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/charge`                | Simulate a charge that succeeds 9 times in 10. Writes the payment and, on success, two ledger rows. Publishes `payment.completed` or `payment.failed`. Returns 402 on failure |
+| POST   | `/refund`                | Refund a completed payment in full or in part. Publishes `payment.refunded`                                                                                                   |
+| Any    | `/ledger`                | Latest 100 ledger entries                                                                                                                                                     |
+| Any    | `/balance/{customer_id}` | Charged, refunded and net totals for one customer                                                                                                                             |
+| GET    | `/livez`, `/healthz`     | Health                                                                                                                                                                        |
+
+**Environment variables**
+
+| Variable                                                                       | Required | Default | Secret   | Notes                                                                        |
+| ------------------------------------------------------------------------------ | -------- | ------- | -------- | ---------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                 | Yes      | none    | Yes      | Exits on startup if unset. Compose points it at the shared `orders` database |
+| `PORT`                                                                         | No       | `8083`  | No       |                                                                              |
+| `SQS_QUEUE_URL`                                                                | No       | none    | No       | If unset, events are only logged                                             |
+| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | No       | none    | Keys yes | Set in compose for LocalStack only. The code never reads them                |
+
+**Data:** creates `payments` and `ledger_entries` in `migrate()` at startup and writes both. scheduler and dashboard-api read `payments`.
+
+**Events:** publishes `payment.completed` and `payment.failed` (in `handleCharge`, as `"payment." + status`) and `payment.refunded` (in `handleRefund`) through `publishEvent`. Consumes nothing.
+
+**Outbound calls:** none.
+
+**Notes:**
+
+- `publishEvent` only logs. It has no stub comment like order-service, but it sends nothing either.
+- No payment provider. `rand.Intn(10)` decides success, so there is no provider key to manage.
+- `/charge` ignores errors from the ledger inserts and the commit, then publishes the event anyway.
+- Schema migrations run on every pod start.
 
 ### notification-service
 
