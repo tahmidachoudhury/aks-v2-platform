@@ -4,17 +4,17 @@
 
 ## Summary
 
-| Service                                       | Language | Port               | Tables                                    | Publishes                                                 | Consumes                | Calls                            |
-| --------------------------------------------- | -------- | ------------------ | ----------------------------------------- | --------------------------------------------------------- | ----------------------- | -------------------------------- |
-| [order-service](#order-service)               | Go 1.22  | 8081               | `orders`, `order_events`                  | `order.created`, `order.status_changed`                   | none                    | none                             |
-| [api-gateway](#api-gateway)                   | Go 1.22  | 8080               | none                                      | none                                                      | none                    | Proxies to the six HTTP services |
-| [inventory-service](#inventory-service)       | Go 1.22  | 8082               | `products`, `reservations`                | none                                                      | none                    | none                             |
-| [payment-service](#payment-service)           | Go 1.22  | 8083               | `payments`, `ledger_entries`              | `payment.completed`, `payment.failed`, `payment.refunded` | none                    | none                             |
-| [notification-service](#notification-service) | Go 1.22  | 8084               | `notifications`, `notification_templates` | none                                                      | none                    | none                             |
-| [shipping-service](#shipping-service)         | Go 1.22  | 8085               | `shipments`, `tracking_events`            | `shipment.created`, `shipment.<status>`                   | none                    | none                             |
-| [worker](#worker)                             | Go 1.22  | 8090 (health only) | none                                      | none                                                      | 6 event types, log only | none (5 services stubbed)        |
-| [scheduler](#scheduler)                       |          |                    |                                           |                                                           |                         |                                  |
-| [dashboard-api](#dashboard-api)               |          |                    |                                           |                                                           |                         |                                  |
+| Service                                       | Language | Port               | Tables                                                             | Publishes                                                 | Consumes                | Calls                            |
+| --------------------------------------------- | -------- | ------------------ | ------------------------------------------------------------------ | --------------------------------------------------------- | ----------------------- | -------------------------------- |
+| [order-service](#order-service)               | Go 1.22  | 8081               | `orders`, `order_events`                                           | `order.created`, `order.status_changed`                   | none                    | none                             |
+| [api-gateway](#api-gateway)                   | Go 1.22  | 8080               | none                                                               | none                                                      | none                    | Proxies to the six HTTP services |
+| [inventory-service](#inventory-service)       | Go 1.22  | 8082               | `products`, `reservations`                                         | none                                                      | none                    | none                             |
+| [payment-service](#payment-service)           | Go 1.22  | 8083               | `payments`, `ledger_entries`                                       | `payment.completed`, `payment.failed`, `payment.refunded` | none                    | none                             |
+| [notification-service](#notification-service) | Go 1.22  | 8084               | `notifications`, `notification_templates`                          | none                                                      | none                    | none                             |
+| [shipping-service](#shipping-service)         | Go 1.22  | 8085               | `shipments`, `tracking_events`                                     | `shipment.created`, `shipment.<status>`                   | none                    | none                             |
+| [worker](#worker)                             | Go 1.22  | 8090 (health only) | none                                                               | none                                                      | 6 event types, log only | none (5 services stubbed)        |
+| [scheduler](#scheduler)                       | Go 1.22  | 8091 (health only) | none (writes `orders`, `order_events`, `products`, `reservations`) | none                                                      | none                    | none                             |
+| [dashboard-api](#dashboard-api)               |          |                    |                                                                    |                                                           |                         |                                  |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
@@ -358,5 +358,45 @@ Event consumer meant to drive the order flow across services. Today it receives 
 - No database.
 
 ### scheduler
+
+Timed background jobs that work directly on other services' tables.
+
+|               |                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------ |
+| **Language**  | Go 1.22, `lib/pq`                                                                    |
+| **Port**      | No `PORT`. Health server on `HEALTH_PORT`, default `8091`. Compose publishes no port |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                      |
+| **Called by** | none                                                                                 |
+
+**Endpoints**
+
+| Method | Path                 | Purpose |
+| ------ | -------------------- | ------- |
+| GET    | `/livez`, `/healthz` | Health  |
+
+**Environment variables**
+
+| Variable       | Required | Default | Secret | Notes                                                                        |
+| -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
+| `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
+| `HEALTH_PORT`  | No       | `8091`  | No     | Not set in compose                                                           |
+
+**Data:** creates nothing and runs no migrations. UPDATEs `orders` (cancels), `products` and `reservations` (expiry). DELETEs from `order_events`. Reads `orders`, `reservations` and `payments`.
+
+**Events:** none. The abandoned-order job has a comment about a cancellation event, but it only logs.
+
+**Outbound calls:** none. Comments mention payment-service `/charge` for retries and notification-service for the digest, with no code.
+
+**Notes:**
+
+- Each job runs once at startup and then on a ticker:
+  - `expire_reservations`, every minute: releases expired active reservations in `products` and `reservations`.
+  - `abandoned_carts`, every 5 minutes: cancels `pending` orders older than 30 minutes with a direct UPDATE. It skips order-service's state machine, writes no `order_events` row, publishes no event and releases no stock.
+  - `retry_failed_payments`, every 15 minutes: counts failed payments from the last hour and logs the count. It retries nothing.
+  - `daily_digest`, every hour: logs order and revenue counts.
+  - `cleanup_old_events`, every 30 minutes: deletes `order_events` rows older than 90 days.
+- No locking or leader election. Every replica runs every job, so run one replica.
+- It needs the tables that order-service, inventory-service and payment-service create. Until they exist, most jobs log query errors.
+- A schema change in those three services needs a scheduler check.
 
 ### dashboard-api
