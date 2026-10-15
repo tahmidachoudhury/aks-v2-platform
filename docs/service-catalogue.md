@@ -97,7 +97,7 @@ Order lifecycle and the status state machine.
 | `SQS_QUEUE_URL`                                                                | No       | none    | No       | If unset, events are only logged                                                                 |
 | `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | No       | none    | Keys yes | Set in compose for LocalStack only. The code never reads them. Removed with the Service Bus swap |
 
-**Data:** owns `orders` and `order_events`. `migrate()` creates them at startup with `CREATE TABLE IF NOT EXISTS`. Every create and status change writes an `order_events` row.
+**Data:** creates `orders` and `order_events` in `migrate()` at startup with `CREATE TABLE IF NOT EXISTS`. It is the only service that inserts into them. Every create and status change writes an `order_events` row. It is not the only writer: scheduler UPDATEs `orders` to cancel abandoned orders and DELETEs `order_events` rows older than 90 days. scheduler and dashboard-api read `orders`.
 
 **Events:** publishes `order.created` (in `createOrder`) and `order.status_changed` (in `handleUpdateStatus`) through `publishEvent`. Consumes nothing.
 
@@ -107,6 +107,9 @@ Order lifecycle and the status state machine.
 
 - `publishEvent` sends nothing. It builds the JSON and logs it. The SQS `SendMessage` call is a stub ("Students implement actual SQS SendMessage here"). P1-01 writes the real Service Bus publisher, not a client swap.
 - Schema migrations run on every pod start. Relevant to P5-04.
+- scheduler cancels `pending` orders older than 30 minutes with a direct UPDATE. That skips the state machine, writes no `order_events` row and publishes no event. See [scheduler](#scheduler).
+- A schema change to `orders` also touches scheduler and dashboard-api.
+- `GET /` without `X-User-Email` returns every order, and `GET /{id}` does not check the customer. Only the gateway should reach this service.
 
 ### api-gateway
 
