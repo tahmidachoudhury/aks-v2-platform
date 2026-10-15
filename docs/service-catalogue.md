@@ -4,17 +4,17 @@
 
 ## Summary
 
-| Service                                       | Language | Port | Tables                                    | Publishes                                                 | Consumes | Calls                            |
-| --------------------------------------------- | -------- | ---- | ----------------------------------------- | --------------------------------------------------------- | -------- | -------------------------------- |
-| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`                  | `order.created`, `order.status_changed`                   | none     | none                             |
-| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                                      | none                                                      | none     | Proxies to the six HTTP services |
-| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations`                | none                                                      | none     | none                             |
-| [payment-service](#payment-service)           | Go 1.22  | 8083 | `payments`, `ledger_entries`              | `payment.completed`, `payment.failed`, `payment.refunded` | none     | none                             |
-| [notification-service](#notification-service) | Go 1.22  | 8084 | `notifications`, `notification_templates` | none                                                      | none     | none                             |
-| [shipping-service](#shipping-service)         | Go 1.22  | 8085 | `shipments`, `tracking_events`            | `shipment.created`, `shipment.<status>`                   | none     | none                             |
-| [worker](#worker)                             |          |      |                                           |                                                           |          |                                  |
-| [scheduler](#scheduler)                       |          |      |                                           |                                                           |          |                                  |
-| [dashboard-api](#dashboard-api)               |          |      |                                           |                                                           |          |                                  |
+| Service                                       | Language | Port               | Tables                                    | Publishes                                                 | Consumes                | Calls                            |
+| --------------------------------------------- | -------- | ------------------ | ----------------------------------------- | --------------------------------------------------------- | ----------------------- | -------------------------------- |
+| [order-service](#order-service)               | Go 1.22  | 8081               | `orders`, `order_events`                  | `order.created`, `order.status_changed`                   | none                    | none                             |
+| [api-gateway](#api-gateway)                   | Go 1.22  | 8080               | none                                      | none                                                      | none                    | Proxies to the six HTTP services |
+| [inventory-service](#inventory-service)       | Go 1.22  | 8082               | `products`, `reservations`                | none                                                      | none                    | none                             |
+| [payment-service](#payment-service)           | Go 1.22  | 8083               | `payments`, `ledger_entries`              | `payment.completed`, `payment.failed`, `payment.refunded` | none                    | none                             |
+| [notification-service](#notification-service) | Go 1.22  | 8084               | `notifications`, `notification_templates` | none                                                      | none                    | none                             |
+| [shipping-service](#shipping-service)         | Go 1.22  | 8085               | `shipments`, `tracking_events`            | `shipment.created`, `shipment.<status>`                   | none                    | none                             |
+| [worker](#worker)                             | Go 1.22  | 8090 (health only) | none                                      | none                                                      | 6 event types, log only | none (5 services stubbed)        |
+| [scheduler](#scheduler)                       |          |                    |                                           |                                                           |                         |                                  |
+| [dashboard-api](#dashboard-api)               |          |                    |                                           |                                                           |                         |                                  |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
@@ -22,13 +22,15 @@ Seven services connect to one Postgres database, `orders`, as one user, `app`. O
 
 | Event                  | Published by     | Consumed by                                         |
 | ---------------------- | ---------------- | --------------------------------------------------- |
-| `order.created`        | order-service    |                                                     |
-| `order.status_changed` | order-service    |                                                     |
+| `order.created`        | order-service    | worker (log only)                                   |
+| `order.status_changed` | order-service    | worker (log only)                                   |
 | `payment.completed`    | payment-service  | worker (log only)                                   |
 | `payment.failed`       | payment-service  | worker (log only)                                   |
 | `payment.refunded`     | payment-service  | none                                                |
 | `shipment.created`     | shipping-service | worker (log only)                                   |
 | `shipment.<status>`    | shipping-service | worker handles `shipment.delivered` only (log only) |
+
+No event reaches a consumer today. Every `publishEvent` only logs, and the worker's receive is a stub.
 
 ## Services
 
@@ -318,6 +320,42 @@ Shipments, tracking and carrier status webhooks.
 - Schema migrations run on every pod start.
 
 ### worker
+
+Event consumer meant to drive the order flow across services. Today it receives nothing.
+
+|               |                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------ |
+| **Language**  | Go 1.22, standard library only                                                       |
+| **Port**      | No `PORT`. Health server on `HEALTH_PORT`, default `8090`. Compose publishes no port |
+| **Health**    | `/livez` always 200. `/healthz` always returns 200 `ok`. It does not check the queue |
+| **Called by** | none                                                                                 |
+
+**Endpoints**
+
+| Method | Path                 | Purpose |
+| ------ | -------------------- | ------- |
+| GET    | `/livez`, `/healthz` | Health  |
+
+**Environment variables**
+
+| Variable                                                                                                                | Required | Default                   | Secret   | Notes                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------- | -------- | ------------------------------------------------------------------------ |
+| `SQS_QUEUE_URL`                                                                                                         | Yes      | none                      | No       | Exits on startup if unset. Otherwise unused, because receiving is a stub |
+| `HEALTH_PORT`                                                                                                           | No       | `8090`                    | No       | Not set in compose                                                       |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL` | No       | `http://<service>:<port>` | No       | Read into a map that no code uses yet                                    |
+| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                          | No       | none                      | Keys yes | Set in compose for LocalStack only. The code never reads them            |
+
+**Data:** none.
+
+**Events:** consumes through the `handleEvent` switch: `order.created`, `order.status_changed` (branches on `new_status`: `processing`, `shipped`, `delivered`, `cancelled`), `payment.completed`, `payment.failed`, `shipment.created` and `shipment.delivered`. Every case only logs. Other types, such as `payment.refunded`, hit the default and are skipped. Publishes nothing.
+
+**Outbound calls:** none implemented. Comments describe calls to inventory-service (`/reserve`, `/release`), payment-service (`/charge`, `/refund`), notification-service (`/send`), shipping-service (`/shipments`) and order-service (`PUT /status`). The HTTP client is created but unused.
+
+**Notes:**
+
+- `receiveSQSMessages` is a stub that returns nil ("Students implement with AWS SDK SQS ReceiveMessage"). Message delete is only a comment too. The consumer has to be written, not swapped.
+- The LocalStack queue in compose has a dead-letter queue after 3 receives (`scripts/localstack-init.sh`).
+- No database.
 
 ### scheduler
 
