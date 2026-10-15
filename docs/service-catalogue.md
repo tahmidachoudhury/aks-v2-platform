@@ -14,7 +14,7 @@
 | [shipping-service](#shipping-service)         | Go 1.22  | 8085               | `shipments`, `tracking_events`                                     | `shipment.created`, `shipment.<status>`                   | none                    | none                             |
 | [worker](#worker)                             | Go 1.22  | 8090 (health only) | none                                                               | none                                                      | 6 event types, log only | none (5 services stubbed)        |
 | [scheduler](#scheduler)                       | Go 1.22  | 8091 (health only) | none (writes `orders`, `order_events`, `products`, `reservations`) | none                                                      | none                    | none                             |
-| [dashboard-api](#dashboard-api)               |          |                    |                                                                    |                                                           |                         |                                  |
+| [dashboard-api](#dashboard-api)               | Go 1.22  | 8086               | none (reads `orders`, `payments`, `products`, `shipments`)         | none                                                      | none                    | none                             |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
@@ -400,3 +400,44 @@ Timed background jobs that work directly on other services' tables.
 - A schema change in those three services needs a scheduler check.
 
 ### dashboard-api
+
+Admin dashboard UI and read-only analytics over the shared database.
+
+|               |                                                                                                          |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| **Language**  | Go 1.22, `lib/pq`. The UI is embedded from `static/`                                                     |
+| **Port**      | `PORT`, default `8086`                                                                                   |
+| **Health**    | `/livez` always 200. `/healthz` and `/dashboard/healthz` ping Postgres, 503 if it fails                  |
+| **Called by** | api-gateway (proxies `/api/dashboard`, but the paths do not match, see notes), browsers that load the UI |
+
+**Endpoints**
+
+| Method | Path                                       | Purpose                                                     |
+| ------ | ------------------------------------------ | ----------------------------------------------------------- |
+| Any    | `/dashboard/summary`                       | Headline counts for orders, revenue, stock and shipments    |
+| Any    | `/dashboard/orders/stats`                  | Orders and order value per day for the last 30 days         |
+| Any    | `/dashboard/revenue`                       | Charges, refunds, net and daily revenue for the last 7 days |
+| Any    | `/dashboard/inventory/alerts`              | Products with under 10 available                            |
+| Any    | `/dashboard/shipping/overview`             | Shipments by status and carrier, and average delivery hours |
+| GET    | `/`                                        | Static UI (`static/index.html`)                             |
+| GET    | `/livez`, `/healthz`, `/dashboard/healthz` | Health                                                      |
+
+**Environment variables**
+
+| Variable       | Required | Default | Secret | Notes                                                                        |
+| -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
+| `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
+| `PORT`         | No       | `8086`  | No     |                                                                              |
+
+**Data:** creates and writes nothing. Reads `orders`, `payments`, `products` and `shipments`.
+
+**Events:** none.
+
+**Outbound calls:** none from the server. The UI calls its own origin (`window.location.origin`) for `/auth/login`, `/api/*` and `/dashboard/*`.
+
+**Notes:**
+
+- The UI expects one origin that sends `/auth/*` and `/api/*` to api-gateway and `/dashboard/*` to dashboard-api. The ingress or HTTPRoute has to make that split.
+- The gateway's `/api/dashboard` route strips the prefix, so `/api/dashboard/summary` arrives as `/summary`. No handler matches and the file server returns 404.
+- `/dashboard/*` has no auth. Anyone who can reach it sees revenue and order counts.
+- It reads four tables that four other services own. A schema change there needs a dashboard check.
