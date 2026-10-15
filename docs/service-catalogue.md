@@ -4,17 +4,17 @@
 
 ## Summary
 
-| Service                                       | Language | Port | Tables                       | Publishes                                                 | Consumes | Calls                            |
-| --------------------------------------------- | -------- | ---- | ---------------------------- | --------------------------------------------------------- | -------- | -------------------------------- |
-| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`     | `order.created`, `order.status_changed`                   | none     | none                             |
-| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                         | none                                                      | none     | Proxies to the six HTTP services |
-| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations`   | none                                                      | none     | none                             |
-| [payment-service](#payment-service)           | Go 1.22  | 8083 | `payments`, `ledger_entries` | `payment.completed`, `payment.failed`, `payment.refunded` | none     | none                             |
-| [notification-service](#notification-service) |          |      |                              |                                                           |          |                                  |
-| [shipping-service](#shipping-service)         |          |      |                              |                                                           |          |                                  |
-| [worker](#worker)                             |          |      |                              |                                                           |          |                                  |
-| [scheduler](#scheduler)                       |          |      |                              |                                                           |          |                                  |
-| [dashboard-api](#dashboard-api)               |          |      |                              |                                                           |          |                                  |
+| Service                                       | Language | Port | Tables                                    | Publishes                                                 | Consumes | Calls                            |
+| --------------------------------------------- | -------- | ---- | ----------------------------------------- | --------------------------------------------------------- | -------- | -------------------------------- |
+| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`                  | `order.created`, `order.status_changed`                   | none     | none                             |
+| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                                      | none                                                      | none     | Proxies to the six HTTP services |
+| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations`                | none                                                      | none     | none                             |
+| [payment-service](#payment-service)           | Go 1.22  | 8083 | `payments`, `ledger_entries`              | `payment.completed`, `payment.failed`, `payment.refunded` | none     | none                             |
+| [notification-service](#notification-service) | Go 1.22  | 8084 | `notifications`, `notification_templates` | none                                                      | none     | none                             |
+| [shipping-service](#shipping-service)         |          |      |                                           |                                                           |          |                                  |
+| [worker](#worker)                             |          |      |                                           |                                                           |          |                                  |
+| [scheduler](#scheduler)                       |          |      |                                           |                                                           |          |                                  |
+| [dashboard-api](#dashboard-api)               |          |      |                                           |                                                           |          |                                  |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
@@ -233,6 +233,43 @@ Simulated charges and refunds, with a double-entry ledger.
 - Schema migrations run on every pod start.
 
 ### notification-service
+
+Simulated email and SMS sends from stored templates.
+
+|               |                                                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Language**  | Go 1.22, `lib/pq`                                                                                                     |
+| **Port**      | `PORT`, default `8084`                                                                                                |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                       |
+| **Called by** | api-gateway (proxies `/api/notifications`), worker (intends `POST /send`, stubbed), scheduler (comment only, no code) |
+
+**Endpoints**
+
+| Method | Path                 | Purpose                                                             |
+| ------ | -------------------- | ------------------------------------------------------------------- |
+| POST   | `/send`              | Look up the template, record the notification as `sent` and log it  |
+| Any    | `/history`           | Latest 50 notifications, filtered by the `recipient` query if given |
+| Any    | `/templates`         | List templates                                                      |
+| GET    | `/livez`, `/healthz` | Health                                                              |
+
+**Environment variables**
+
+| Variable       | Required | Default | Secret | Notes                                                                        |
+| -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
+| `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
+| `PORT`         | No       | `8084`  | No     |                                                                              |
+
+**Data:** creates `notifications` and `notification_templates` in `migrate()` at startup and writes both. It seeds seven templates with `ON CONFLICT DO NOTHING`. No other service touches either table.
+
+**Events:** none.
+
+**Outbound calls:** none.
+
+**Notes:**
+
+- Nothing is sent. There is no SES, SNS or other provider, so no provider credentials yet.
+- Templates are not rendered. The stored body keeps its `{{...}}` placeholders and the request data goes into `metadata`.
+- Schema migrations and template seeding run on every pod start.
 
 ### shipping-service
 
