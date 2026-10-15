@@ -1,20 +1,20 @@
 # Service Catalogue
 
-**TL;DR:** One entry per service, recorded from `app/services/`. Sections feed later cards: secrets for P6-06, events for P1-01 to P1-05, call graph for P6-08 NetworkPolicies. Tracked in [#3](https://github.com/tahmidachoudhury/aks-v2-platform/issues/3).
+**TL;DR:** One entry per service, recorded from `app/services/`. Secrets feed P6-06, events feed P1-01 to P1-05, and the call graph feeds P6-08 NetworkPolicies. Tracked in [#3](https://github.com/tahmidachoudhury/aks-v2-platform/issues/3).
 
 ## Summary
 
-| Service                                       | Language | Port | Tables                   | Publishes                               | Consumes | Calls                            |
-| --------------------------------------------- | -------- | ---- | ------------------------ | --------------------------------------- | -------- | -------------------------------- |
-| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events` | `order.created`, `order.status_changed` | none     | none                             |
-| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                     | none                                    | none     | Proxies to the six HTTP services |
-| [inventory-service](#inventory-service)       |          |      |                          |                                         |          |                                  |
-| [payment-service](#payment-service)           |          |      |                          |                                         |          |                                  |
-| [notification-service](#notification-service) |          |      |                          |                                         |          |                                  |
-| [shipping-service](#shipping-service)         |          |      |                          |                                         |          |                                  |
-| [worker](#worker)                             |          |      |                          |                                         |          |                                  |
-| [scheduler](#scheduler)                       |          |      |                          |                                         |          |                                  |
-| [dashboard-api](#dashboard-api)               |          |      |                          |                                         |          |                                  |
+| Service                                       | Language | Port | Tables                     | Publishes                               | Consumes | Calls                            |
+| --------------------------------------------- | -------- | ---- | -------------------------- | --------------------------------------- | -------- | -------------------------------- |
+| [order-service](#order-service)               | Go 1.22  | 8081 | `orders`, `order_events`   | `order.created`, `order.status_changed` | none     | none                             |
+| [api-gateway](#api-gateway)                   | Go 1.22  | 8080 | none                       | none                                    | none     | Proxies to the six HTTP services |
+| [inventory-service](#inventory-service)       | Go 1.22  | 8082 | `products`, `reservations` | none                                    | none     | none                             |
+| [payment-service](#payment-service)           |          |      |                            |                                         |          |                                  |
+| [notification-service](#notification-service) |          |      |                            |                                         |          |                                  |
+| [shipping-service](#shipping-service)         |          |      |                            |                                         |          |                                  |
+| [worker](#worker)                             |          |      |                            |                                         |          |                                  |
+| [scheduler](#scheduler)                       |          |      |                            |                                         |          |                                  |
+| [dashboard-api](#dashboard-api)               |          |      |                            |                                         |          |                                  |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
 
@@ -145,6 +145,46 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 - The `/api/dashboard` route does not match dashboard-api's paths. See [dashboard-api](#dashboard-api).
 
 ### inventory-service
+
+Product catalogue and stock reservations.
+
+|               |                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| **Language**  | Go 1.22, `lib/pq`                                                                                     |
+| **Port**      | `PORT`, default `8082`                                                                                |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                       |
+| **Called by** | api-gateway (proxies `/api/inventory`), worker (intends `POST /reserve` and `POST /release`, stubbed) |
+
+**Endpoints**
+
+| Method | Path                 | Purpose                                                                                            |
+| ------ | -------------------- | -------------------------------------------------------------------------------------------------- |
+| GET    | `/products`          | List up to 100 products by name, with available stock                                              |
+| POST   | `/products`          | Create a product                                                                                   |
+| Any    | `/products/{id}`     | Get one product                                                                                    |
+| POST   | `/reserve`           | Reserve stock for an order in one transaction with row locks. Reservations expire after 15 minutes |
+| POST   | `/release`           | Release an order's active reservations                                                             |
+| Any    | `/low-stock`         | Products with under 10 available                                                                   |
+| GET    | `/livez`, `/healthz` | Health                                                                                             |
+
+**Environment variables**
+
+| Variable       | Required | Default | Secret | Notes                                                                        |
+| -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
+| `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
+| `PORT`         | No       | `8082`  | No     |                                                                              |
+
+**Data:** creates `products` and `reservations` in `migrate()` at startup and writes both. scheduler also UPDATEs both to expire reservations. dashboard-api reads `products`.
+
+**Events:** none.
+
+**Outbound calls:** none.
+
+**Notes:**
+
+- Reservation expiry relies on scheduler's `expire_reservations` job. This service never expires reservations itself.
+- No role check. Any signed-in user can create products through the gateway.
+- Schema migrations run on every pod start.
 
 ### payment-service
 
