@@ -1,4 +1,4 @@
-FROM golang:1.22
+FROM golang:1.22@sha256:1cf6c45ba39db9fd6db16922041d074a63c935556a05c5ccb62d181034df7f02 AS build
 
 WORKDIR /app
 
@@ -10,8 +10,12 @@ COPY *.go ./
 
 COPY static ./static
 
-EXPOSE 8086
-
 RUN CGO_ENABLED=0 GOOS=linux go build -o /dashboard-api
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+COPY --from=build /dashboard-api /dashboard-api
+
+EXPOSE 8086
 
 CMD ["/dashboard-api"]
