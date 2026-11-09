@@ -127,6 +127,8 @@ services:
       INVENTORY_SERVICE_URL: http://inventory-service:8082
     depends_on:
       - postgres
+      - order-service
+      - inventory-service
 
   dashboard-api:
     build: ./services/dashboard-api
