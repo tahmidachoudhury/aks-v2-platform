@@ -13,7 +13,7 @@
 | [notification-service](#notification-service) | Go 1.22  | 8084               | `notifications`, `notification_templates`                          | none                                                      | none                    | none                             |
 | [shipping-service](#shipping-service)         | Go 1.22  | 8085               | `shipments`, `tracking_events`                                     | `shipment.created`, `shipment.<status>`                   | none                    | none                             |
 | [worker](#worker)                             | Go 1.22  | 8090 (health only) | none                                                               | none                                                      | 6 event types, log only | none (5 services stubbed)        |
-| [scheduler](#scheduler)                       | Go 1.22  | 8091 (health only) | none (writes `orders`, `order_events`, `products`, `reservations`) | none                                                      | none                    | none                             |
+| [scheduler](#scheduler)                       | Go 1.22  | 8091 (health only) | none (writes `order_events`, `products`, `reservations`)           | none                                                      | none                    | order-service, inventory-service |
 | [dashboard-api](#dashboard-api)               | Go 1.22  | 8086               | none (reads `orders`, `payments`, `products`, `shipments`)         | none                                                      | none                    | none                             |
 
 Seven services connect to one Postgres database, `orders`, as one user, `app`. Only api-gateway and worker have no database.
@@ -76,7 +76,7 @@ Order lifecycle and the status state machine.
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                 |
 | **Port**      | `PORT`, default `8081`                                                          |
 | **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                 |
-| **Called by** | api-gateway (proxies `/api/orders`), worker (intends to `PUT /status`, stubbed) |
+| **Called by** | api-gateway (proxies `/api/orders`), scheduler (`PUT /status`), worker (intends to `PUT /status`, stubbed) |
 
 **Endpoints**
 
@@ -98,7 +98,7 @@ Order lifecycle and the status state machine.
 | `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
 | `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
-**Data:** creates `orders` and `order_events` in `migrate()` at startup with `CREATE TABLE IF NOT EXISTS`. It is the only service that inserts into them. Every create and status change writes an `order_events` row. It is not the only writer: scheduler UPDATEs `orders` to cancel abandoned orders and DELETEs `order_events` rows older than 90 days. scheduler and dashboard-api read `orders`.
+**Data:** creates `orders` and `order_events` in `migrate()` at startup with `CREATE TABLE IF NOT EXISTS`. It is the only service that inserts into them. Every create and status change writes an `order_events` row. It is not the only writer: scheduler DELETEs `order_events` rows older than 90 days. scheduler and dashboard-api read `orders`.
 
 **Events:** publishes `order.created` (in `createOrder`) and `order.status_changed` (in `handleUpdateStatus`) through `publishEvent`. Consumes nothing.
 
@@ -108,7 +108,6 @@ Order lifecycle and the status state machine.
 
 - `publishEvent` sends the `{type, payload, timestamp}` JSON to Service Bus, with `Subject` set to the event type. The sender is created once at startup. A failed send is logged and the request still succeeds, so an event is lost if the bus is down. There is no outbox.
 - Schema migrations run on every pod start. Relevant to P5-04.
-- scheduler cancels `pending` orders older than 30 minutes with a direct UPDATE. That skips the state machine, writes no `order_events` row and publishes no event. See [scheduler](#scheduler).
 - A schema change to `orders` also touches scheduler and dashboard-api.
 - Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. `PUT /status` does not check the customer. The header can be forged by anything that reaches the service directly, so only the gateway should reach it (P6-08).
 
@@ -166,7 +165,7 @@ Product catalogue and stock reservations.
 | **Language**  | Go 1.22, `lib/pq`                                                                                     |
 | **Port**      | `PORT`, default `8082`                                                                                |
 | **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                       |
-| **Called by** | api-gateway (proxies `/api/inventory`), worker (intends `POST /reserve` and `POST /release`, stubbed) |
+| **Called by** | api-gateway (proxies `/api/inventory`), scheduler (`POST /release`), worker (intends `POST /reserve` and `POST /release`, stubbed) |
 
 **Endpoints**
 
@@ -390,18 +389,19 @@ Timed background jobs that work directly on other services' tables.
 | -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
 | `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
 | `HEALTH_PORT`  | No       | `8091`  | No     | Not set in compose                                                           |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL` | No | `http://<service>:<port>` | No | For cancelling abandoned orders. The defaults match compose |
 
-**Data:** creates nothing and runs no migrations. UPDATEs `orders` (cancels), `products` and `reservations` (expiry). DELETEs from `order_events`. Reads `orders`, `reservations` and `payments`.
+**Data:** creates nothing and runs no migrations. UPDATEs `products` and `reservations` (expiry). DELETEs from `order_events`. Reads `orders`, `reservations` and `payments`.
 
-**Events:** none. The abandoned-order job has a comment about a cancellation event, but it only logs.
+**Events:** none directly. Cancelling through order-service publishes `order.status_changed`.
 
-**Outbound calls:** none. Comments mention payment-service `/charge` for retries and notification-service for the digest, with no code.
+**Outbound calls:** order-service `PUT /status` and inventory-service `POST /release` for abandoned orders, sent with `X-User-Email: scheduler`. Comments mention payment-service `/charge` for retries and notification-service for the digest, with no code.
 
 **Notes:**
 
 - Each job runs once at startup and then on a ticker:
   - `expire_reservations`, every minute: releases expired active reservations in `products` and `reservations`.
-  - `abandoned_carts`, every 5 minutes: cancels `pending` orders older than 30 minutes with a direct UPDATE. It skips order-service's state machine, writes no `order_events` row, publishes no event and releases no stock.
+  - `abandoned_carts`, every 5 minutes: cancels `pending` orders older than 30 minutes through order-service's `PUT /status`, then releases their stock through inventory-service's `POST /release`. If the cancel fails, the order stays `pending` and the next run retries it. If the release fails, `expire_reservations` frees the stock when the reservation expires.
   - `retry_failed_payments`, every 15 minutes: counts failed payments from the last hour and logs the count. It retries nothing.
   - `daily_digest`, every hour: logs order and revenue counts.
   - `cleanup_old_events`, every 30 minutes: deletes `order_events` rows older than 90 days.

@@ -123,6 +123,8 @@ services:
     build: ./services/scheduler
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
+      ORDER_SERVICE_URL: http://order-service:8081
+      INVENTORY_SERVICE_URL: http://inventory-service:8082
     depends_on:
       - postgres
 

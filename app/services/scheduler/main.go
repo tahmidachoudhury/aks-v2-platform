@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,7 +16,11 @@ import (
 	_ "github.com/lib/pq"
 )
 
-var db *sql.DB
+var (
+	db         *sql.DB
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+	services   map[string]string
+)
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -28,6 +34,13 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	// Internal service URLs. Abandoned orders are cancelled through order-service
+	// and their stock released through inventory-service.
+	services = map[string]string{
+		"order":     getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
+		"inventory": getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
+	}
 
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
@@ -151,19 +164,42 @@ func detectAbandonedOrders() {
 		log.Printf("abandoned_carts query error: %v", err)
 		return
 	}
-	defer rows.Close()
+	type order struct {
+		id         int
+		customerID string
+	}
+	var orders []order
+	for rows.Next() {
+		var o order
+		if err := rows.Scan(&o.id, &o.customerID); err != nil {
+			rows.Close()
+			log.Printf("abandoned_carts scan error: %v", err)
+			return
+		}
+		orders = append(orders, o)
+	}
+	rows.Close()
 
 	count := 0
-	for rows.Next() {
-		var orderID int
-		var customerID string
-		rows.Scan(&orderID, &customerID)
+	for _, o := range orders {
+		// Cancel through order-service's state machine, which writes the
+		// order_events row and publishes order.status_changed
+		code, err := callService(http.MethodPut, services["order"]+"/status",
+			map[string]interface{}{"order_id": o.id, "new_status": "cancelled"})
+		if err != nil || code != http.StatusOK {
+			log.Printf("abandoned_carts: cancelling order #%d failed (status %d): %v", o.id, code, err)
+			continue
+		}
 
-		// Cancel the order
-		db.Exec("UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1", orderID)
+		// Release the reserved stock. If this fails, expire_reservations
+		// releases it once the reservation expires.
+		code, err = callService(http.MethodPost, services["inventory"]+"/release",
+			map[string]interface{}{"order_id": o.id})
+		if err != nil || code != http.StatusOK {
+			log.Printf("abandoned_carts: releasing stock for order #%d failed (status %d): %v", o.id, code, err)
+		}
 
-		// Publish cancellation event (would trigger inventory release via worker)
-		log.Printf("Cancelled abandoned order #%d (customer: %s)", orderID, customerID)
+		log.Printf("Cancelled abandoned order #%d (customer: %s)", o.id, o.customerID)
 		count++
 	}
 
@@ -221,6 +257,28 @@ func cleanupOldEvents() {
 	if rows, _ := result.RowsAffected(); rows > 0 {
 		log.Printf("Cleaned up %d old order events", rows)
 	}
+}
+
+// callService sends a JSON request to another service and returns the status
+// code. The backends require X-User-Email, so the scheduler names itself.
+func callService(method, url string, body interface{}) (int, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequest(method, url, bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Email", "scheduler")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, nil
 }
 
 func getEnv(key, fallback string) string {
