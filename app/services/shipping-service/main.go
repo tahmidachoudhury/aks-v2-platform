@@ -14,10 +14,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	_ "github.com/lib/pq"
 )
 
 var db *sql.DB
+
+var (
+	sbClient *azservicebus.Client
+	sbSender *azservicebus.Sender
+)
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -37,6 +44,7 @@ func main() {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	waitForDB()
 	migrate()
+	connectServiceBus()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -71,6 +79,10 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown error: %v", err)
+	}
+	if sbClient != nil {
+		sbSender.Close(shutdownCtx)
+		sbClient.Close(shutdownCtx)
 	}
 }
 
@@ -409,19 +421,62 @@ func generateTrackingNumber(carrier string) string {
 	return fmt.Sprintf("%s%d%d", prefix, time.Now().UnixNano(), rand.Intn(100000))
 }
 
-func publishEvent(eventType string, payload map[string]interface{}) {
-	sqsQueue := os.Getenv("SQS_QUEUE_URL")
-	if sqsQueue == "" {
-		log.Printf("Event (no SQS): %s %v", eventType, payload)
+func connectServiceBus() {
+	queue := os.Getenv("SERVICEBUS_QUEUE")
+	connStr := os.Getenv("SERVICEBUS_CONNECTION_STRING")
+	namespace := os.Getenv("SERVICEBUS_NAMESPACE")
+	if queue == "" || (connStr == "" && namespace == "") {
+		log.Println("Service Bus not configured, events will only be logged")
 		return
 	}
+
+	var err error
+	if connStr != "" {
+		sbClient, err = azservicebus.NewClientFromConnectionString(connStr, nil)
+	} else {
+		var cred *azidentity.DefaultAzureCredential
+		cred, err = azidentity.NewDefaultAzureCredential(nil)
+		if err == nil {
+			sbClient, err = azservicebus.NewClient(namespace, cred, nil)
+		}
+	}
+	if err != nil {
+		log.Fatalf("Failed to create Service Bus client: %v", err)
+	}
+
+	sbSender, err = sbClient.NewSender(queue, nil)
+	if err != nil {
+		log.Fatalf("Failed to create Service Bus sender: %v", err)
+	}
+	log.Printf("Publishing events to Service Bus queue %s", queue)
+}
+
+func publishEvent(eventType string, payload map[string]interface{}) {
+	if sbSender == nil {
+		log.Printf("Event (no Service Bus): %s %v", eventType, payload)
+		return
+	}
+
 	event := map[string]interface{}{
 		"type":      eventType,
 		"payload":   payload,
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	data, _ := json.Marshal(event)
-	log.Printf("Event -> SQS: %s", string(data))
+
+	contentType := "application/json"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := sbSender.SendMessage(ctx, &azservicebus.Message{
+		Body:        data,
+		Subject:     &eventType,
+		ContentType: &contentType,
+	}, nil)
+	if err != nil {
+		log.Printf("Failed to publish event %s: %v", eventType, err)
+		return
+	}
+	log.Printf("Event -> Service Bus: %s", string(data))
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {
