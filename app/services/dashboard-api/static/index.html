@@ -199,6 +199,15 @@
             return login;
         }
 
+        // The dashboard data is admin only. A saved token without role admin,
+        // such as one issued before the email was in ADMIN_EMAILS, gets 403
+        // rather than 401, so drop it here and log in again.
+        function isAdmin(t) {
+            try { return JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).role === 'admin'; }
+            catch (e) { return false; }
+        }
+        if (token && !isAdmin(token)) { token = ''; localStorage.removeItem('token'); }
+
         // Auto-login on load
         const loggedIn = token ? Promise.resolve() : logIn();
 
