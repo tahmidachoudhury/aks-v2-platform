@@ -216,7 +216,7 @@ Product catalogue and stock reservations.
 | POST   | `/products`          | Create a product. Admin only                                                                       |
 | Any    | `/products/{id}`     | Get one product                                                                                    |
 | POST   | `/reserve`           | Reserve stock for an order in one transaction with row locks. Reservations expire after 15 minutes. Admin and service only |
-| POST   | `/release`           | Release an order's active reservations. Admin and service only                                     |
+| POST   | `/release`           | Release an order's active reservations. It marks them `released` with a conditional UPDATE before returning their stock, so a reservation the scheduler expires at the same time is returned once. Admin and service only |
 | Any    | `/low-stock`         | Products with under 10 available                                                                   |
 | GET    | `/livez`, `/healthz` | Health                                                                                             |
 

@@ -159,7 +159,14 @@ func TestReserveAndReleaseNeedPrivilege(t *testing.T) {
 	}
 }
 
+// /release claims the order's active reservations with a conditional UPDATE
+// before returning stock, and returns only what it claimed. A reservation the
+// scheduler has already expired is not claimed, so its stock is not returned
+// twice.
 func TestHandleRelease(t *testing.T) {
+	claim := sqlText("UPDATE reservations SET status = 'released'")
+	release := sqlText("UPDATE products SET reserved = GREATEST(reserved - $1, 0)")
+	claimed := func() *sqlmock.Rows { return sqlmock.NewRows([]string{"product_id", "quantity"}) }
 	tests := []struct {
 		name         string
 		method       string
@@ -171,34 +178,40 @@ func TestHandleRelease(t *testing.T) {
 		{name: "wrong method", method: http.MethodGet, want: http.StatusMethodNotAllowed},
 		{name: "invalid json", method: http.MethodPost, body: `{`, want: http.StatusBadRequest},
 		{
-			name: "releases each active reservation", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusOK, wantReleased: 2,
+			name: "releases each claimed reservation", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusOK, wantReleased: 2,
 			setup: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
-				mock.ExpectQuery(sqlText("FROM reservations WHERE order_id = $1 AND status = 'active'")).WithArgs(7).
-					WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}).AddRow("p1", 2).AddRow("p2", 1))
-				mock.ExpectExec(sqlText("UPDATE products SET reserved = reserved - $1")).WithArgs(2, "p1").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec(sqlText("UPDATE products SET reserved = reserved - $1")).WithArgs(1, "p2").WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectExec(sqlText("UPDATE reservations SET status = 'released'")).WithArgs(7).WillReturnResult(sqlmock.NewResult(0, 2))
+				mock.ExpectQuery(claim + ".*" + sqlText("WHERE order_id = $1 AND status = 'active'") + ".*RETURNING product_id, quantity").WithArgs(7).
+					WillReturnRows(claimed().AddRow("p1", 2).AddRow("p2", 1))
+				mock.ExpectExec(release).WithArgs(2, "p1").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(release).WithArgs(1, "p2").WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectCommit()
 			},
 		},
 		{
-			name: "nothing to release", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusOK, wantReleased: 0,
+			// The scheduler expired every row first: nothing is claimed, so
+			// no stock is returned a second time
+			name: "already expired by the scheduler", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusOK, wantReleased: 0,
 			setup: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
-				mock.ExpectQuery(sqlText("FROM reservations")).WithArgs(7).
-					WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}))
-				mock.ExpectExec(sqlText("UPDATE reservations SET status = 'released'")).WithArgs(7).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(claim).WithArgs(7).WillReturnRows(claimed())
 				mock.ExpectCommit()
+			},
+		},
+		{
+			name: "claim fails", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusInternalServerError,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(7).WillReturnError(errors.New("lock timeout"))
+				mock.ExpectRollback()
 			},
 		},
 		{
 			name: "stock update fails", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusInternalServerError,
 			setup: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
-				mock.ExpectQuery(sqlText("FROM reservations")).WithArgs(7).
-					WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}).AddRow("p1", 2))
-				mock.ExpectExec(sqlText("UPDATE products")).WillReturnError(errors.New("db down"))
+				mock.ExpectQuery(claim).WithArgs(7).WillReturnRows(claimed().AddRow("p1", 2))
+				mock.ExpectExec(release).WillReturnError(errors.New("db down"))
 				mock.ExpectRollback()
 			},
 		},
@@ -206,9 +219,7 @@ func TestHandleRelease(t *testing.T) {
 			name: "commit fails", method: http.MethodPost, body: `{"order_id":7}`, want: http.StatusInternalServerError,
 			setup: func(mock sqlmock.Sqlmock) {
 				mock.ExpectBegin()
-				mock.ExpectQuery(sqlText("FROM reservations")).WithArgs(7).
-					WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}))
-				mock.ExpectExec(sqlText("UPDATE reservations")).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectQuery(claim).WithArgs(7).WillReturnRows(claimed())
 				mock.ExpectCommit().WillReturnError(errors.New("serialization failure"))
 			},
 		},

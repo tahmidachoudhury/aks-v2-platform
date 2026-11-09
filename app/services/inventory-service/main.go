@@ -343,12 +343,18 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// Claim the order's active reservations before returning any stock. The
+	// UPDATE takes only rows still active, so when the scheduler's
+	// expire_reservations claims a row at the same time, one of them returns
+	// its stock and the other skips it.
 	rows, err := tx.Query(
-		"SELECT product_id, quantity FROM reservations WHERE order_id = $1 AND status = 'active'",
+		`UPDATE reservations SET status = 'released'
+		 WHERE order_id = $1 AND status = 'active'
+		 RETURNING product_id, quantity`,
 		req.OrderID,
 	)
 	if err != nil {
-		httpError(w, "query failed", http.StatusInternalServerError)
+		httpError(w, "release update failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -373,16 +379,11 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, it := range items {
-		if _, err := tx.Exec("UPDATE products SET reserved = reserved - $1, updated_at = NOW() WHERE id = $2",
+		if _, err := tx.Exec("UPDATE products SET reserved = GREATEST(reserved - $1, 0), updated_at = NOW() WHERE id = $2",
 			it.quantity, it.productID); err != nil {
 			httpError(w, "release update failed", http.StatusInternalServerError)
 			return
 		}
-	}
-
-	if _, err := tx.Exec("UPDATE reservations SET status = 'released' WHERE order_id = $1 AND status = 'active'", req.OrderID); err != nil {
-		httpError(w, "release update failed", http.StatusInternalServerError)
-		return
 	}
 	if err := tx.Commit(); err != nil {
 		httpError(w, "commit failed", http.StatusInternalServerError)
