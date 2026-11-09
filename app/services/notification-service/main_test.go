@@ -44,14 +44,15 @@ func sqlText(s string) string { return regexp.QuoteMeta(s) }
 
 func TestHandleSend(t *testing.T) {
 	tests := []struct {
-		name        string
-		method      string
-		body        string
-		template    bool // the template exists in the database
-		wantChannel string
-		wantSubject string
-		wantBody    string
-		want        int
+		name                      string
+		method                    string
+		body                      string
+		template                  bool   // the template exists in the database
+		storedSubject, storedBody string // default wantSubject, wantBody
+		wantChannel               string
+		wantSubject               string
+		wantBody                  string
+		want                      int
 	}{
 		{name: "wrong method", method: http.MethodGet, want: http.StatusMethodNotAllowed},
 		{name: "invalid json", method: http.MethodPost, body: `{`, want: http.StatusBadRequest},
@@ -63,6 +64,27 @@ func TestHandleSend(t *testing.T) {
 			template: true, wantChannel: "email", wantSubject: "Shipped", wantBody: "Your order has shipped", want: http.StatusCreated,
 		},
 		{
+			name: "placeholders filled from data", method: http.MethodPost,
+			body:     `{"recipient":"alice@example.com","template":"order_shipped","data":{"OrderID":7,"TrackingNumber":"RM123"}}`,
+			template: true, storedSubject: "Shipped - #{{.OrderID}}", storedBody: "Order #{{.OrderID}} shipped. Tracking: {{.TrackingNumber}}",
+			wantChannel: "email", wantSubject: "Shipped - #7", wantBody: "Order #7 shipped. Tracking: RM123", want: http.StatusCreated,
+		},
+		{
+			name: "missing placeholder data", method: http.MethodPost,
+			body:     `{"recipient":"alice@example.com","template":"order_shipped","data":{"OrderID":7}}`,
+			template: true, storedSubject: "Shipped - #{{.OrderID}}", storedBody: "Tracking: {{.TrackingNumber}}", want: http.StatusBadRequest,
+		},
+		{
+			name: "no data for a template with placeholders", method: http.MethodPost,
+			body:     `{"recipient":"alice@example.com","template":"order_shipped"}`,
+			template: true, storedSubject: "Shipped - #{{.OrderID}}", storedBody: "x", want: http.StatusBadRequest,
+		},
+		{
+			name: "unknown template name is not rendered", method: http.MethodPost,
+			body:        `{"recipient":"alice@example.com","template":"{{.OrderID}}"}`,
+			wantChannel: "email", wantSubject: "{{.OrderID}}", wantBody: "{{.OrderID}}", want: http.StatusCreated,
+		},
+		{
 			name: "unknown template falls back to its name", method: http.MethodPost,
 			body:        `{"recipient":"+447700900000","channel":"sms","template":"custom_text"}`,
 			wantChannel: "sms", wantSubject: "custom_text", wantBody: "custom_text", want: http.StatusCreated,
@@ -71,20 +93,26 @@ func TestHandleSend(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
-			if tt.want == http.StatusCreated {
-				var req struct {
-					Recipient string `json:"recipient"`
-					Template  string `json:"template"`
-				}
-				json.Unmarshal([]byte(tt.body), &req)
-				q := mock.ExpectQuery(sqlText("FROM notification_templates WHERE id = $1")).WithArgs(req.Template)
+			var in struct {
+				Recipient string `json:"recipient"`
+				Template  string `json:"template"`
+			}
+			json.Unmarshal([]byte(tt.body), &in)
+			if tt.template || tt.want == http.StatusCreated {
+				q := mock.ExpectQuery(sqlText("FROM notification_templates WHERE id = $1")).WithArgs(in.Template)
 				if tt.template {
-					q.WillReturnRows(sqlmock.NewRows([]string{"subject", "body"}).AddRow(tt.wantSubject, tt.wantBody))
+					subject, body := tt.storedSubject, tt.storedBody
+					if subject == "" {
+						subject, body = tt.wantSubject, tt.wantBody
+					}
+					q.WillReturnRows(sqlmock.NewRows([]string{"subject", "body"}).AddRow(subject, body))
 				} else {
 					q.WillReturnError(sql.ErrNoRows)
 				}
+			}
+			if tt.want == http.StatusCreated {
 				mock.ExpectQuery(sqlText("INSERT INTO notifications")).
-					WithArgs(req.Recipient, tt.wantChannel, req.Template, tt.wantSubject, tt.wantBody, sqlmock.AnyArg(), "sent", sqlmock.AnyArg()).
+					WithArgs(in.Recipient, tt.wantChannel, in.Template, tt.wantSubject, tt.wantBody, sqlmock.AnyArg(), "sent", sqlmock.AnyArg()).
 					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
 			}
 
@@ -166,6 +194,32 @@ func TestHandleHistoryOtherRecipient(t *testing.T) {
 	handleHistory(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestHandleSendTemplateLookupFails(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM notification_templates WHERE id = $1")).WillReturnError(errors.New("db down"))
+
+	req := httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"recipient":"alice@example.com","template":"order_shipped"}`))
+	req.Header.Set("X-User-Role", "service")
+	rec := httptest.NewRecorder()
+	handleSend(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: %s", rec.Code, rec.Body)
+	}
+}
+
+// The seeded templates must all parse, and render with their fields filled
+func TestRenderSeededPlaceholders(t *testing.T) {
+	data := map[string]interface{}{"OrderID": 7.0, "CustomerName": "Alice", "Currency": "GBP", "Total": 12.5,
+		"TrackingNumber": "RM1", "ProductName": "Mug", "SKU": "MUG-1", "Available": 3.0}
+	got, err := render("Hi {{.CustomerName}}, order #{{.OrderID}} total {{.Currency}} {{.Total}}", data)
+	if err != nil || got != "Hi Alice, order #7 total GBP 12.5" {
+		t.Errorf("render = %q, %v", got, err)
+	}
+	if _, err := render("{{.OrderID", data); err == nil {
+		t.Error("a template that does not parse must be an error")
 	}
 }
 

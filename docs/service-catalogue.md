@@ -298,7 +298,7 @@ Simulated email and SMS sends from stored templates.
 
 | Method | Path                 | Purpose                                                             |
 | ------ | -------------------- | ------------------------------------------------------------------- |
-| POST   | `/send`              | Look up the template, record the notification as `sent` and log it. Admin and service only |
+| POST   | `/send`              | Look up and render the template, record the notification as `sent` and log it. Admin and service only |
 | Any    | `/history`           | Latest 50 notifications, filtered by the `recipient` query if given. Customers get only their own, and 403 for another `recipient` |
 | Any    | `/templates`         | List templates                                                      |
 | GET    | `/livez`, `/healthz` | Health                                                              |
@@ -319,7 +319,7 @@ Simulated email and SMS sends from stored templates.
 **Notes:**
 
 - Nothing is sent. There is no SES, SNS or other provider, so no provider credentials yet.
-- Templates are not rendered. The stored body keeps its `{{...}}` placeholders and the request data goes into `metadata`.
+- `/send` renders the stored subject and body with Go's `text/template`, filling placeholders such as `{{.OrderID}}` from the request's `data` object, whose keys must match the placeholder names. A placeholder with no value in `data` returns 400. An unknown template name is used as the subject and body without rendering. The request data also goes into `metadata`.
 - Schema migrations and template seeding run on every pod start.
 
 ### shipping-service

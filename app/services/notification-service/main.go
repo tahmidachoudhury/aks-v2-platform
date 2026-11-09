@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
+	"text/template"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -182,16 +186,29 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		req.Channel = "email"
 	}
 
-	// Look up template
+	// Look up the template and fill its {{.Field}} placeholders from data
 	var subject, body string
 	err := db.QueryRow(
 		"SELECT subject, body FROM notification_templates WHERE id = $1",
 		req.Template,
 	).Scan(&subject, &body)
-	if err != nil {
-		// Use template name as-is if not found
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Use template name as-is if not found. It is not rendered, since it
+		// comes from the request.
 		subject = req.Template
 		body = req.Template
+	case err != nil:
+		httpError(w, "template lookup failed", http.StatusInternalServerError)
+		return
+	default:
+		if subject, err = render(subject, req.Data); err == nil {
+			body, err = render(body, req.Data)
+		}
+		if err != nil {
+			httpError(w, "template data: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	metadata, _ := json.Marshal(req.Data)
@@ -223,6 +240,24 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		"channel":   req.Channel,
 		"status":    status,
 	})
+}
+
+// render fills a stored template's {{.Field}} placeholders from data. A
+// placeholder with no value in data is an error, so nothing is sent with
+// "<no value>" in it.
+func render(text string, data map[string]interface{}) (string, error) {
+	t, err := template.New("").Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", fmt.Errorf("bad template: %w", err)
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	var b strings.Builder
+	if err := t.Execute(&b, data); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 func handleHistory(w http.ResponseWriter, r *http.Request) {
