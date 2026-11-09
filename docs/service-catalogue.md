@@ -154,7 +154,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 - These paths skip the JWT check: `/healthz`, `/auth/*`, `/api/shipping/webhook` and any path ending in `/healthz`.
 - The gateway drops any `X-User-Email` or `X-User-Role` the client sends. With a valid JWT, it sets `X-User-Email` from `sub` and `X-User-Role` from `role`. order-service, inventory-service, payment-service, notification-service and shipping-service return 401 without `X-User-Email`, except on `/livez`, `/healthz` and shipping's `/webhook`. They trust the value as given. No service reads `X-User-Role`. Only the gateway should reach the backends (P6-08).
 - The rate limit is 100 requests a minute per client IP. The IP is the TCP peer address without the port. When the peer is in `TRUSTED_PROXIES`, the IP is the right-most `X-Forwarded-For` entry that is not itself a trusted proxy, so a client cannot choose its own counter. With `TRUSTED_PROXIES` unset, the header is ignored.
-- The `/api/dashboard` route does not match dashboard-api's paths. See [dashboard-api](#dashboard-api).
+- `/api/dashboard/*` reaches dashboard-api as `/dashboard/*`. The gateway strips `/api/dashboard` and the proxy target ends in `/dashboard`.
 
 ### inventory-service
 
@@ -416,7 +416,7 @@ Admin dashboard UI and read-only analytics over the shared database.
 | **Language**  | Go 1.22, `lib/pq`. The UI is embedded from `static/`                                                     |
 | **Port**      | `PORT`, default `8086`                                                                                   |
 | **Health**    | `/livez` always 200. `/healthz` and `/dashboard/healthz` ping Postgres, 503 if it fails                  |
-| **Called by** | api-gateway (proxies `/api/dashboard`, but the paths do not match, see notes), browsers that load the UI |
+| **Called by** | api-gateway (proxies `/api/dashboard/*` to `/dashboard/*`), browsers that load the UI |
 
 **Endpoints**
 
@@ -446,6 +446,5 @@ Admin dashboard UI and read-only analytics over the shared database.
 **Notes:**
 
 - The UI expects one origin that sends `/auth/*` and `/api/*` to api-gateway and `/dashboard/*` to dashboard-api. The ingress or HTTPRoute has to make that split.
-- The gateway's `/api/dashboard` route strips the prefix, so `/api/dashboard/summary` arrives as `/summary`. No handler matches and the file server returns 404.
 - `/dashboard/*` has no auth. Anyone who can reach it sees revenue and order counts.
 - It reads four tables that four other services own. A schema change there needs a dashboard check.

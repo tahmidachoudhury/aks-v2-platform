@@ -43,7 +43,9 @@ func main() {
 		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
 		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
 		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
-		"/api/dashboard":     getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086"),
+		// dashboard-api serves under /dashboard. The proxy joins the target's path
+		// to the stripped one, so /api/dashboard/summary reaches /dashboard/summary.
+		"/api/dashboard": getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086") + "/dashboard",
 	}
 
 	// Comma-separated CIDRs, such as Traefik's pod range. Empty means trust no proxy.
