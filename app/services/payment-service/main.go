@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -286,37 +288,62 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get original payment
-	var originalAmount float64
-	var orderID int
-	var paymentStatus, customerID, currency string
-	err := db.QueryRow(
-		"SELECT amount, order_id, status, customer_id, currency FROM payments WHERE id = $1",
-		req.PaymentID,
-	).Scan(&originalAmount, &orderID, &paymentStatus, &customerID, &currency)
-	if err != nil {
-		httpError(w, "payment not found", http.StatusNotFound)
-		return
-	}
-
-	if paymentStatus != "completed" {
-		httpError(w, "can only refund completed payments", http.StatusConflict)
-		return
-	}
-
-	refundAmount := req.Amount
-	if refundAmount <= 0 || refundAmount > originalAmount {
-		refundAmount = originalAmount
-	}
-
-	refundID := generatePaymentID()
-
 	tx, err := db.Begin()
 	if err != nil {
 		httpError(w, "transaction failed", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback()
+
+	// Lock the original payment, so concurrent refunds of it run one at a time
+	// and each sees what the ones before it refunded
+	var originalAmount float64
+	var orderID int
+	var paymentStatus, customerID, currency string
+	var method sql.NullString
+	err = tx.QueryRow(
+		"SELECT amount, order_id, status, customer_id, currency, method FROM payments WHERE id = $1 FOR UPDATE",
+		req.PaymentID,
+	).Scan(&originalAmount, &orderID, &paymentStatus, &customerID, &currency, &method)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpError(w, "payment not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		httpError(w, "payment lookup failed", http.StatusInternalServerError)
+		return
+	}
+
+	if method.String == "refund" || (paymentStatus != "completed" && paymentStatus != "partially_refunded") {
+		httpError(w, "can only refund completed or partially refunded payments", http.StatusConflict)
+		return
+	}
+
+	// A partially refunded payment can be refunded again, up to what is left
+	var refunded float64
+	if err := tx.QueryRow(
+		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE reference = $1 AND method = 'refund'",
+		req.PaymentID,
+	).Scan(&refunded); err != nil {
+		httpError(w, "refund lookup failed", http.StatusInternalServerError)
+		return
+	}
+	remaining := math.Round((originalAmount-refunded)*100) / 100
+	if remaining <= 0 {
+		httpError(w, "payment already fully refunded", http.StatusConflict)
+		return
+	}
+
+	refundAmount := req.Amount
+	if refundAmount <= 0 || refundAmount > remaining {
+		refundAmount = remaining
+	}
+	newStatus := "partially_refunded"
+	if refundAmount >= remaining {
+		newStatus = "refunded"
+	}
+
+	refundID := generatePaymentID()
 
 	_, err = tx.Exec(
 		`INSERT INTO payments (id, order_id, customer_id, amount, currency, status, method, reference)
@@ -329,16 +356,22 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reverse ledger entries
-	tx.Exec(
+	if _, err := tx.Exec(
 		`INSERT INTO ledger_entries (payment_id, entry_type, credit, currency, description)
 		 VALUES ($1, 'refund', $2, $3, $4)`,
 		refundID, refundAmount, currency, fmt.Sprintf("Refund for payment %s: %s", req.PaymentID, req.Reason),
-	)
+	); err != nil {
+		log.Printf("Ledger insert failed for refund %s: %v", refundID, err)
+		httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+		return
+	}
 
-	if refundAmount >= originalAmount {
-		tx.Exec("UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1", req.PaymentID)
-	} else {
-		tx.Exec("UPDATE payments SET status = 'partially_refunded', updated_at = NOW() WHERE id = $1", req.PaymentID)
+	if _, err := tx.Exec(
+		"UPDATE payments SET status = $1, updated_at = NOW() WHERE id = $2",
+		newStatus, req.PaymentID,
+	); err != nil {
+		httpError(w, "failed to update payment", http.StatusInternalServerError)
+		return
 	}
 
 	if err := tx.Commit(); err != nil {

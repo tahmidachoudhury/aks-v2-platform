@@ -166,44 +166,84 @@ func TestHandleCharge(t *testing.T) {
 	}
 }
 
+// Pins the refund fix: the payment row is locked with FOR UPDATE inside the
+// transaction, so concurrent refunds cannot both pass the status check. A
+// partially refunded payment can be refunded again up to what is left, and a
+// failed ledger insert or status update fails the refund.
 func TestHandleRefund(t *testing.T) {
-	paymentCols := []string{"amount", "order_id", "status", "customer_id", "currency"}
+	paymentCols := []string{"amount", "order_id", "status", "customer_id", "currency", "method"}
 	tests := []struct {
 		name       string
 		body       string
-		status     string // original payment status; empty means not found
+		status     string  // original payment status; empty means not found
+		method     string  // original payment method; "refund" for a refund row
+		refunded   float64 // already refunded by earlier refunds
+		lookupErr  error
+		ledgerErr  error
+		updateErr  error
 		wantAmount float64
 		wantMark   string // status the original payment moves to
 		want       int
 	}{
 		{name: "invalid json", body: `{`, want: http.StatusBadRequest},
 		{name: "unknown payment", body: `{"payment_id":"pay_1"}`, want: http.StatusNotFound},
+		{name: "lookup fails", body: `{"payment_id":"pay_1"}`, lookupErr: errors.New("db down"), want: http.StatusInternalServerError},
 		{name: "payment not completed", body: `{"payment_id":"pay_1"}`, status: "failed", want: http.StatusConflict},
 		{name: "already refunded", body: `{"payment_id":"pay_1"}`, status: "refunded", want: http.StatusConflict},
-		{name: "full refund by default", body: `{"payment_id":"pay_1"}`, status: "completed", wantAmount: 50, wantMark: "'refunded'", want: http.StatusOK},
-		{name: "over-refund is capped", body: `{"payment_id":"pay_1","amount":80}`, status: "completed", wantAmount: 50, wantMark: "'refunded'", want: http.StatusOK},
-		{name: "partial refund", body: `{"payment_id":"pay_1","amount":20}`, status: "completed", wantAmount: 20, wantMark: "'partially_refunded'", want: http.StatusOK},
+		{name: "a refund cannot be refunded", body: `{"payment_id":"pay_1"}`, status: "completed", method: "refund", want: http.StatusConflict},
+		{name: "full refund by default", body: `{"payment_id":"pay_1"}`, status: "completed", wantAmount: 50, wantMark: "refunded", want: http.StatusOK},
+		{name: "over-refund is capped", body: `{"payment_id":"pay_1","amount":80}`, status: "completed", wantAmount: 50, wantMark: "refunded", want: http.StatusOK},
+		{name: "partial refund", body: `{"payment_id":"pay_1","amount":20}`, status: "completed", wantAmount: 20, wantMark: "partially_refunded", want: http.StatusOK},
+		{name: "second partial refund", body: `{"payment_id":"pay_1","amount":10}`, status: "partially_refunded", refunded: 20, wantAmount: 10, wantMark: "partially_refunded", want: http.StatusOK},
+		{name: "rest of a partial refund", body: `{"payment_id":"pay_1"}`, status: "partially_refunded", refunded: 20.1, wantAmount: 29.9, wantMark: "refunded", want: http.StatusOK},
+		{name: "partial refund capped at what is left", body: `{"payment_id":"pay_1","amount":45}`, status: "partially_refunded", refunded: 20, wantAmount: 30, wantMark: "refunded", want: http.StatusOK},
+		{name: "nothing left", body: `{"payment_id":"pay_1"}`, status: "partially_refunded", refunded: 50, want: http.StatusConflict},
+		{name: "ledger insert fails", body: `{"payment_id":"pay_1"}`, status: "completed", ledgerErr: errors.New("db down"), wantAmount: 50, want: http.StatusInternalServerError},
+		{name: "status update fails", body: `{"payment_id":"pay_1"}`, status: "completed", updateErr: errors.New("db down"), wantAmount: 50, wantMark: "refunded", want: http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
 			if tt.body != `{` {
-				q := mock.ExpectQuery(sqlText("FROM payments WHERE id = $1")).WithArgs("pay_1")
-				if tt.status == "" {
+				mock.ExpectBegin()
+				q := mock.ExpectQuery(sqlText("FROM payments WHERE id = $1 FOR UPDATE")).WithArgs("pay_1")
+				switch {
+				case tt.lookupErr != nil:
+					q.WillReturnError(tt.lookupErr)
+				case tt.status == "":
 					q.WillReturnError(sql.ErrNoRows)
-				} else {
-					q.WillReturnRows(sqlmock.NewRows(paymentCols).AddRow(50.0, 7, tt.status, "alice@example.com", "GBP"))
+				default:
+					var method interface{}
+					if tt.method != "" {
+						method = tt.method
+					}
+					q.WillReturnRows(sqlmock.NewRows(paymentCols).AddRow(50.0, 7, tt.status, "alice@example.com", "GBP", method))
+				}
+				if (tt.status == "completed" || tt.status == "partially_refunded") && tt.method == "" {
+					mock.ExpectQuery(sqlText("WHERE reference = $1 AND method = 'refund'")).WithArgs("pay_1").
+						WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(tt.refunded))
 				}
 			}
-			if tt.want == http.StatusOK {
-				mock.ExpectBegin()
+			if tt.wantAmount > 0 {
 				mock.ExpectExec(sqlText("INSERT INTO payments")).
 					WithArgs(sqlmock.AnyArg(), 7, "alice@example.com", tt.wantAmount, "GBP", "pay_1").
 					WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectExec(sqlText("'refund'")).WillReturnResult(sqlmock.NewResult(1, 1))
-				mock.ExpectExec(sqlText("UPDATE payments SET status = " + tt.wantMark)).WithArgs("pay_1").
-					WillReturnResult(sqlmock.NewResult(0, 1))
-				mock.ExpectCommit()
+				l := mock.ExpectExec(sqlText("INSERT INTO ledger_entries")).WithArgs(sqlmock.AnyArg(), tt.wantAmount, "GBP", sqlmock.AnyArg())
+				if tt.ledgerErr != nil {
+					l.WillReturnError(tt.ledgerErr)
+				} else {
+					l.WillReturnResult(sqlmock.NewResult(1, 1))
+					u := mock.ExpectExec(sqlText("UPDATE payments SET status = $1")).WithArgs(tt.wantMark, "pay_1")
+					if tt.updateErr != nil {
+						u.WillReturnError(tt.updateErr)
+					} else {
+						u.WillReturnResult(sqlmock.NewResult(0, 1))
+						mock.ExpectCommit()
+					}
+				}
+			}
+			if tt.body != `{` && tt.want != http.StatusOK {
+				mock.ExpectRollback()
 			}
 
 			rec := httptest.NewRecorder()

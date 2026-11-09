@@ -254,7 +254,7 @@ Simulated charges and refunds, with a double-entry ledger.
 | Method | Path                     | Purpose                                                                                                                                                                       |
 | ------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/charge`                | Simulate a charge that succeeds 9 times in 10. Writes the payment and, on success, two ledger rows. Publishes `payment.completed` or `payment.failed`. Returns 402 on failure. Admin and service only |
-| POST   | `/refund`                | Refund a completed payment in full or in part. Publishes `payment.refunded`. Admin and service only                                                                           |
+| POST   | `/refund`                | Refund a completed or partially refunded payment, in full or in part. Publishes `payment.refunded`. Admin and service only                                                                           |
 | Any    | `/ledger`                | Latest 100 ledger entries. Customers get only entries for their own payments                                                                                                  |
 | Any    | `/balance/{customer_id}` | Charged, refunded and net totals for one customer. 403 for a customer asking for someone else's                                                                              |
 | GET    | `/livez`, `/healthz`     | Health                                                                                                                                                                        |
@@ -280,6 +280,7 @@ Simulated charges and refunds, with a double-entry ledger.
 - `publishEvent` works as in order-service.
 - No payment provider. `rand.Intn(10)` decides success, so there is no provider key to manage.
 - `/charge` returns 500 and publishes nothing if a ledger insert or the commit fails.
+- `/refund` locks the original payment with `SELECT ... FOR UPDATE` inside its transaction, so concurrent refunds of one payment run one at a time. A `partially_refunded` payment can be refunded again, up to the original amount minus earlier refunds. An amount that is missing or above that is capped to it. A refund row cannot itself be refunded. A failed ledger insert or status update returns 500 and publishes nothing.
 - Schema migrations run on every pod start.
 
 ### notification-service
