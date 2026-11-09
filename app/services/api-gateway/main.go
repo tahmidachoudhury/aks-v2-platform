@@ -274,9 +274,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Find matching route
+	// Find matching route. A prefix matches only up to a "/", so
+	// /api/ordersfoo does not reach order-service.
 	for prefix, targetURL := range routes {
-		if strings.HasPrefix(r.URL.Path, prefix) {
+		if r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/") {
 			target, err := url.Parse(targetURL)
 			if err != nil {
 				httpError(w, "bad upstream config", http.StatusInternalServerError)

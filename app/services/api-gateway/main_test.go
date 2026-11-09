@@ -270,6 +270,9 @@ func TestHandleProxy(t *testing.T) {
 		// #129: the dashboard data needs a token like any other route
 		{name: "dashboard data without a token", path: "/api/dashboard/summary", want: http.StatusUnauthorized},
 		{name: "unknown route", path: "/api/unknown/x", auth: tok, want: http.StatusNotFound},
+		{name: "prefix needs a / boundary", path: "/api/ordersfoo", auth: tok, want: http.StatusNotFound},
+		{name: "prefix needs a / boundary, nested", path: "/api/ordersfoo/42", auth: tok, want: http.StatusNotFound},
+		{name: "dashboard prefix needs a / boundary", path: "/api/dashboardx/summary", auth: tok, want: http.StatusNotFound},
 		{name: "bad token", path: "/api/orders/", auth: "garbage", want: http.StatusUnauthorized},
 	}
 	for _, tt := range tests {
