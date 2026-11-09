@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,6 +25,9 @@ var (
 	ctx         = context.Background()
 	jwtSecret   []byte
 	routes      map[string]string
+
+	// Proxies whose X-Forwarded-For the rate limit trusts, from TRUSTED_PROXIES
+	trustedProxies []*net.IPNet
 )
 
 func main() {
@@ -40,6 +44,18 @@ func main() {
 		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
 		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
 		"/api/dashboard":     getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086"),
+	}
+
+	// Comma-separated CIDRs, such as Traefik's pod range. Empty means trust no proxy.
+	for _, cidr := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
+		if cidr = strings.TrimSpace(cidr); cidr == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Fatalf("invalid TRUSTED_PROXIES entry %q: %v", cidr, err)
+		}
+		trustedProxies = append(trustedProxies, ipNet)
 	}
 
 	// Redis for rate limiting
@@ -284,17 +300,44 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// clientIP returns the address the rate limit counts against. It reads
+// X-Forwarded-For only when the direct peer is a trusted proxy, and then takes
+// the right-most address that is not a trusted proxy: the one the nearest
+// proxy saw. Anything a client writes into the header sits to the left of
+// that, so it cannot change the result.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !isTrustedProxy(ip) {
+		return ip
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" {
+			continue
 		}
-		return strings.TrimSpace(xff)
+		if !isTrustedProxy(hop) {
+			return hop
+		}
+		ip = hop
 	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return xrip
+	return ip
+}
+
+func isTrustedProxy(addr string) bool {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
 	}
-	return r.RemoteAddr
+	for _, ipNet := range trustedProxies {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 var shutdownOnce sync.Once

@@ -139,6 +139,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | `JWT_SECRET`                                                                                                                                     | Yes      | none                      | Yes    | HS256 signing key. Exits on startup if unset                                                        |
 | `REDIS_URL`                                                                                                                                      | No       | none                      | No     | Rate limiting is off if unset, invalid or unreachable at startup. The compose value has no password |
 | `PORT`                                                                                                                                           | No       | `8080`                    | No     |                                                                                                     |
+| `TRUSTED_PROXIES`                                                                                                                                | No       | none                      | No     | Comma-separated CIDRs of proxies, such as Traefik, whose `X-Forwarded-For` the rate limit trusts. Exits on startup if an entry is invalid. Not set in compose |
 | `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL`, `DASHBOARD_SERVICE_URL` | No       | `http://<service>:<port>` | No     | Proxy targets. The defaults match compose                                                           |
 
 **Data:** no tables. Redis holds `rate:<ip>` counters that expire after a minute.
@@ -152,7 +153,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 - Login and register accept any credentials. There is no user store.
 - These paths skip the JWT check: `/healthz`, `/auth/*`, `/api/shipping/webhook` and any path ending in `/healthz`.
 - With a valid JWT, the gateway sets `X-User-Email` from `sub` and `X-User-Role` from `role`. The backends trust `X-User-Email` as given. No service reads `X-User-Role`. Only the gateway should reach the backends (P6-08).
-- The rate limit is 100 requests a minute per client IP. The IP comes from `X-Forwarded-For` first, so a client can spoof it.
+- The rate limit is 100 requests a minute per client IP. The IP is the TCP peer address without the port. When the peer is in `TRUSTED_PROXIES`, the IP is the right-most `X-Forwarded-For` entry that is not itself a trusted proxy, so a client cannot choose its own counter. With `TRUSTED_PROXIES` unset, the header is ignored.
 - The `/api/dashboard` route does not match dashboard-api's paths. See [dashboard-api](#dashboard-api).
 
 ### inventory-service
