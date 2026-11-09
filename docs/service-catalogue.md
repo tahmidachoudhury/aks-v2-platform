@@ -238,7 +238,7 @@ Simulated charges and refunds, with a double-entry ledger.
 
 - `publishEvent` works as in order-service.
 - No payment provider. `rand.Intn(10)` decides success, so there is no provider key to manage.
-- `/charge` ignores errors from the ledger inserts and the commit, then publishes the event anyway.
+- `/charge` returns 500 and publishes nothing if a ledger insert or the commit fails.
 - Schema migrations run on every pod start.
 
 ### notification-service

@@ -188,19 +188,31 @@ func handleCharge(w http.ResponseWriter, r *http.Request) {
 
 	if status == "completed" {
 		// Double-entry: debit customer, credit revenue
-		tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO ledger_entries (payment_id, entry_type, debit, currency, description)
 			 VALUES ($1, 'charge', $2, $3, $4)`,
 			paymentID, req.Amount, currency, fmt.Sprintf("Order #%d payment", req.OrderID),
-		)
-		tx.Exec(
+		); err != nil {
+			log.Printf("Ledger insert failed for %s: %v", paymentID, err)
+			httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+			return
+		}
+		if _, err := tx.Exec(
 			`INSERT INTO ledger_entries (payment_id, entry_type, credit, currency, description)
 			 VALUES ($1, 'revenue', $2, $3, $4)`,
 			paymentID, req.Amount, currency, fmt.Sprintf("Order #%d revenue", req.OrderID),
-		)
+		); err != nil {
+			log.Printf("Ledger insert failed for %s: %v", paymentID, err)
+			httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+			return
+		}
 	}
 
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("Commit failed for %s: %v", paymentID, err)
+		httpError(w, "failed to process payment", http.StatusInternalServerError)
+		return
+	}
 
 	// Publish event
 	publishEvent("payment."+status, map[string]interface{}{
