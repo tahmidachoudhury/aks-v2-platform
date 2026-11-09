@@ -43,6 +43,11 @@ func main() {
 		"inventory": getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
 	}
 
+	shutdownTimeout, err := time.ParseDuration(getEnv("SHUTDOWN_TIMEOUT", "20s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_TIMEOUT: %v", err)
+	}
+
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(5 * time.Minute)
@@ -82,8 +87,8 @@ func main() {
 
 	log.Println("Scheduler started")
 
-	// Run scheduled jobs. On shutdown, a job that is running finishes before
-	// the database is closed; no new run starts.
+	// Run scheduled jobs. On shutdown no new run starts, and the scheduler waits
+	// up to shutdownTimeout for a running job before it closes the database.
 	var jobs sync.WaitGroup
 	schedule := func(interval time.Duration, name string, fn func()) {
 		jobs.Add(1)
@@ -93,18 +98,35 @@ func main() {
 		}()
 	}
 	schedule(1*time.Minute, "expire_reservations", expireReservations)
-	schedule(5*time.Minute, "abandoned_carts", detectAbandonedOrders)
+	schedule(5*time.Minute, "abandoned_carts", func() { detectAbandonedOrders(ctx) })
 	schedule(15*time.Minute, "retry_failed_payments", retryFailedPayments)
 	schedule(1*time.Hour, "daily_digest", generateDigest)
 	schedule(30*time.Minute, "cleanup_old_events", cleanupOldEvents)
 
 	<-ctx.Done()
-	log.Println("Waiting for running jobs to finish")
-	jobs.Wait()
+	log.Printf("Waiting up to %s for running jobs to finish", shutdownTimeout)
+	if !waitTimeout(&jobs, shutdownTimeout) {
+		log.Printf("Jobs still running after %s, stopping anyway", shutdownTimeout)
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	health.Shutdown(shutdownCtx)
 	log.Println("Scheduler stopped")
+}
+
+// waitTimeout waits for wg, giving up after d. It reports whether wg finished.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 func runEvery(ctx context.Context, interval time.Duration, name string, fn func()) {
@@ -171,8 +193,9 @@ func expireReservations() {
 	}
 }
 
-// detectAbandonedOrders finds orders stuck in pending for too long
-func detectAbandonedOrders() {
+// detectAbandonedOrders finds orders stuck in pending for too long. It stops
+// between orders, and aborts its service calls, once ctx is cancelled.
+func detectAbandonedOrders(ctx context.Context) {
 	cutoff := time.Now().Add(-30 * time.Minute)
 
 	rows, err := db.Query(
@@ -197,10 +220,14 @@ func detectAbandonedOrders() {
 	rows.Close()
 
 	count := 0
-	for _, id := range orders {
+	for i, id := range orders {
+		if ctx.Err() != nil {
+			log.Printf("abandoned_carts: shutting down, %d orders left for the next run", len(orders)-i)
+			break
+		}
 		// Cancel through order-service's state machine, which writes the
 		// order_events row and publishes order.status_changed
-		code, err := callService(http.MethodPut, services["order"]+"/status",
+		code, err := callService(ctx, http.MethodPut, services["order"]+"/status",
 			map[string]interface{}{"order_id": id, "new_status": "cancelled"})
 		if err != nil || code != http.StatusOK {
 			log.Printf("abandoned_carts: cancelling order #%d failed (status %d): %v", id, code, err)
@@ -209,7 +236,7 @@ func detectAbandonedOrders() {
 
 		// Release the reserved stock. If this fails, expire_reservations
 		// releases it once the reservation expires.
-		code, err = callService(http.MethodPost, services["inventory"]+"/release",
+		code, err = callService(ctx, http.MethodPost, services["inventory"]+"/release",
 			map[string]interface{}{"order_id": id})
 		if err != nil || code != http.StatusOK {
 			log.Printf("abandoned_carts: releasing stock for order #%d failed (status %d): %v", id, code, err)
@@ -277,12 +304,12 @@ func cleanupOldEvents() {
 
 // callService sends a JSON request to another service and returns the status
 // code. The backends require X-User-Email, so the scheduler names itself.
-func callService(method, url string, body interface{}) (int, error) {
+func callService(ctx context.Context, method, url string, body interface{}) (int, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return 0, err
 	}
-	req, err := http.NewRequest(method, url, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(data))
 	if err != nil {
 		return 0, err
 	}

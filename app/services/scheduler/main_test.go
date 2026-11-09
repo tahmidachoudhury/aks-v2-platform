@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -159,7 +161,7 @@ func TestDetectAbandonedOrders(t *testing.T) {
 			mock.ExpectQuery(sqlText("WHERE status = 'pending' AND created_at < $1")).
 				WithArgs(sqlmock.AnyArg()).WillReturnRows(rows)
 
-			detectAbandonedOrders()
+			detectAbandonedOrders(context.Background())
 
 			got, _ := json.Marshal(calls())
 			want, _ := json.Marshal(tt.want)
@@ -182,7 +184,65 @@ func TestDetectAbandonedOrdersBackendDown(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
 
 	// Must log and move on, not panic or block
-	detectAbandonedOrders()
+	detectAbandonedOrders(context.Background())
+}
+
+// Pins #19: a shutdown mid-run aborts the call in flight and starts no more,
+// so the job cannot hold up the scheduler's exit.
+func TestDetectAbandonedOrdersStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	hang := make(chan struct{})
+	calls := fakeBackends(t, func(_ string, id int) int {
+		// Shut down while order-service is handling the first cancel, and
+		// never answer it
+		if id == 5 {
+			cancel()
+			<-hang
+		}
+		return http.StatusOK
+	})
+	t.Cleanup(func() { close(hang) })
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("WHERE status = 'pending'")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5).AddRow(6).AddRow(7))
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(io.Discard) })
+
+	done := make(chan struct{})
+	go func() {
+		detectAbandonedOrders(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("detectAbandonedOrders did not return after its context was cancelled")
+	}
+
+	got := calls()
+	if len(got) != 1 || got[0].Path != "/status" || got[0].Body["order_id"] != float64(5) {
+		t.Errorf("calls = %+v, want only the cancel for order 5", got)
+	}
+	// Orders 6 and 7 are left for the next run, not tried and failed
+	if !strings.Contains(logs.String(), "2 orders left for the next run") || strings.Contains(logs.String(), "order #6") {
+		t.Errorf("logs = %q, want the loop to stop before order 6", logs.String())
+	}
+}
+
+func TestDetectAbandonedOrdersCancelledBeforeStart(t *testing.T) {
+	calls := fakeBackends(t, func(string, int) int { return http.StatusOK })
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("WHERE status = 'pending'")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	detectAbandonedOrders(ctx)
+
+	if got := calls(); len(got) != 0 {
+		t.Errorf("calls = %+v, want none", got)
+	}
 }
 
 func TestDetectAbandonedOrdersQueryError(t *testing.T) {
@@ -190,7 +250,7 @@ func TestDetectAbandonedOrdersQueryError(t *testing.T) {
 	mock := mockDB(t)
 	mock.ExpectQuery(sqlText("WHERE status = 'pending'")).WillReturnError(errors.New("db down"))
 
-	detectAbandonedOrders()
+	detectAbandonedOrders(context.Background())
 
 	if got := calls(); len(got) != 0 {
 		t.Errorf("calls = %+v, want none", got)
@@ -216,7 +276,7 @@ func TestCallService(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, err := callService(http.MethodPut, tt.url, map[string]int{"order_id": 1})
+			code, err := callService(context.Background(), http.MethodPut, tt.url, map[string]int{"order_id": 1})
 			if (err != nil) != tt.wantErr || code != tt.wantCode {
 				t.Fatalf("callService = %d, %v; want %d, err %v", code, err, tt.wantCode, tt.wantErr)
 			}
@@ -270,6 +330,36 @@ func TestRunEveryFinishesRunningJob(t *testing.T) {
 	}
 	if n := runs.Load(); n != 1 {
 		t.Errorf("job ran %d times, want 1: no run may start after cancel", n)
+	}
+}
+
+// Pins #19: the scheduler waits for running jobs, but not past the bound.
+func TestWaitTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		jobTime time.Duration
+		want    bool
+	}{
+		{"job finishes in time", 0, true},
+		{"job outlasts the bound", time.Second, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				time.Sleep(tt.jobTime)
+			}()
+			start := time.Now()
+			if got := waitTimeout(&wg, 100*time.Millisecond); got != tt.want {
+				t.Errorf("waitTimeout = %v, want %v", got, tt.want)
+			}
+			if waited := time.Since(start); waited > 500*time.Millisecond {
+				t.Errorf("waited %s, want at most the 100ms bound", waited)
+			}
+			wg.Wait()
+		})
 	}
 }
 

@@ -45,7 +45,8 @@ Steps 2 and 3 can take 35 seconds together, so set `terminationGracePeriodSecond
 
 The worker finishes its current batch and abandons any messages received after SIGTERM, so Service Bus redelivers them. It then closes its receiver and client.
 
-The scheduler starts no new job runs and waits for a running job to finish. It then stops its health server and closes the database pool.
+The scheduler starts no new job runs. It waits up to `SHUTDOWN_TIMEOUT`, a Go duration, default `20s`, for a running job to finish. `abandoned_carts` aborts its call in flight and leaves the remaining orders for the next run. The scheduler then stops its health server and closes the database pool, inside the default 30-second grace period.
+
 ## Services
 
 <!--
@@ -404,6 +405,7 @@ Timed background jobs that work directly on other services' tables.
 | `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
 | `HEALTH_PORT`  | No       | `8091`  | No     | Not set in compose                                                           |
 | `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL` | No | `http://<service>:<port>` | No | For cancelling abandoned orders. The defaults match compose |
+| `SHUTDOWN_TIMEOUT` | No | `20s` | No | How long SIGTERM waits for a running job. Exits on startup if it is not a Go duration. Not set in compose |
 
 **Data:** creates nothing and runs no migrations. UPDATEs `products` and `reservations` (expiry). DELETEs from `order_events`. Reads `orders`, `reservations` and `payments`.
 
