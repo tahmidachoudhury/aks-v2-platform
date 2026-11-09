@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -198,6 +199,10 @@ func TestHandleRefund(t *testing.T) {
 		{name: "rest of a partial refund", body: `{"payment_id":"pay_1"}`, status: "partially_refunded", refunded: 20.1, wantAmount: 29.9, wantMark: "refunded", want: http.StatusOK},
 		{name: "partial refund capped at what is left", body: `{"payment_id":"pay_1","amount":45}`, status: "partially_refunded", refunded: 20, wantAmount: 30, wantMark: "refunded", want: http.StatusOK},
 		{name: "nothing left", body: `{"payment_id":"pay_1"}`, status: "partially_refunded", refunded: 50, want: http.StatusConflict},
+		// Amounts are rounded to pence before the comparison, so the last
+		// refund marks the payment refunded instead of leaving a fraction
+		{name: "sub-penny amount is rounded", body: `{"payment_id":"pay_1","amount":29.8999}`, status: "partially_refunded", refunded: 20.1, wantAmount: 29.9, wantMark: "refunded", want: http.StatusOK},
+		{name: "amount rounded to pence", body: `{"payment_id":"pay_1","amount":10.006}`, status: "completed", wantAmount: 10.01, wantMark: "partially_refunded", want: http.StatusOK},
 		{name: "ledger insert fails", body: `{"payment_id":"pay_1"}`, status: "completed", ledgerErr: errors.New("db down"), wantAmount: 50, want: http.StatusInternalServerError},
 		{name: "status update fails", body: `{"payment_id":"pay_1"}`, status: "completed", updateErr: errors.New("db down"), wantAmount: 50, wantMark: "refunded", want: http.StatusInternalServerError},
 	}
@@ -260,6 +265,37 @@ func TestHandleRefund(t *testing.T) {
 				if got.Amount != tt.wantAmount {
 					t.Errorf("amount = %v, want %v", got.Amount, tt.wantAmount)
 				}
+			}
+		})
+	}
+}
+
+func TestHandleRefundTooSmall(t *testing.T) {
+	mockDB(t) // any SQL fails the test
+	rec := httptest.NewRecorder()
+	handleRefund(rec, asService(httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(`{"payment_id":"pay_1","amount":0.004}`))))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestHandleBalanceQueryErrors(t *testing.T) {
+	for _, failing := range []int{1, 2} {
+		t.Run(fmt.Sprintf("query %d fails", failing), func(t *testing.T) {
+			mock := mockDB(t)
+			q := mock.ExpectQuery(sqlText("method != 'refund'")).WithArgs("alice@example.com")
+			if failing == 1 {
+				q.WillReturnError(errors.New("db down"))
+			} else {
+				q.WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(10.0))
+				mock.ExpectQuery(sqlText("AND method = 'refund'")).WithArgs("alice@example.com").WillReturnError(errors.New("db down"))
+			}
+			req := httptest.NewRequest(http.MethodGet, "/balance/alice@example.com", nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			rec := httptest.NewRecorder()
+			handleBalance(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", rec.Code)
 			}
 		})
 	}

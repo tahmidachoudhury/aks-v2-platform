@@ -288,6 +288,14 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Work in pence, as the database does. A positive amount under half a
+	// penny rounds to nothing, and 0 would mean a full refund, so refuse it.
+	requested := math.Round(req.Amount*100) / 100
+	if req.Amount > 0 && requested <= 0 {
+		httpError(w, "amount must be at least 0.01", http.StatusBadRequest)
+		return
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		httpError(w, "transaction failed", http.StatusInternalServerError)
@@ -334,7 +342,7 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refundAmount := req.Amount
+	refundAmount := requested
 	if refundAmount <= 0 || refundAmount > remaining {
 		refundAmount = remaining
 	}
@@ -449,15 +457,21 @@ func handleBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var totalCharged, totalRefunded float64
-	db.QueryRow(
+	err := db.QueryRow(
 		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND status IN ('completed', 'partially_refunded', 'refunded') AND (method IS NULL OR method != 'refund')",
 		customerID,
 	).Scan(&totalCharged)
-
-	db.QueryRow(
-		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND method = 'refund'",
-		customerID,
-	).Scan(&totalRefunded)
+	if err == nil {
+		err = db.QueryRow(
+			"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND method = 'refund'",
+			customerID,
+		).Scan(&totalRefunded)
+	}
+	if err != nil {
+		log.Printf("balance query error: %v", err)
+		httpError(w, "query failed", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

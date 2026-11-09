@@ -281,7 +281,7 @@ Simulated charges and refunds, with a double-entry ledger.
 - `publishEvent` works as in order-service.
 - No payment provider. `rand.Intn(10)` decides success, so there is no provider key to manage.
 - `/charge` returns 500 and publishes nothing if a ledger insert or the commit fails.
-- `/refund` locks the original payment with `SELECT ... FOR UPDATE` inside its transaction, so concurrent refunds of one payment run one at a time. A `partially_refunded` payment can be refunded again, up to the original amount minus earlier refunds. An amount that is missing or above that is capped to it. A refund row cannot itself be refunded. A failed ledger insert or status update returns 500 and publishes nothing.
+- `/refund` locks the original payment with `SELECT ... FOR UPDATE` inside its transaction, so concurrent refunds of one payment run one at a time. A `partially_refunded` payment can be refunded again, up to the original amount minus earlier refunds. The amount is rounded to pence first. An amount that is missing or above what is left is capped to it, and a positive amount under half a penny returns 400. A refund row cannot itself be refunded. A failed ledger insert or status update returns 500 and publishes nothing.
 - Schema migrations run on every pod start.
 
 ### notification-service
