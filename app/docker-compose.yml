@@ -15,16 +15,25 @@ services:
     ports:
       - "6379:6379"
 
-  localstack:
-    image: localstack/localstack:3
-    ports:
-      - "4566:4566"
+  sqledge:
+    image: mcr.microsoft.com/azure-sql-edge:1.0.7@sha256:1dcc88d2d9e555d0addb0636648d0da033206978d7c5c4da044c904a0f06f58b
     environment:
-      SERVICES: sqs
-      DEFAULT_REGION: us-east-1
-      AWS_DEFAULT_REGION: us-east-1
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: LocalDev-Passw0rd
+
+  servicebus-emulator:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.1@sha256:5a96d893b245031740f7d46e0fe5ff282d24b78c4b7d761dd57590f3f010a9b3
+    ports:
+      - "5672:5672"
+      - "5300:5300"
+    environment:
+      SQL_SERVER: sqledge
+      MSSQL_SA_PASSWORD: LocalDev-Passw0rd
+      ACCEPT_EULA: "Y"
     volumes:
-      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+      - ./servicebus-emulator/Config.json:/ServiceBus_Emulator/ConfigFiles/Config.json
+    depends_on:
+      - sqledge
 
   api-gateway:
     build: ./services/api-gateway
@@ -48,14 +57,11 @@ services:
       - "8081:8081"
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/order-events
-      AWS_ENDPOINT_URL: http://localstack:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      SERVICEBUS_QUEUE: order-events
+      SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
     depends_on:
       - postgres
-      - localstack
+      - servicebus-emulator
 
   inventory-service:
     build: ./services/inventory-service
@@ -72,14 +78,11 @@ services:
       - "8083:8083"
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/order-events
-      AWS_ENDPOINT_URL: http://localstack:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      SERVICEBUS_QUEUE: order-events
+      SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
     depends_on:
       - postgres
-      - localstack
+      - servicebus-emulator
 
   notification-service:
     build: ./services/notification-service
@@ -96,30 +99,24 @@ services:
       - "8085:8085"
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/order-events
-      AWS_ENDPOINT_URL: http://localstack:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      SERVICEBUS_QUEUE: order-events
+      SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
     depends_on:
       - postgres
-      - localstack
+      - servicebus-emulator
 
   worker:
     build: ./services/worker
     environment:
-      SQS_QUEUE_URL: http://localstack:4566/000000000000/order-events
-      AWS_ENDPOINT_URL: http://localstack:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      SERVICEBUS_QUEUE: order-events
+      SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
       ORDER_SERVICE_URL: http://order-service:8081
       INVENTORY_SERVICE_URL: http://inventory-service:8082
       PAYMENT_SERVICE_URL: http://payment-service:8083
       NOTIFICATION_SERVICE_URL: http://notification-service:8084
       SHIPPING_SERVICE_URL: http://shipping-service:8085
     depends_on:
-      - localstack
+      - servicebus-emulator
 
   scheduler:
     build: ./services/scheduler
