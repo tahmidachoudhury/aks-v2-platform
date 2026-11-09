@@ -305,6 +305,46 @@ func TestHandleProxy(t *testing.T) {
 	}
 }
 
+// Pins #128: the backend sees the client's X-Forwarded-For chain with the
+// peer IP appended and no port, so the chain trusted proxies built survives.
+func TestHandleProxyForwardedFor(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Header.Get("X-Forwarded-For"))
+	}))
+	t.Cleanup(backend.Close)
+	routeAllTo(t, backend.URL)
+
+	tests := []struct {
+		name string
+		xff  []string // X-Forwarded-For lines the client sends
+		want string
+	}{
+		{"no header", nil, "192.0.2.1"},
+		{"one hop", []string{"203.0.113.7"}, "203.0.113.7, 192.0.2.1"},
+		{"chain", []string{"203.0.113.7, 10.0.0.2"}, "203.0.113.7, 10.0.0.2, 192.0.2.1"},
+		{"repeated header", []string{"203.0.113.7", "10.0.0.2"}, "203.0.113.7, 10.0.0.2, 192.0.2.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// httptest.NewRequest's peer is 192.0.2.1:1234
+			req := httptest.NewRequest(http.MethodGet, "/api/orders/", nil)
+			req.Header.Set("Authorization", "Bearer "+validToken(t))
+			for _, v := range tt.xff {
+				req.Header.Add("X-Forwarded-For", v)
+			}
+			rec := httptest.NewRecorder()
+			handleProxy(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+			}
+			if got := rec.Body.String(); got != tt.want {
+				t.Errorf("backend saw X-Forwarded-For %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandleProxyUpstreamDown(t *testing.T) {
 	down := httptest.NewServer(http.NotFoundHandler())
 	down.Close()

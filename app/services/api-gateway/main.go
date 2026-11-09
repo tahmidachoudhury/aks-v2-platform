@@ -294,7 +294,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "" {
 				r.URL.Path = "/"
 			}
-			r.Header.Set("X-Forwarded-For", r.RemoteAddr)
 			r.Header.Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 
 			proxy.ServeHTTP(w, r)
