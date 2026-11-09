@@ -40,18 +40,7 @@ func main() {
 	}
 
 	dashboardURL := getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086")
-
-	// Service routes - internal service URLs
-	routes = map[string]string{
-		"/api/orders":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
-		"/api/inventory":     getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
-		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
-		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
-		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
-		// dashboard-api serves under /dashboard. The proxy joins the target's path
-		// to the stripped one, so /api/dashboard/summary reaches /dashboard/summary.
-		"/api/dashboard": dashboardURL + "/dashboard",
-	}
+	routes = newRoutes(dashboardURL)
 
 	// Comma-separated CIDRs, such as Traefik's pod range. Empty means trust no proxy.
 	for _, cidr := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
@@ -82,21 +71,10 @@ func main() {
 		}
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("/healthz", handleHealth)
-	mux.HandleFunc("/auth/login", handleLogin)
-	mux.HandleFunc("/auth/register", handleRegister)
-
-	// The dashboard UI page, served by dashboard-api, without a JWT. This puts
-	// it on the same origin as /auth and /api, where it sends its calls. The
-	// page holds no data: its /api/dashboard calls go through handleProxy.
-	dashboard, err := url.Parse(dashboardURL)
+	mux, err := newMux(dashboardURL)
 	if err != nil {
 		log.Fatalf("invalid DASHBOARD_SERVICE_URL: %v", err)
 	}
-	mux.Handle("GET /{$}", httputil.NewSingleHostReverseProxy(dashboard))
-	mux.HandleFunc("/", handleProxy)
 
 	port := getEnv("PORT", "8080")
 	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
@@ -136,6 +114,39 @@ func main() {
 	if redisClient != nil {
 		redisClient.Close()
 	}
+}
+
+// newRoutes maps each /api prefix to the internal URL of its service.
+func newRoutes(dashboardURL string) map[string]string {
+	return map[string]string{
+		"/api/orders":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
+		"/api/inventory":     getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
+		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
+		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
+		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
+		// dashboard-api serves under /dashboard. The proxy joins the target's path
+		// to the stripped one, so /api/dashboard/summary reaches /dashboard/summary.
+		"/api/dashboard": dashboardURL + "/dashboard",
+	}
+}
+
+func newMux(dashboardURL string) (*http.ServeMux, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/healthz", handleHealth)
+	mux.HandleFunc("/auth/login", handleLogin)
+	mux.HandleFunc("/auth/register", handleRegister)
+
+	// The dashboard UI page, served by dashboard-api, without a JWT. This puts
+	// it on the same origin as /auth and /api, where it sends its calls. The
+	// page holds no data: its /api/dashboard calls go through handleProxy.
+	dashboard, err := url.Parse(dashboardURL)
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("GET /{$}", httputil.NewSingleHostReverseProxy(dashboard))
+	mux.HandleFunc("/", handleProxy)
+	return mux, nil
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
