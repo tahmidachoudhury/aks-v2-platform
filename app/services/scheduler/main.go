@@ -176,7 +176,7 @@ func detectAbandonedOrders() {
 	cutoff := time.Now().Add(-30 * time.Minute)
 
 	rows, err := db.Query(
-		`SELECT id, customer_id FROM orders
+		`SELECT id FROM orders
 		 WHERE status = 'pending' AND created_at < $1`,
 		cutoff,
 	)
@@ -184,42 +184,38 @@ func detectAbandonedOrders() {
 		log.Printf("abandoned_carts query error: %v", err)
 		return
 	}
-	type order struct {
-		id         int
-		customerID string
-	}
-	var orders []order
+	var orders []int
 	for rows.Next() {
-		var o order
-		if err := rows.Scan(&o.id, &o.customerID); err != nil {
+		var id int
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			log.Printf("abandoned_carts scan error: %v", err)
 			return
 		}
-		orders = append(orders, o)
+		orders = append(orders, id)
 	}
 	rows.Close()
 
 	count := 0
-	for _, o := range orders {
+	for _, id := range orders {
 		// Cancel through order-service's state machine, which writes the
 		// order_events row and publishes order.status_changed
 		code, err := callService(http.MethodPut, services["order"]+"/status",
-			map[string]interface{}{"order_id": o.id, "new_status": "cancelled"})
+			map[string]interface{}{"order_id": id, "new_status": "cancelled"})
 		if err != nil || code != http.StatusOK {
-			log.Printf("abandoned_carts: cancelling order #%d failed (status %d): %v", o.id, code, err)
+			log.Printf("abandoned_carts: cancelling order #%d failed (status %d): %v", id, code, err)
 			continue
 		}
 
 		// Release the reserved stock. If this fails, expire_reservations
 		// releases it once the reservation expires.
 		code, err = callService(http.MethodPost, services["inventory"]+"/release",
-			map[string]interface{}{"order_id": o.id})
+			map[string]interface{}{"order_id": id})
 		if err != nil || code != http.StatusOK {
-			log.Printf("abandoned_carts: releasing stock for order #%d failed (status %d): %v", o.id, code, err)
+			log.Printf("abandoned_carts: releasing stock for order #%d failed (status %d): %v", id, code, err)
 		}
 
-		log.Printf("Cancelled abandoned order #%d (customer: %s)", o.id, o.customerID)
+		log.Printf("Cancelled abandoned order #%d", id)
 		count++
 	}
 

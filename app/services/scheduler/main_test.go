@@ -151,9 +151,9 @@ func TestDetectAbandonedOrders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := fakeBackends(t, tt.status)
 			mock := mockDB(t)
-			rows := sqlmock.NewRows([]string{"id", "customer_id"})
+			rows := sqlmock.NewRows([]string{"id"})
 			for _, id := range tt.orders {
-				rows.AddRow(id, "alice@example.com")
+				rows.AddRow(id)
 			}
 			// Only the read is expected. sqlmock fails any other statement.
 			mock.ExpectQuery(sqlText("WHERE status = 'pending' AND created_at < $1")).
@@ -179,7 +179,7 @@ func TestDetectAbandonedOrdersBackendDown(t *testing.T) {
 
 	mock := mockDB(t)
 	mock.ExpectQuery(sqlText("WHERE status = 'pending'")).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "customer_id"}).AddRow(5, "alice@example.com"))
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
 
 	// Must log and move on, not panic or block
 	detectAbandonedOrders()
