@@ -3,15 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 )
 
-// Event represents a message from SQS
+// Event represents a message from Service Bus
 type Event struct {
 	Type      string                 `json:"type"`
 	Payload   map[string]interface{} `json:"payload"`
@@ -19,9 +23,20 @@ type Event struct {
 }
 
 func main() {
-	sqsQueue := os.Getenv("SQS_QUEUE_URL")
-	if sqsQueue == "" {
-		log.Fatal("SQS_QUEUE_URL is required")
+	queue := os.Getenv("SERVICEBUS_QUEUE")
+	if queue == "" {
+		log.Fatal("SERVICEBUS_QUEUE is required")
+	}
+
+	sbClient, err := newServiceBusClient()
+	if err != nil {
+		log.Fatalf("Failed to create Service Bus client: %v", err)
+	}
+	receiver, err := sbClient.NewReceiverForQueue(queue, &azservicebus.ReceiverOptions{
+		ReceiveMode: azservicebus.ReceiveModePeekLock,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create Service Bus receiver: %v", err)
 	}
 
 	// Internal service URLs for event-driven calls
@@ -58,45 +73,78 @@ func main() {
 		cancel()
 	}()
 
-	log.Println("Worker started, polling SQS for events...")
-	pollAndProcess(ctx, sqsQueue, services)
+	log.Printf("Worker started, receiving events from Service Bus queue %s...", queue)
+	pollAndProcess(ctx, receiver, services)
+
+	receiver.Close(context.Background())
+	sbClient.Close(context.Background())
 }
 
-func pollAndProcess(ctx context.Context, queueURL string, services map[string]string) {
+func newServiceBusClient() (*azservicebus.Client, error) {
+	if connStr := os.Getenv("SERVICEBUS_CONNECTION_STRING"); connStr != "" {
+		return azservicebus.NewClientFromConnectionString(connStr, nil)
+	}
+	namespace := os.Getenv("SERVICEBUS_NAMESPACE")
+	if namespace == "" {
+		return nil, errors.New("SERVICEBUS_CONNECTION_STRING or SERVICEBUS_NAMESPACE is required")
+	}
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, err
+	}
+	return azservicebus.NewClient(namespace, cred, nil)
+}
+
+func pollAndProcess(ctx context.Context, receiver *azservicebus.Receiver, services map[string]string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	for {
-		select {
-		case <-ctx.Done():
+		messages, err := receiver.ReceiveMessages(ctx, 10, nil)
+		if ctx.Err() != nil {
 			log.Println("Worker stopped")
 			return
-		default:
-			messages := receiveSQSMessages(ctx, queueURL)
+		}
+		if err != nil {
+			log.Printf("Failed to receive messages: %v", err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
 
-			for _, raw := range messages {
-				var event Event
-				if err := json.Unmarshal([]byte(raw), &event); err != nil {
-					log.Printf("Failed to parse event: %v", err)
-					continue
-				}
-
-				log.Printf("Processing event: %s", event.Type)
-
-				if err := handleEvent(client, services, event); err != nil {
-					log.Printf("Failed to handle event %s: %v", event.Type, err)
-					// In production: don't delete from SQS, let it retry or go to DLQ
-					continue
-				}
-
-				log.Printf("Successfully processed: %s", event.Type)
-				// Delete message from SQS after successful processing
+		for _, msg := range messages {
+			var event Event
+			if err := json.Unmarshal(msg.Body, &event); err != nil {
+				log.Printf("Failed to parse event: %v", err)
+				abandon(receiver, msg)
+				continue
 			}
 
-			if len(messages) == 0 {
-				time.Sleep(5 * time.Second)
+			log.Printf("Processing event: %s", event.Type)
+
+			if err := handleEvent(client, services, event); err != nil {
+				log.Printf("Failed to handle event %s: %v", event.Type, err)
+				// Abandon so Service Bus redelivers, then dead-letters after max delivery count
+				abandon(receiver, msg)
+				continue
 			}
+
+			if err := receiver.CompleteMessage(context.Background(), msg, nil); err != nil {
+				log.Printf("Failed to complete message %s: %v", msg.MessageID, err)
+				continue
+			}
+			log.Printf("Successfully processed: %s", event.Type)
 		}
 	}
+}
+
+func abandon(receiver *azservicebus.Receiver, msg *azservicebus.ReceivedMessage) {
+	if err := receiver.AbandonMessage(context.Background(), msg, nil); err != nil {
+		log.Printf("Failed to abandon message %s: %v", msg.MessageID, err)
+		return
+	}
+	log.Printf("Abandoned message %s (delivery %d)", msg.MessageID, msg.DeliveryCount)
 }
 
 func handleEvent(client *http.Client, services map[string]string, event Event) error {
@@ -174,15 +222,6 @@ func handleEvent(client *http.Client, services map[string]string, event Event) e
 
 	_ = client
 	_ = services
-	return nil
-}
-
-func receiveSQSMessages(ctx context.Context, queueURL string) []string {
-	// Students implement with AWS SDK SQS ReceiveMessage
-	// Use long polling: WaitTimeSeconds = 20
-	// MaxNumberOfMessages = 10
-	// Honour ctx during the long-poll so SIGTERM unblocks cleanly
-	_ = ctx
 	return nil
 }
 
