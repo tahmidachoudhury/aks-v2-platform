@@ -182,18 +182,46 @@
         const API = window.location.origin;
         let token = localStorage.getItem('token') || '';
 
+        let login = null;
+
+        // Log in and save the token. Calls made during a login share it. A
+        // failed login leaves no token.
+        function logIn() {
+            login = login || fetch(API + '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' })
+            })
+            .then(r => r.ok ? r.json() : {})
+            .then(d => { if (d.token) { token = d.token; localStorage.setItem('token', token); } })
+            .catch(() => {})
+            .finally(() => { login = null; });
+            return login;
+        }
+
         // Auto-login on load
-        const loggedIn = token ? Promise.resolve() : fetch(API + '/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' })
-        })
-        .then(r => r.json())
-        .then(d => { token = d.token; localStorage.setItem('token', token); })
-        .catch(() => {});
+        const loggedIn = token ? Promise.resolve() : logIn();
 
         function headers() {
-            return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
+            const h = { 'Content-Type': 'application/json' };
+            if (token) h.Authorization = 'Bearer ' + token;
+            return h;
+        }
+
+        // fetch an /api/* path with the token. On a 401 the token has gone bad:
+        // drop it, log in again (unless another call already has) and retry once.
+        async function api(path, opts = {}) {
+            const sent = token;
+            const r = await fetch(API + path, { ...opts, headers: headers() });
+            if (r.status !== 401) return r;
+            if (token === sent) {
+                token = '';
+                localStorage.removeItem('token');
+                await logIn();
+            } else {
+                await login;
+            }
+            return token ? fetch(API + path, { ...opts, headers: headers() }) : r;
         }
 
         function toast(msg, error) {
@@ -226,7 +254,7 @@
         // --- Stats ---
         async function loadStats() {
             try {
-                const r = await fetch(API + '/api/dashboard/summary', { headers: headers() });
+                const r = await api('/api/dashboard/summary');
                 const d = await r.json();
                 document.getElementById('stats').innerHTML = `
                     <div class="card"><div class="card-label">Total Orders</div><div class="card-value blue">${d.orders?.total || 0}</div></div>
@@ -241,7 +269,7 @@
         // --- Orders ---
         async function loadOrders() {
             try {
-                const r = await fetch(API + '/api/orders/', { headers: headers() });
+                const r = await api('/api/orders/');
                 const orders = await r.json();
                 const tbody = document.getElementById('orders-table');
                 if (!orders || !orders.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:#8b949e">No orders yet</td></tr>'; return; }
@@ -268,8 +296,8 @@
             if (!product || !price) { toast('Fill in product, qty and price', true); return; }
 
             try {
-                const r = await fetch(API + '/api/orders/', {
-                    method: 'POST', headers: headers(),
+                const r = await api('/api/orders/', {
+                    method: 'POST',
                     body: JSON.stringify({ items: [{ product_id: product, quantity: qty, price: price }] })
                 });
                 const d = await r.json();
@@ -280,8 +308,8 @@
 
         async function advanceOrder(id, status) {
             try {
-                const r = await fetch(API + '/api/orders/status', {
-                    method: 'PUT', headers: headers(),
+                const r = await api('/api/orders/status', {
+                    method: 'PUT',
                     body: JSON.stringify({ order_id: id, new_status: status })
                 });
                 if (r.ok) { toast(`Order #${id} -> ${status}`); refreshAll(); }
@@ -292,7 +320,7 @@
         // --- Inventory ---
         async function loadInventory() {
             try {
-                const r = await fetch(API + '/api/inventory/products', { headers: headers() });
+                const r = await api('/api/inventory/products');
                 const products = await r.json();
                 const tbody = document.getElementById('inventory-table');
                 if (!products || !products.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:#8b949e">No products yet</td></tr>'; return; }
@@ -314,8 +342,8 @@
             };
             if (!data.id || !data.name) { toast('Fill in product details', true); return; }
             try {
-                const r = await fetch(API + '/api/inventory/products', {
-                    method: 'POST', headers: headers(),
+                const r = await api('/api/inventory/products', {
+                    method: 'POST',
                     body: JSON.stringify(data)
                 });
                 if (r.ok) { toast('Product added'); refreshAll(); }
@@ -326,7 +354,7 @@
         // --- Payments ---
         async function loadPayments() {
             try {
-                const r = await fetch(API + '/api/dashboard/revenue', { headers: headers() });
+                const r = await api('/api/dashboard/revenue');
                 const d = await r.json();
                 document.getElementById('revenue-info').innerHTML = `
                     <div class="grid">
@@ -338,7 +366,7 @@
             } catch(e) {}
 
             try {
-                const r = await fetch(API + '/api/payments/ledger', { headers: headers() });
+                const r = await api('/api/payments/ledger');
                 const entries = await r.json();
                 const tbody = document.getElementById('ledger-table');
                 if (!entries || !entries.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:#8b949e">No entries</td></tr>'; return; }
@@ -351,7 +379,7 @@
         // --- Shipping ---
         async function loadShipping() {
             try {
-                const r = await fetch(API + '/api/shipping/shipments', { headers: headers() });
+                const r = await api('/api/shipping/shipments');
                 const shipments = await r.json();
                 const tbody = document.getElementById('shipping-table');
                 if (!shipments || !shipments.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:#8b949e">No shipments</td></tr>'; return; }
@@ -361,7 +389,7 @@
             } catch(e) {}
 
             try {
-                const r = await fetch(API + '/api/dashboard/shipping/overview', { headers: headers() });
+                const r = await api('/api/dashboard/shipping/overview');
                 const d = await r.json();
                 const statuses = Object.entries(d.by_status || {}).map(([k,v]) => `${badge(k)} ${v}`).join('&nbsp;&nbsp;');
                 const carriers = Object.entries(d.by_carrier || {}).map(([k,v]) => `${k}: ${v}`).join(', ');
@@ -375,7 +403,7 @@
         // --- Notifications ---
         async function loadNotifications() {
             try {
-                const r = await fetch(API + '/api/notifications/history', { headers: headers() });
+                const r = await api('/api/notifications/history');
                 const notifs = await r.json();
                 const tbody = document.getElementById('notif-table');
                 if (!notifs || !notifs.length) { tbody.innerHTML = '<tr><td colspan="6" style="color:#8b949e">No notifications</td></tr>'; return; }

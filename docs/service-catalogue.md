@@ -459,7 +459,7 @@ Admin dashboard UI and read-only analytics over the shared database.
 
 **Events:** none.
 
-**Outbound calls:** none from the server. The UI calls its own origin (`window.location.origin`) for `/auth/login` and `/api/*`, including `/api/dashboard/*`, with the JWT from its auto-login.
+**Outbound calls:** none from the server. The UI calls its own origin (`window.location.origin`) for `/auth/login` and `/api/*`, including `/api/dashboard/*`, with the JWT from its auto-login. On a 401 from `/api/*`, the UI drops its saved token, logs in again and retries the call once.
 
 **Notes:**
 
