@@ -2,8 +2,7 @@ FROM golang:1.22@sha256:1cf6c45ba39db9fd6db16922041d074a63c935556a05c5ccb62d1810
 
 WORKDIR /app
 
-# worker has no dependencies, so there is no go.sum to copy
-COPY go.mod ./
+COPY go.mod go.sum ./
 
 RUN go mod download
 

@@ -30,7 +30,7 @@ Seven services connect to one Postgres database, `orders`, as one user, `app`. O
 | `shipment.created`     | shipping-service | worker (log only)                                   |
 | `shipment.<status>`    | shipping-service | worker handles `shipment.delivered` only (log only) |
 
-No event reaches a consumer today. Every `publishEvent` only logs, and the worker's receive is a stub.
+Every event goes to one Service Bus queue, `order-events`. The worker receives all of them, but its handlers only log, so no event changes anything downstream yet.
 
 ## Services
 
@@ -73,7 +73,7 @@ Order lifecycle and the status state machine.
 
 |               |                                                                                 |
 | ------------- | ------------------------------------------------------------------------------- |
-| **Language**  | Go 1.22, `lib/pq`                                                               |
+| **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                 |
 | **Port**      | `PORT`, default `8081`                                                          |
 | **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                 |
 | **Called by** | api-gateway (proxies `/api/orders`), worker (intends to `PUT /status`, stubbed) |
@@ -90,12 +90,13 @@ Order lifecycle and the status state machine.
 
 **Environment variables**
 
-| Variable                                                                       | Required | Default | Secret   | Notes                                                                                            |
-| ------------------------------------------------------------------------------ | -------- | ------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `DATABASE_URL`                                                                 | Yes      | none    | Yes      | Exits on startup if unset                                                                        |
-| `PORT`                                                                         | No       | `8081`  | No       |                                                                                                  |
-| `SQS_QUEUE_URL`                                                                | No       | none    | No       | If unset, events are only logged                                                                 |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | No       | none    | Keys yes | Set in compose for LocalStack only. The code never reads them. Removed with the Service Bus swap |
+| Variable                       | Required | Default | Secret | Notes                                                                                                                                    |
+| ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset                                                                                                                |
+| `PORT`                         | No       | `8081`  | No     |                                                                                                                                          |
+| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
+| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
+| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `orders` and `order_events` in `migrate()` at startup with `CREATE TABLE IF NOT EXISTS`. It is the only service that inserts into them. Every create and status change writes an `order_events` row. It is not the only writer: scheduler UPDATEs `orders` to cancel abandoned orders and DELETEs `order_events` rows older than 90 days. scheduler and dashboard-api read `orders`.
 
@@ -105,7 +106,7 @@ Order lifecycle and the status state machine.
 
 **Notes:**
 
-- `publishEvent` sends nothing. It builds the JSON and logs it. The SQS `SendMessage` call is a stub ("Students implement actual SQS SendMessage here"). P1-01 writes the real Service Bus publisher, not a client swap.
+- `publishEvent` sends the `{type, payload, timestamp}` JSON to Service Bus, with `Subject` set to the event type. The sender is created once at startup. A failed send is logged and the request still succeeds, so an event is lost if the bus is down. There is no outbox.
 - Schema migrations run on every pod start. Relevant to P5-04.
 - scheduler cancels `pending` orders older than 30 minutes with a direct UPDATE. That skips the state machine, writes no `order_events` row and publishes no event. See [scheduler](#scheduler).
 - A schema change to `orders` also touches scheduler and dashboard-api.
@@ -202,7 +203,7 @@ Simulated charges and refunds, with a double-entry ledger.
 
 |               |                                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Language**  | Go 1.22, `lib/pq`                                                                                                                     |
+| **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                                       |
 | **Port**      | `PORT`, default `8083`                                                                                                                |
 | **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                                       |
 | **Called by** | api-gateway (proxies `/api/payments`), worker (intends `POST /charge` and `POST /refund`, stubbed), scheduler (comment only, no code) |
@@ -219,12 +220,13 @@ Simulated charges and refunds, with a double-entry ledger.
 
 **Environment variables**
 
-| Variable                                                                       | Required | Default | Secret   | Notes                                                                        |
-| ------------------------------------------------------------------------------ | -------- | ------- | -------- | ---------------------------------------------------------------------------- |
-| `DATABASE_URL`                                                                 | Yes      | none    | Yes      | Exits on startup if unset. Compose points it at the shared `orders` database |
-| `PORT`                                                                         | No       | `8083`  | No       |                                                                              |
-| `SQS_QUEUE_URL`                                                                | No       | none    | No       | If unset, events are only logged                                             |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | No       | none    | Keys yes | Set in compose for LocalStack only. The code never reads them                |
+| Variable                       | Required | Default | Secret | Notes                                                                                                                                    |
+| ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database                                                             |
+| `PORT`                         | No       | `8083`  | No     |                                                                                                                                          |
+| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
+| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
+| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `payments` and `ledger_entries` in `migrate()` at startup and writes both. scheduler and dashboard-api read `payments`.
 
@@ -234,7 +236,7 @@ Simulated charges and refunds, with a double-entry ledger.
 
 **Notes:**
 
-- `publishEvent` only logs. It has no stub comment like order-service, but it sends nothing either.
+- `publishEvent` works as in order-service.
 - No payment provider. `rand.Intn(10)` decides success, so there is no provider key to manage.
 - `/charge` ignores errors from the ledger inserts and the commit, then publishes the event anyway.
 - Schema migrations run on every pod start.
@@ -284,7 +286,7 @@ Shipments, tracking and carrier status webhooks.
 
 |               |                                                                                                                         |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **Language**  | Go 1.22, `lib/pq`                                                                                                       |
+| **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                         |
 | **Port**      | `PORT`, default `8085`                                                                                                  |
 | **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                         |
 | **Called by** | api-gateway (proxies `/api/shipping`, with `/api/shipping/webhook` public), worker (intends `POST /shipments`, stubbed) |
@@ -302,12 +304,13 @@ Shipments, tracking and carrier status webhooks.
 
 **Environment variables**
 
-| Variable                                                                       | Required | Default | Secret   | Notes                                                                        |
-| ------------------------------------------------------------------------------ | -------- | ------- | -------- | ---------------------------------------------------------------------------- |
-| `DATABASE_URL`                                                                 | Yes      | none    | Yes      | Exits on startup if unset. Compose points it at the shared `orders` database |
-| `PORT`                                                                         | No       | `8085`  | No       |                                                                              |
-| `SQS_QUEUE_URL`                                                                | No       | none    | No       | If unset, events are only logged                                             |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | No       | none    | Keys yes | Set in compose for LocalStack only. The code never reads them                |
+| Variable                       | Required | Default | Secret | Notes                                                                                                                                    |
+| ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database                                                             |
+| `PORT`                         | No       | `8085`  | No     |                                                                                                                                          |
+| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
+| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
+| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `shipments` and `tracking_events` in `migrate()` at startup and writes both. dashboard-api reads `shipments`.
 
@@ -317,18 +320,18 @@ Shipments, tracking and carrier status webhooks.
 
 **Notes:**
 
-- `publishEvent` only logs, as in payment-service.
+- `publishEvent` works as in order-service.
 - The webhook has no signature check and the gateway lets it through without a JWT. Anyone who can reach it can set any shipment status. That status becomes the event name without validation.
 - No carrier API. Tracking numbers are generated locally.
 - Schema migrations run on every pod start.
 
 ### worker
 
-Event consumer meant to drive the order flow across services. Today it receives nothing.
+Event consumer meant to drive the order flow across services. It receives from Service Bus, but its handlers only log.
 
 |               |                                                                                      |
 | ------------- | ------------------------------------------------------------------------------------ |
-| **Language**  | Go 1.22, standard library only                                                       |
+| **Language**  | Go 1.22, `azservicebus`, `azidentity`                                                |
 | **Port**      | No `PORT`. Health server on `HEALTH_PORT`, default `8090`. Compose publishes no port |
 | **Health**    | `/livez` always 200. `/healthz` always returns 200 `ok`. It does not check the queue |
 | **Called by** | none                                                                                 |
@@ -341,12 +344,13 @@ Event consumer meant to drive the order flow across services. Today it receives 
 
 **Environment variables**
 
-| Variable                                                                                                                | Required | Default                   | Secret   | Notes                                                                    |
-| ----------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------- | -------- | ------------------------------------------------------------------------ |
-| `SQS_QUEUE_URL`                                                                                                         | Yes      | none                      | No       | Exits on startup if unset. Otherwise unused, because receiving is a stub |
-| `HEALTH_PORT`                                                                                                           | No       | `8090`                    | No       | Not set in compose                                                       |
-| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL` | No       | `http://<service>:<port>` | No       | Read into a map that no code uses yet                                    |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                          | No       | none                      | Keys yes | Set in compose for LocalStack only. The code never reads them            |
+| Variable                                                                                                                | Required         | Default                   | Secret | Notes                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVICEBUS_QUEUE`                                                                                                      | Yes              | none                      | No     | Exits on startup if unset. Compose sets `order-events`                                                                                   |
+| `SERVICEBUS_CONNECTION_STRING`                                                                                          | One of these two | none                      | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Exits on startup if both are unset                                |
+| `SERVICEBUS_NAMESPACE`                                                                                                  | One of these two | none                      | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
+| `HEALTH_PORT`                                                                                                           | No               | `8090`                    | No     | Not set in compose                                                                                                                       |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL` | No               | `http://<service>:<port>` | No     | Read into a map that no code uses yet                                                                                                    |
 
 **Data:** none.
 
@@ -356,8 +360,8 @@ Event consumer meant to drive the order flow across services. Today it receives 
 
 **Notes:**
 
-- `receiveSQSMessages` is a stub that returns nil ("Students implement with AWS SDK SQS ReceiveMessage"). Message delete is only a comment too. The consumer has to be written, not swapped.
-- The LocalStack queue in compose has a dead-letter queue after 3 receives (`scripts/localstack-init.sh`).
+- Receives up to 10 messages at a time in PeekLock mode. A message is completed when `handleEvent` succeeds and abandoned on any failure, including a body that does not parse.
+- Compose runs the Service Bus emulator. Its queue dead-letters a message after 3 deliveries and on expiry (`servicebus-emulator/Config.json`).
 - No database.
 
 ### scheduler
