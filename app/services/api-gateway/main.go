@@ -199,6 +199,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only the gateway sets the identity headers. Drop any the client sent.
+	r.Header.Del("X-User-Email")
+	r.Header.Del("X-User-Role")
+
 	// Auth check (skip for public endpoints)
 	if !isPublicPath(r.URL.Path) {
 		claims, err := validateToken(r)

@@ -89,7 +89,7 @@ func main() {
 	port := getEnv("PORT", "8081")
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -255,15 +255,10 @@ func listOrders(w http.ResponseWriter, r *http.Request) {
 	customerID := r.Header.Get("X-User-Email")
 	status := r.URL.Query().Get("status")
 
-	query := "SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE 1=1"
-	args := []interface{}{}
-	argN := 1
+	query := "SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE customer_id = $1"
+	args := []interface{}{customerID}
+	argN := 2
 
-	if customerID != "" {
-		query += fmt.Sprintf(" AND customer_id = $%d", argN)
-		args = append(args, customerID)
-		argN++
-	}
 	if status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argN)
 		args = append(args, status)
@@ -297,10 +292,11 @@ func listOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func getOrder(w http.ResponseWriter, r *http.Request, id string) {
+	// Another customer's order gets the same 404 as a missing one
 	var o Order
 	err := db.QueryRow(
-		"SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE id = $1",
-		id,
+		"SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE id = $1 AND customer_id = $2",
+		id, r.Header.Get("X-User-Email"),
 	).Scan(&o.ID, &o.CustomerID, &o.Status, &o.Items, &o.Total, &o.Currency, &o.Notes, &o.CreatedAt, &o.UpdatedAt)
 
 	if err != nil {
@@ -441,6 +437,22 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

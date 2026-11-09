@@ -57,7 +57,7 @@ func main() {
 	port := getEnv("PORT", "8083")
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -453,6 +453,22 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

@@ -83,7 +83,7 @@ Order lifecycle and the status state machine.
 | Method | Path                 | Purpose                                                                                        |
 | ------ | -------------------- | ---------------------------------------------------------------------------------------------- |
 | GET    | `/`                  | List orders for the customer in the `X-User-Email` header                                      |
-| GET    | `/{id}`              | Get one order                                                                                  |
+| GET    | `/{id}`              | Get one order. 404 if it belongs to another customer                                           |
 | POST   | `/`                  | Create an order, publishes `order.created`                                                     |
 | PUT    | `/status`            | Move an order to a new status if the state machine allows it, publishes `order.status_changed` |
 | GET    | `/livez`, `/healthz` | Health                                                                                         |
@@ -110,7 +110,7 @@ Order lifecycle and the status state machine.
 - Schema migrations run on every pod start. Relevant to P5-04.
 - scheduler cancels `pending` orders older than 30 minutes with a direct UPDATE. That skips the state machine, writes no `order_events` row and publishes no event. See [scheduler](#scheduler).
 - A schema change to `orders` also touches scheduler and dashboard-api.
-- `GET /` without `X-User-Email` returns every order, and `GET /{id}` does not check the customer. Only the gateway should reach this service.
+- Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. `PUT /status` does not check the customer. The header can be forged by anything that reaches the service directly, so only the gateway should reach it (P6-08).
 
 ### api-gateway
 
@@ -152,7 +152,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 
 - Login and register accept any credentials. There is no user store.
 - These paths skip the JWT check: `/healthz`, `/auth/*`, `/api/shipping/webhook` and any path ending in `/healthz`.
-- With a valid JWT, the gateway sets `X-User-Email` from `sub` and `X-User-Role` from `role`. The backends trust `X-User-Email` as given. No service reads `X-User-Role`. Only the gateway should reach the backends (P6-08).
+- The gateway drops any `X-User-Email` or `X-User-Role` the client sends. With a valid JWT, it sets `X-User-Email` from `sub` and `X-User-Role` from `role`. order-service, inventory-service, payment-service, notification-service and shipping-service return 401 without `X-User-Email`, except on `/livez`, `/healthz` and shipping's `/webhook`. They trust the value as given. No service reads `X-User-Role`. Only the gateway should reach the backends (P6-08).
 - The rate limit is 100 requests a minute per client IP. The IP is the TCP peer address without the port. When the peer is in `TRUSTED_PROXIES`, the IP is the right-most `X-Forwarded-For` entry that is not itself a trusted proxy, so a client cannot choose its own counter. With `TRUSTED_PROXIES` unset, the header is ignored.
 - The `/api/dashboard` route does not match dashboard-api's paths. See [dashboard-api](#dashboard-api).
 
