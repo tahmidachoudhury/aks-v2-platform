@@ -183,16 +183,14 @@
         let token = localStorage.getItem('token') || '';
 
         // Auto-login on load
-        if (!token) {
-            fetch(API + '/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' })
-            })
-            .then(r => r.json())
-            .then(d => { token = d.token; localStorage.setItem('token', token); })
-            .catch(() => {});
-        }
+        const loggedIn = token ? Promise.resolve() : fetch(API + '/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'admin@platform.local', password: 'admin' })
+        })
+        .then(r => r.json())
+        .then(d => { token = d.token; localStorage.setItem('token', token); })
+        .catch(() => {});
 
         function headers() {
             return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
@@ -228,7 +226,7 @@
         // --- Stats ---
         async function loadStats() {
             try {
-                const r = await fetch(API + '/dashboard/summary');
+                const r = await fetch(API + '/api/dashboard/summary', { headers: headers() });
                 const d = await r.json();
                 document.getElementById('stats').innerHTML = `
                     <div class="card"><div class="card-label">Total Orders</div><div class="card-value blue">${d.orders?.total || 0}</div></div>
@@ -328,7 +326,7 @@
         // --- Payments ---
         async function loadPayments() {
             try {
-                const r = await fetch(API + '/dashboard/revenue');
+                const r = await fetch(API + '/api/dashboard/revenue', { headers: headers() });
                 const d = await r.json();
                 document.getElementById('revenue-info').innerHTML = `
                     <div class="grid">
@@ -363,7 +361,7 @@
             } catch(e) {}
 
             try {
-                const r = await fetch(API + '/dashboard/shipping/overview');
+                const r = await fetch(API + '/api/dashboard/shipping/overview', { headers: headers() });
                 const d = await r.json();
                 const statuses = Object.entries(d.by_status || {}).map(([k,v]) => `${badge(k)} ${v}`).join('&nbsp;&nbsp;');
                 const carriers = Object.entries(d.by_carrier || {}).map(([k,v]) => `${k}: ${v}`).join(', ');
@@ -396,7 +394,7 @@
                 { name: 'payment-service', url: '/api/payments/healthz' },
                 { name: 'notification-service', url: '/api/notifications/healthz' },
                 { name: 'shipping-service', url: '/api/shipping/healthz' },
-                { name: 'dashboard-api', url: '/dashboard/healthz' },
+                { name: 'dashboard-api', url: '/api/dashboard/healthz' },
             ];
 
             const grid = document.getElementById('services-grid');
@@ -429,8 +427,8 @@
             loadServices();
         }
 
-        // Auto-refresh every 10s
-        refreshAll();
+        // Auto-refresh every 10s, starting once there is a token
+        loggedIn.then(refreshAll);
         setInterval(refreshAll, 10000);
     </script>
 </body>

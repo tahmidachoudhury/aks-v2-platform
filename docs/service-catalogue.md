@@ -130,6 +130,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | POST   | `/auth/login`                                                                                                         | Return a 24-hour JWT for any email and password                               |
 | POST   | `/auth/register`                                                                                                      | Return a 24-hour JWT. Needs an email and password. Stores nothing             |
 | Any    | `/api/orders/*`, `/api/inventory/*`, `/api/payments/*`, `/api/notifications/*`, `/api/shipping/*`, `/api/dashboard/*` | Rate limit, check the JWT, strip the prefix and proxy to the matching service |
+| GET    | `/`                                                                                                                   | The dashboard UI page, proxied from dashboard-api. No JWT check or rate limit |
 | GET    | `/livez`, `/healthz`                                                                                                  | Health                                                                        |
 
 **Environment variables**
@@ -146,7 +147,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 
 **Events:** none.
 
-**Outbound calls:** reverse proxy to order-service, inventory-service, payment-service, notification-service, shipping-service and dashboard-api.
+**Outbound calls:** reverse proxy to order-service, inventory-service, payment-service, notification-service, shipping-service and dashboard-api. dashboard-api also serves the UI page at `/`.
 
 **Notes:**
 
@@ -416,7 +417,7 @@ Admin dashboard UI and read-only analytics over the shared database.
 | **Language**  | Go 1.22, `lib/pq`. The UI is embedded from `static/`                                                     |
 | **Port**      | `PORT`, default `8086`                                                                                   |
 | **Health**    | `/livez` always 200. `/healthz` and `/dashboard/healthz` ping Postgres, 503 if it fails                  |
-| **Called by** | api-gateway (proxies `/api/dashboard/*` to `/dashboard/*`), browsers that load the UI |
+| **Called by** | api-gateway (proxies `/api/dashboard/*` to `/dashboard/*`, and `/` for the UI page) |
 
 **Endpoints**
 
@@ -441,10 +442,11 @@ Admin dashboard UI and read-only analytics over the shared database.
 
 **Events:** none.
 
-**Outbound calls:** none from the server. The UI calls its own origin (`window.location.origin`) for `/auth/login`, `/api/*` and `/dashboard/*`.
+**Outbound calls:** none from the server. The UI calls its own origin (`window.location.origin`) for `/auth/login` and `/api/*`, including `/api/dashboard/*`, with the JWT from its auto-login.
 
 **Notes:**
 
-- The UI expects one origin that sends `/auth/*` and `/api/*` to api-gateway and `/dashboard/*` to dashboard-api. The ingress or HTTPRoute has to make that split.
-- `/dashboard/*` has no auth. Anyone who can reach it sees revenue and order counts.
+- The UI loads from api-gateway at `/`, so one origin serves the page, `/auth/*` and `/api/*`. The ingress or HTTPRoute sends every path to api-gateway and none to dashboard-api. Under compose, open the UI at `http://localhost:8080/`.
+- `/dashboard/*`, except `/dashboard/healthz`, returns 401 without `X-User-Email`, as on the other backends. Through the gateway that means a valid JWT. Anything that reaches dashboard-api directly can forge the header, so only the gateway should reach it (P6-08).
+- Every signed-in user can read the dashboard data. Login only issues the `customer` role and nothing checks `X-User-Role`.
 - It reads four tables that four other services own. A schema change there needs a dashboard check.

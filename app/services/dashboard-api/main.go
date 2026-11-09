@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,7 +57,7 @@ func main() {
 	port := getEnv("PORT", "8086")
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -310,6 +311,19 @@ func handleShippingOverview(w http.ResponseWriter, r *http.Request) {
 		"by_status":          statusCounts,
 		"by_carrier":         carrierCounts,
 		"avg_delivery_hours": avgDeliveryHours,
+	})
+}
+
+// requireUser rejects /dashboard/* requests without the X-User-Email header
+// that api-gateway sets from the JWT. The UI page and health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/dashboard/") && r.URL.Path != "/dashboard/healthz" &&
+			r.Header.Get("X-User-Email") == "" {
+			httpError(w, "missing user identity", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
