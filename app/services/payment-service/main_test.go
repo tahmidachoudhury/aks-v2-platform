@@ -1,0 +1,342 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
+
+func TestMain(m *testing.M) {
+	log.SetOutput(io.Discard)
+	os.Exit(m.Run())
+}
+
+// mockDB points the package-level db at a sqlmock and checks every
+// expectation was met when the test ends. Pings are expectations too.
+func mockDB(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	conn, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	db = conn
+	t.Cleanup(func() {
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet SQL expectations: %v", err)
+		}
+		conn.Close()
+	})
+	return mock
+}
+
+func sqlText(s string) string { return regexp.QuoteMeta(s) }
+
+// captureLog collects log output for the rest of the test. With no Service
+// Bus sender, publishEvent logs each event, so this shows what was published.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(io.Discard) })
+	return &buf
+}
+
+func fixCharge(t *testing.T, succeeds bool) {
+	t.Helper()
+	orig := chargeSucceeds
+	chargeSucceeds = func() bool { return succeeds }
+	t.Cleanup(func() { chargeSucceeds = orig })
+}
+
+// Pins #124: a failed ledger insert or commit fails the charge with 500 and
+// publishes nothing, instead of reporting a payment that rolled back.
+func TestHandleChargeFailures(t *testing.T) {
+	const body = `{"order_id":7,"customer_id":"alice@example.com","amount":20,"method":"card"}`
+	steps := []string{"begin", "payment", "debit", "credit", "commit"}
+	for _, failing := range steps {
+		t.Run(failing+" fails", func(t *testing.T) {
+			fixCharge(t, true)
+			// Every step after the failing one is set up to succeed, so a
+			// handler that carried on past the error would return 201. Those
+			// steps go unused, so this test does not check that all
+			// expectations were met.
+			conn, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			db = conn
+			errAt := func(step string) error {
+				if step == failing {
+					return errors.New("db error")
+				}
+				return nil
+			}
+			ok := sqlmock.NewResult(1, 1)
+			mock.ExpectBegin().WillReturnError(errAt("begin"))
+			mock.ExpectExec(sqlText("INSERT INTO payments")).WillReturnResult(ok).WillReturnError(errAt("payment"))
+			mock.ExpectExec(sqlText("'charge'")).WillReturnResult(ok).WillReturnError(errAt("debit"))
+			mock.ExpectExec(sqlText("'revenue'")).WillReturnResult(ok).WillReturnError(errAt("credit"))
+			mock.ExpectCommit().WillReturnError(errAt("commit"))
+			logs := captureLog(t)
+
+			rec := httptest.NewRecorder()
+			handleCharge(rec, httptest.NewRequest(http.MethodPost, "/charge", strings.NewReader(body)))
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500: %s", rec.Code, rec.Body)
+			}
+			if strings.Contains(logs.String(), "payment.") {
+				t.Errorf("published an event for a failed charge:\n%s", logs)
+			}
+		})
+	}
+}
+
+func TestHandleCharge(t *testing.T) {
+	tests := []struct {
+		name      string
+		method    string
+		body      string
+		succeeds  bool
+		want      int
+		wantEvent string
+	}{
+		{name: "wrong method", method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "invalid json", method: http.MethodPost, body: `{`, want: http.StatusBadRequest},
+		{name: "zero amount", method: http.MethodPost, body: `{"order_id":7,"amount":0}`, want: http.StatusBadRequest},
+		{name: "negative amount", method: http.MethodPost, body: `{"order_id":7,"amount":-5}`, want: http.StatusBadRequest},
+		{name: "completed", method: http.MethodPost, body: `{"order_id":7,"customer_id":"alice@example.com","amount":20}`, succeeds: true, want: http.StatusCreated, wantEvent: "payment.completed"},
+		{name: "declined", method: http.MethodPost, body: `{"order_id":7,"customer_id":"alice@example.com","amount":20}`, succeeds: false, want: http.StatusPaymentRequired, wantEvent: "payment.failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixCharge(t, tt.succeeds)
+			mock := mockDB(t)
+			if tt.wantEvent != "" {
+				status := "failed"
+				if tt.succeeds {
+					status = "completed"
+				}
+				mock.ExpectBegin()
+				mock.ExpectExec(sqlText("INSERT INTO payments")).
+					WithArgs(sqlmock.AnyArg(), 7, "alice@example.com", 20.0, "GBP", status, "").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				if tt.succeeds {
+					// Double entry: a debit and a matching credit
+					mock.ExpectExec(sqlText("'charge'")).WithArgs(sqlmock.AnyArg(), 20.0, "GBP", "Order #7 payment").
+						WillReturnResult(sqlmock.NewResult(1, 1))
+					mock.ExpectExec(sqlText("'revenue'")).WithArgs(sqlmock.AnyArg(), 20.0, "GBP", "Order #7 revenue").
+						WillReturnResult(sqlmock.NewResult(1, 1))
+				}
+				mock.ExpectCommit()
+			}
+			logs := captureLog(t)
+
+			rec := httptest.NewRecorder()
+			handleCharge(rec, httptest.NewRequest(tt.method, "/charge", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+			if tt.wantEvent == "" {
+				return
+			}
+			if !strings.Contains(logs.String(), tt.wantEvent) {
+				t.Errorf("no %s event in logs:\n%s", tt.wantEvent, logs)
+			}
+			var got map[string]interface{}
+			json.NewDecoder(rec.Body).Decode(&got)
+			if id, _ := got["payment_id"].(string); !strings.HasPrefix(id, "pay_") {
+				t.Errorf("payment_id = %v", got["payment_id"])
+			}
+		})
+	}
+}
+
+func TestHandleRefund(t *testing.T) {
+	paymentCols := []string{"amount", "order_id", "status", "customer_id", "currency"}
+	tests := []struct {
+		name       string
+		body       string
+		status     string // original payment status; empty means not found
+		wantAmount float64
+		wantMark   string // status the original payment moves to
+		want       int
+	}{
+		{name: "invalid json", body: `{`, want: http.StatusBadRequest},
+		{name: "unknown payment", body: `{"payment_id":"pay_1"}`, want: http.StatusNotFound},
+		{name: "payment not completed", body: `{"payment_id":"pay_1"}`, status: "failed", want: http.StatusConflict},
+		{name: "already refunded", body: `{"payment_id":"pay_1"}`, status: "refunded", want: http.StatusConflict},
+		{name: "full refund by default", body: `{"payment_id":"pay_1"}`, status: "completed", wantAmount: 50, wantMark: "'refunded'", want: http.StatusOK},
+		{name: "over-refund is capped", body: `{"payment_id":"pay_1","amount":80}`, status: "completed", wantAmount: 50, wantMark: "'refunded'", want: http.StatusOK},
+		{name: "partial refund", body: `{"payment_id":"pay_1","amount":20}`, status: "completed", wantAmount: 20, wantMark: "'partially_refunded'", want: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if tt.body != `{` {
+				q := mock.ExpectQuery(sqlText("FROM payments WHERE id = $1")).WithArgs("pay_1")
+				if tt.status == "" {
+					q.WillReturnError(sql.ErrNoRows)
+				} else {
+					q.WillReturnRows(sqlmock.NewRows(paymentCols).AddRow(50.0, 7, tt.status, "alice@example.com", "GBP"))
+				}
+			}
+			if tt.want == http.StatusOK {
+				mock.ExpectBegin()
+				mock.ExpectExec(sqlText("INSERT INTO payments")).
+					WithArgs(sqlmock.AnyArg(), 7, "alice@example.com", tt.wantAmount, "GBP", "pay_1").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectExec(sqlText("'refund'")).WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectExec(sqlText("UPDATE payments SET status = " + tt.wantMark)).WithArgs("pay_1").
+					WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			}
+
+			rec := httptest.NewRecorder()
+			handleRefund(rec, httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+			if tt.want == http.StatusOK {
+				var got struct {
+					Amount float64 `json:"amount"`
+				}
+				json.NewDecoder(rec.Body).Decode(&got)
+				if got.Amount != tt.wantAmount {
+					t.Errorf("amount = %v, want %v", got.Amount, tt.wantAmount)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleBalance(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		charged  float64
+		refunded float64
+		want     int
+	}{
+		{name: "no customer", path: "/balance/", want: http.StatusBadRequest},
+		{name: "net of refunds", path: "/balance/alice@example.com", charged: 100, refunded: 30, want: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if tt.want == http.StatusOK {
+				mock.ExpectQuery(sqlText("method != 'refund'")).WithArgs("alice@example.com").
+					WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(tt.charged))
+				mock.ExpectQuery(sqlText("AND method = 'refund'")).WithArgs("alice@example.com").
+					WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(tt.refunded))
+			}
+
+			rec := httptest.NewRecorder()
+			handleBalance(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if tt.want == http.StatusOK {
+				var got map[string]interface{}
+				json.NewDecoder(rec.Body).Decode(&got)
+				if got["net"] != tt.charged-tt.refunded {
+					t.Errorf("net = %v, want %v", got["net"], tt.charged-tt.refunded)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleLedger(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM ledger_entries")).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "payment_id", "entry_type", "debit", "credit", "currency", "description", "created_at"}).
+			AddRow(1, "pay_1", "charge", 20.0, 0.0, "GBP", "Order #7 payment", "t").
+			AddRow(2, "pay_1", "revenue", 0.0, 20.0, "GBP", "Order #7 revenue", "t"),
+	)
+
+	rec := httptest.NewRecorder()
+	handleLedger(rec, httptest.NewRequest(http.MethodGet, "/ledger", nil))
+
+	var entries []map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&entries)
+	if rec.Code != http.StatusOK || len(entries) != 2 {
+		t.Errorf("status = %d, entries = %v", rec.Code, entries)
+	}
+}
+
+// Pins #126: every path but the health checks needs X-User-Email.
+func TestRequireUser(t *testing.T) {
+	tests := []struct {
+		path string
+		user string
+		want int
+	}{
+		{"/livez", "", http.StatusOK},
+		{"/healthz", "", http.StatusOK},
+		{"/charge", "", http.StatusUnauthorized},
+		{"/refund", "", http.StatusUnauthorized},
+		{"/ledger", "", http.StatusUnauthorized},
+		{"/balance/alice@example.com", "", http.StatusUnauthorized},
+		{"/charge", "alice@example.com", http.StatusOK},
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	for _, tt := range tests {
+		t.Run(tt.path+" user="+tt.user, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.user != "" {
+				req.Header.Set("X-User-Email", tt.user)
+			}
+			rec := httptest.NewRecorder()
+			requireUser(next).ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleHealth(t *testing.T) {
+	tests := []struct {
+		name         string
+		shuttingDown bool
+		pingErr      error
+		want         int
+	}{
+		{"healthy", false, nil, http.StatusOK},
+		{"database down", false, errors.New("db down"), http.StatusServiceUnavailable},
+		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
+		{"shutting down", true, nil, http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if !tt.shuttingDown {
+				mock.ExpectPing().WillReturnError(tt.pingErr)
+			}
+			shuttingDown.Store(tt.shuttingDown)
+			t.Cleanup(func() { shuttingDown.Store(false) })
+
+			rec := httptest.NewRecorder()
+			handleHealth(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}

@@ -30,6 +30,10 @@ var (
 	sbSender *azservicebus.Sender
 )
 
+// Simulates the payment provider: 90% of charges succeed. A variable so tests
+// can fix the outcome.
+var chargeSucceeds = func() bool { return rand.Intn(10) != 0 }
+
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -178,9 +182,8 @@ func handleCharge(w http.ResponseWriter, r *http.Request) {
 		currency = "GBP"
 	}
 
-	// Simulate payment processing (90% success rate)
 	status := "completed"
-	if rand.Intn(10) == 0 {
+	if !chargeSucceeds() {
 		status = "failed"
 	}
 
