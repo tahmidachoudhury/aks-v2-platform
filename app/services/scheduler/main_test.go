@@ -232,9 +232,7 @@ func TestDetectAbandonedOrdersStopsOnCancel(t *testing.T) {
 
 func TestDetectAbandonedOrdersCancelledBeforeStart(t *testing.T) {
 	calls := fakeBackends(t, func(string, int) int { return http.StatusOK })
-	mock := mockDB(t)
-	mock.ExpectQuery(sqlText("WHERE status = 'pending'")).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
+	mockDB(t) // a cancelled context runs no query
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -297,8 +295,10 @@ func TestRunEveryFinishesRunningJob(t *testing.T) {
 	var runs atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	job := func() {
+	var jobCtx context.Context
+	job := func(ctx context.Context) {
 		if runs.Add(1) == 1 {
+			jobCtx = ctx
 			close(started)
 			<-release
 		}
@@ -316,11 +316,19 @@ func TestRunEveryFinishesRunningJob(t *testing.T) {
 		t.Fatal("job did not run on start")
 	}
 
+	// The shutdown log names the jobs it would abandon
+	if got := runningJobs(); len(got) != 1 || got[0] != "test" {
+		t.Errorf("runningJobs = %v while the job runs, want [test]", got)
+	}
+
 	cancel()
 	select {
 	case <-done:
 		t.Fatal("runEvery returned while the job was still running")
 	case <-time.After(50 * time.Millisecond):
+	}
+	if jobCtx.Err() == nil {
+		t.Error("the job's context was not cancelled with runEvery's")
 	}
 
 	close(release)
@@ -331,6 +339,63 @@ func TestRunEveryFinishesRunningJob(t *testing.T) {
 	}
 	if n := runs.Load(); n != 1 {
 		t.Errorf("job ran %d times, want 1: no run may start after cancel", n)
+	}
+	if got := runningJobs(); len(got) != 0 {
+		t.Errorf("runningJobs = %v after the job finished, want none", got)
+	}
+}
+
+// Pins #19: after shutdown starts, no job queries the database, so none is
+// left running when main closes it.
+func TestJobsStopWhenCancelled(t *testing.T) {
+	jobs := map[string]func(context.Context){
+		"expire_reservations":   expireReservations,
+		"abandoned_carts":       detectAbandonedOrders,
+		"retry_failed_payments": retryFailedPayments,
+		"daily_digest":          generateDigest,
+		"cleanup_old_events":    cleanupOldEvents,
+	}
+	for name, job := range jobs {
+		t.Run(name, func(t *testing.T) {
+			mockDB(t) // any SQL fails the test
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			job(ctx)
+		})
+	}
+}
+
+// expire_reservations stops between reservations once shutdown starts, and
+// leaves the rest active for the next run.
+func TestExpireReservationsStopsMidLoop(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("SELECT id FROM reservations")).WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2).AddRow(3))
+	mock.ExpectBegin()
+	mock.ExpectQuery(sqlText("UPDATE reservations SET status = 'expired'")).WithArgs(1).
+		WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}).AddRow("p1", 2))
+	// Shutdown starts while the first stock update runs
+	mock.ExpectExec(sqlText("UPDATE products")).WithArgs(2, "p1").
+		WillDelayFor(100 * time.Millisecond).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectRollback()
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(io.Discard) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+	start := time.Now()
+	expireReservations(ctx)
+
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Errorf("took %s, want it to stop when cancelled", waited)
+	}
+	if !strings.Contains(logs.String(), "2 reservations left for the next run") {
+		t.Errorf("logs = %q, want the loop to stop before reservation 2", logs.String())
+	}
+	// The rolled-back transaction may finish just after the job returns
+	for deadline := time.Now().Add(time.Second); mock.ExpectationsWereMet() != nil && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -369,7 +434,7 @@ func TestRunEveryRepeats(t *testing.T) {
 	var runs atomic.Int32
 	done := make(chan struct{})
 	go func() {
-		runEvery(ctx, 5*time.Millisecond, "test", func() { runs.Add(1) })
+		runEvery(ctx, 5*time.Millisecond, "test", func(context.Context) { runs.Add(1) })
 		close(done)
 	}()
 
@@ -471,7 +536,7 @@ func TestExpireReservations(t *testing.T) {
 			log.SetOutput(&logs)
 			t.Cleanup(func() { log.SetOutput(io.Discard) })
 
-			expireReservations()
+			expireReservations(context.Background())
 
 			if !strings.Contains(logs.String(), tt.want) {
 				t.Errorf("logs = %q, want %q", logs.String(), tt.want)
@@ -501,7 +566,7 @@ func TestExpireReservationsQueryErrors(t *testing.T) {
 			mock := mockDB(t)
 			tt.rows(mock)
 			// Nothing else may run: sqlmock fails any statement not expected
-			expireReservations()
+			expireReservations(context.Background())
 		})
 	}
 }
@@ -523,7 +588,7 @@ func TestCleanupOldEvents(t *testing.T) {
 			} else {
 				e.WillReturnResult(sqlmock.NewResult(0, 12))
 			}
-			cleanupOldEvents()
+			cleanupOldEvents(context.Background())
 		})
 	}
 }
@@ -537,6 +602,6 @@ func TestGenerateDigestAndRetryQueries(t *testing.T) {
 	mock.ExpectQuery(sqlText("WHERE status = 'delivered' AND updated_at >= $1")).WillReturnRows(one(4))
 	mock.ExpectQuery(sqlText("FROM payments WHERE status = 'completed'")).WillReturnRows(one(99.5))
 
-	retryFailedPayments()
-	generateDigest()
+	retryFailedPayments(context.Background())
+	generateDigest(context.Background())
 }

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -19,6 +21,9 @@ import (
 )
 
 var (
+	// running holds the names of jobs that are mid-run, for the shutdown log
+	running sync.Map
+
 	db         *sql.DB
 	httpClient = &http.Client{Timeout: 10 * time.Second}
 	services   map[string]string
@@ -88,10 +93,11 @@ func main() {
 
 	log.Println("Scheduler started")
 
-	// Run scheduled jobs. On shutdown no new run starts, and the scheduler waits
-	// up to shutdownTimeout for a running job before it closes the database.
+	// Run scheduled jobs. Each takes ctx and stops between steps once it is
+	// cancelled. On shutdown no new run starts, and the scheduler waits up to
+	// shutdownTimeout for a running job before it closes the database.
 	var jobs sync.WaitGroup
-	schedule := func(interval time.Duration, name string, fn func()) {
+	schedule := func(interval time.Duration, name string, fn func(context.Context)) {
 		jobs.Add(1)
 		go func() {
 			defer jobs.Done()
@@ -99,7 +105,7 @@ func main() {
 		}()
 	}
 	schedule(1*time.Minute, "expire_reservations", expireReservations)
-	schedule(5*time.Minute, "abandoned_carts", func() { detectAbandonedOrders(ctx) })
+	schedule(5*time.Minute, "abandoned_carts", detectAbandonedOrders)
 	schedule(15*time.Minute, "retry_failed_payments", retryFailedPayments)
 	schedule(1*time.Hour, "daily_digest", generateDigest)
 	schedule(30*time.Minute, "cleanup_old_events", cleanupOldEvents)
@@ -107,7 +113,7 @@ func main() {
 	<-ctx.Done()
 	log.Printf("Waiting up to %s for running jobs to finish", shutdownTimeout)
 	if !waitTimeout(&jobs, shutdownTimeout) {
-		log.Printf("Jobs still running after %s, stopping anyway", shutdownTimeout)
+		log.Printf("Jobs still running after %s, abandoning %s: closing the database under them", shutdownTimeout, strings.Join(runningJobs(), ", "))
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -130,14 +136,30 @@ func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	}
 }
 
-func runEvery(ctx context.Context, interval time.Duration, name string, fn func()) {
+// runningJobs lists the jobs that are mid-run, sorted.
+func runningJobs() []string {
+	var names []string
+	running.Range(func(name, _ interface{}) bool {
+		names = append(names, name.(string))
+		return true
+	})
+	sort.Strings(names)
+	return names
+}
+
+func runEvery(ctx context.Context, interval time.Duration, name string, fn func(context.Context)) {
 	log.Printf("Scheduled job '%s' every %s", name, interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	run := func() {
+		running.Store(name, true)
+		defer running.Delete(name)
+		fn(ctx)
+	}
 
 	// Run immediately on start
 	log.Printf("Running job: %s", name)
-	fn()
+	run()
 
 	for {
 		select {
@@ -149,15 +171,15 @@ func runEvery(ctx context.Context, interval time.Duration, name string, fn func(
 			}
 			log.Printf("Running job: %s", name)
 			start := time.Now()
-			fn()
+			run()
 			log.Printf("Job '%s' completed in %s", name, time.Since(start))
 		}
 	}
 }
 
 // expireReservations releases inventory reservations that have expired
-func expireReservations() {
-	rows, err := db.Query(
+func expireReservations(ctx context.Context) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT id FROM reservations
 		 WHERE status = 'active' AND expires_at < NOW()`,
 	)
@@ -182,8 +204,12 @@ func expireReservations() {
 	}
 
 	count := 0
-	for _, id := range ids {
-		released, err := expireReservation(id)
+	for i, id := range ids {
+		if ctx.Err() != nil {
+			log.Printf("expire_reservations: shutting down, %d reservations left for the next run", len(ids)-i)
+			break
+		}
+		released, err := expireReservation(ctx, id)
 		if err != nil {
 			log.Printf("expire_reservations: reservation %d: %v", id, err)
 			continue
@@ -202,8 +228,9 @@ func expireReservations() {
 // one transaction. The UPDATE claims the reservation only while it is still
 // active, so when two runs overlap, or inventory-service releases it first,
 // the stock is returned once. It reports whether this call returned it.
-func expireReservation(id int) (bool, error) {
-	tx, err := db.Begin()
+// A cancelled ctx rolls the transaction back, leaving the reservation active.
+func expireReservation(ctx context.Context, id int) (bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
@@ -241,7 +268,7 @@ func expireReservation(id int) (bool, error) {
 func detectAbandonedOrders(ctx context.Context) {
 	cutoff := time.Now().Add(-30 * time.Minute)
 
-	rows, err := db.Query(
+	rows, err := db.QueryContext(ctx,
 		`SELECT id FROM orders
 		 WHERE status = 'pending' AND created_at < $1`,
 		cutoff,
@@ -295,15 +322,18 @@ func detectAbandonedOrders(ctx context.Context) {
 }
 
 // retryFailedPayments attempts to re-process failed payments
-func retryFailedPayments() {
+func retryFailedPayments(ctx context.Context) {
 	cutoff := time.Now().Add(-1 * time.Hour)
 
 	var count int
-	db.QueryRow(
+	if err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM payments
 		 WHERE status = 'failed' AND created_at > $1`,
 		cutoff,
-	).Scan(&count)
+	).Scan(&count); err != nil {
+		log.Printf("retry_failed_payments query error: %v", err)
+		return
+	}
 
 	if count > 0 {
 		log.Printf("Found %d failed payments eligible for retry", count)
@@ -313,16 +343,28 @@ func retryFailedPayments() {
 }
 
 // generateDigest creates summary stats
-func generateDigest() {
+func generateDigest(ctx context.Context) {
 	var totalOrders, pendingOrders, completedOrders int
 	var totalRevenue float64
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 
-	db.QueryRow("SELECT COUNT(*) FROM orders WHERE created_at >= $1", today).Scan(&totalOrders)
-	db.QueryRow("SELECT COUNT(*) FROM orders WHERE status = 'pending'").Scan(&pendingOrders)
-	db.QueryRow("SELECT COUNT(*) FROM orders WHERE status = 'delivered' AND updated_at >= $1", today).Scan(&completedOrders)
-	db.QueryRow("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed' AND created_at >= $1", today).Scan(&totalRevenue)
+	// Each query runs with ctx, so a shutdown stops the digest between them
+	for _, q := range []struct {
+		dest  interface{}
+		query string
+		args  []interface{}
+	}{
+		{&totalOrders, "SELECT COUNT(*) FROM orders WHERE created_at >= $1", []interface{}{today}},
+		{&pendingOrders, "SELECT COUNT(*) FROM orders WHERE status = 'pending'", nil},
+		{&completedOrders, "SELECT COUNT(*) FROM orders WHERE status = 'delivered' AND updated_at >= $1", []interface{}{today}},
+		{&totalRevenue, "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed' AND created_at >= $1", []interface{}{today}},
+	} {
+		if err := db.QueryRowContext(ctx, q.query, q.args...).Scan(q.dest); err != nil {
+			log.Printf("daily_digest query error: %v", err)
+			return
+		}
+	}
 
 	log.Printf("Daily digest - Orders today: %d, Pending: %d, Completed: %d, Revenue: %.2f",
 		totalOrders, pendingOrders, completedOrders, totalRevenue)
@@ -331,10 +373,10 @@ func generateDigest() {
 }
 
 // cleanupOldEvents removes old tracking/audit data
-func cleanupOldEvents() {
+func cleanupOldEvents(ctx context.Context) {
 	cutoff := time.Now().AddDate(0, 0, -90) // 90 days retention
 
-	result, err := db.Exec("DELETE FROM order_events WHERE created_at < $1", cutoff)
+	result, err := db.ExecContext(ctx, "DELETE FROM order_events WHERE created_at < $1", cutoff)
 	if err != nil {
 		log.Printf("cleanup error: %v", err)
 		return

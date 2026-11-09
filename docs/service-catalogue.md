@@ -70,7 +70,7 @@ Steps 2 and 3 can take 35 seconds together, so set `terminationGracePeriodSecond
 
 The worker finishes its current batch and abandons any messages received after SIGTERM, so Service Bus redelivers them. It then closes its receiver and client.
 
-The scheduler starts no new job runs. It waits up to `SHUTDOWN_TIMEOUT`, a Go duration, default `20s`, for a running job to finish. `abandoned_carts` aborts its call in flight and leaves the remaining orders for the next run. The scheduler then stops its health server and closes the database pool, inside the default 30-second grace period.
+The scheduler starts no new job runs. It waits up to `SHUTDOWN_TIMEOUT`, a Go duration, default `20s`, for a running job to finish. Every job runs its queries and service calls with the shutdown context, so a query or call in flight is aborted and the job stops before its next step. `abandoned_carts` and `expire_reservations` leave their remaining orders and reservations for the next run. If a job still outlasts the timeout, the scheduler logs the jobs it is abandoning. The scheduler then stops its health server and closes the database pool, inside the default 30-second grace period.
 
 ## Services
 
