@@ -208,19 +208,25 @@ func handleShipments(w http.ResponseWriter, r *http.Request) {
 			CreatedAt         string `json:"created_at"`
 		}
 
+		// As in handleShipment, the nullable columns scan into Null types
 		shipments := []ShipmentSummary{}
 		for rows.Next() {
 			var s ShipmentSummary
-			var estDel, tracking sql.NullString
-			rows.Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status, &s.RecipientName,
-				&s.City, &s.Country, &estDel, &s.CreatedAt)
-			if tracking.Valid {
-				s.TrackingNumber = tracking.String
+			var tracking, recipient, city, country, estDel sql.NullString
+			if err := rows.Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status, &recipient,
+				&city, &country, &estDel, &s.CreatedAt); err != nil {
+				log.Printf("shipments scan error: %v", err)
+				httpError(w, "scan failed", http.StatusInternalServerError)
+				return
 			}
-			if estDel.Valid {
-				s.EstimatedDelivery = estDel.String
-			}
+			s.TrackingNumber, s.RecipientName, s.City, s.Country = tracking.String, recipient.String, city.String, country.String
+			s.EstimatedDelivery = estDel.String
 			shipments = append(shipments, s)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("shipments query error: %v", err)
+			httpError(w, "query failed", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -355,10 +361,16 @@ func handleShipment(w http.ResponseWriter, r *http.Request) {
 	s.TrackingNumber, s.RecipientName, s.City, s.Country = tracking.String, recipient.String, city.String, country.String
 	s.WeightKg, s.EstimatedDelivery = weight.Float64, estDel.String
 
-	// A shipment for another customer's order gets the same 404 as a missing one
+	// A shipment for another customer's order gets the same 404 as a missing
+	// one. So does a shipment whose order row is gone; any other error is a 500.
 	if !privileged(r) {
 		var owner string
 		err := db.QueryRow("SELECT customer_id FROM orders WHERE id = $1", s.OrderID).Scan(&owner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("shipment %s owner lookup error: %v", id, err)
+			httpError(w, "query failed", http.StatusInternalServerError)
+			return
+		}
 		if err != nil || !owns(r, owner) {
 			httpError(w, "shipment not found", http.StatusNotFound)
 			return

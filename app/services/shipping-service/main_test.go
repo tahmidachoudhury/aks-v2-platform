@@ -330,6 +330,42 @@ func TestHandleTrack(t *testing.T) {
 	}
 }
 
+// NULL columns come back empty, and a scan or row error is a 500 rather than
+// a partly filled list
+func TestListShipmentsNullsAndErrors(t *testing.T) {
+	cols := []string{"id", "order_id", "carrier", "tracking_number", "status", "recipient_name", "city", "country", "estimated_delivery", "created_at"}
+	tests := []struct {
+		name string
+		rows *sqlmock.Rows
+		want int
+	}{
+		{"NULL columns", sqlmock.NewRows(cols).AddRow(3, 7, "royal_mail", nil, "label_created", nil, nil, nil, nil, "t"), http.StatusOK},
+		{"scan error", sqlmock.NewRows(cols).AddRow("three", 7, "royal_mail", nil, "label_created", nil, nil, nil, nil, "t"), http.StatusInternalServerError},
+		{"row error", sqlmock.NewRows(cols).AddRow(3, 7, "royal_mail", nil, "label_created", nil, nil, nil, nil, "t").RowError(0, errors.New("connection reset")), http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			mock.ExpectQuery(sqlText("FROM shipments s ORDER BY")).WillReturnRows(tt.rows)
+
+			req := httptest.NewRequest(http.MethodGet, "/shipments", nil)
+			req.Header.Set("X-User-Role", "admin")
+			rec := httptest.NewRecorder()
+			handleShipments(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+			if tt.want == http.StatusOK {
+				var got []map[string]interface{}
+				json.NewDecoder(rec.Body).Decode(&got)
+				if len(got) != 1 || got[0]["id"] != 3.0 || got[0]["recipient_name"] != "" || got[0]["created_at"] != "t" {
+					t.Errorf("shipments = %v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateShipmentNeedsPrivilege(t *testing.T) {
 	mockDB(t) // any SQL fails the test
 	req := httptest.NewRequest(http.MethodPost, "/shipments", strings.NewReader(`{"order_id":7,"recipient_name":"Alice"}`))
@@ -390,6 +426,7 @@ func TestHandleShipmentChecksOwnership(t *testing.T) {
 		{"own order", "customer", "alice@example.com", http.StatusOK},
 		{"another customer's order", "customer", "bob@example.com", http.StatusNotFound},
 		{"order row missing", "customer", "", http.StatusNotFound},
+		{"owner lookup fails", "customer", "error", http.StatusInternalServerError},
 		{"admin", "admin", "", http.StatusOK},
 		{"service", "service", "", http.StatusOK},
 	}
@@ -401,9 +438,12 @@ func TestHandleShipmentChecksOwnership(t *testing.T) {
 					AddRow(3, 7, "royal_mail", "RM1", "label_created", "Alice", "Leeds", "GB", 1.5, "2026-11-12", "t"))
 			if tt.role == "customer" {
 				q := mock.ExpectQuery(sqlText("SELECT customer_id FROM orders WHERE id = $1")).WithArgs(7)
-				if tt.owner == "" {
+				switch tt.owner {
+				case "":
 					q.WillReturnError(sql.ErrNoRows)
-				} else {
+				case "error":
+					q.WillReturnError(errors.New("db down"))
+				default:
 					q.WillReturnRows(sqlmock.NewRows([]string{"customer_id"}).AddRow(tt.owner))
 				}
 			}
