@@ -83,37 +83,60 @@ func TestRequireUser(t *testing.T) {
 	}
 }
 
-// Pins #126: GET / returns only the caller's orders.
+// Pins #126: GET / returns only the caller's orders, unless the caller is an
+// admin or an internal service.
 func TestListOrdersFiltersByCaller(t *testing.T) {
 	tests := []struct {
 		name     string
 		url      string
+		role     string
 		wantSQL  string
 		wantArgs []driver.Value
 	}{
 		{
 			name:     "all of the caller's orders",
 			url:      "/",
-			wantSQL:  "FROM orders WHERE customer_id = $1 ORDER BY created_at DESC",
+			wantSQL:  "FROM orders WHERE 1=1 AND customer_id = $1 ORDER BY created_at DESC",
 			wantArgs: []driver.Value{"alice@example.com"},
 		},
 		{
 			name:     "status filter keeps the caller filter",
 			url:      "/?status=shipped",
-			wantSQL:  "FROM orders WHERE customer_id = $1 AND status = $2 ORDER BY",
+			wantSQL:  "FROM orders WHERE 1=1 AND customer_id = $1 AND status = $2 ORDER BY",
 			wantArgs: []driver.Value{"alice@example.com", "shipped"},
+		},
+		{
+			name:     "customer role is filtered",
+			url:      "/",
+			role:     "customer",
+			wantSQL:  "FROM orders WHERE 1=1 AND customer_id = $1 ORDER BY",
+			wantArgs: []driver.Value{"alice@example.com"},
+		},
+		{
+			name:    "admin sees every order",
+			url:     "/",
+			role:    "admin",
+			wantSQL: "FROM orders WHERE 1=1 ORDER BY created_at DESC",
+		},
+		{
+			name:     "service with a status filter",
+			url:      "/?status=pending",
+			role:     "service",
+			wantSQL:  "FROM orders WHERE 1=1 AND status = $1 ORDER BY",
+			wantArgs: []driver.Value{"pending"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
-			mock.ExpectQuery(sqlText(tt.wantSQL)).WithArgs(tt.wantArgs...).WillReturnRows(
+			mock.ExpectQuery("^" + sqlText("SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at "+tt.wantSQL)).WithArgs(tt.wantArgs...).WillReturnRows(
 				sqlmock.NewRows(orderColumns).
 					AddRow(1, "alice@example.com", "shipped", []byte(`[{"product_id":"p1","quantity":1,"price":5}]`), 5.0, "GBP", "", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
 			)
 
 			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
 			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
 			rec := httptest.NewRecorder()
 			handleOrders(rec, req)
 
@@ -143,31 +166,38 @@ func TestListOrdersQueryError(t *testing.T) {
 	}
 }
 
-// Pins #126: GET /{id} matches on the caller too, and another customer's
-// order looks the same as a missing one.
+// Pins #126: GET /{id} checks the caller owns the order, and another
+// customer's order looks the same as a missing one. Admin and service callers
+// can read any order.
 func TestGetOrderChecksOwnership(t *testing.T) {
 	tests := []struct {
 		name  string
-		found bool
+		owner string // empty: the order does not exist
+		role  string
 		want  int
 	}{
-		{"caller's own order", true, http.StatusOK},
-		{"another customer's order", false, http.StatusNotFound},
+		{"caller's own order", "alice@example.com", "customer", http.StatusOK},
+		{"another customer's order", "bob@example.com", "customer", http.StatusNotFound},
+		{"no role is a customer", "bob@example.com", "", http.StatusNotFound},
+		{"missing order", "", "customer", http.StatusNotFound},
+		{"admin reads any order", "bob@example.com", "admin", http.StatusOK},
+		{"service reads any order", "bob@example.com", "service", http.StatusOK},
+		{"unknown role is not privileged", "bob@example.com", "superuser", http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
-			q := mock.ExpectQuery(sqlText("FROM orders WHERE id = $1 AND customer_id = $2")).
-				WithArgs("7", "alice@example.com")
-			if tt.found {
+			q := mock.ExpectQuery(sqlText("FROM orders WHERE id = $1")).WithArgs("7")
+			if tt.owner != "" {
 				q.WillReturnRows(sqlmock.NewRows(orderColumns).
-					AddRow(7, "alice@example.com", "pending", []byte(`[]`), 10.0, "GBP", "", "t", "t"))
+					AddRow(7, tt.owner, "pending", []byte(`[]`), 10.0, "GBP", "", "t", "t"))
 			} else {
 				q.WillReturnError(sql.ErrNoRows)
 			}
 
 			req := httptest.NewRequest(http.MethodGet, "/7", nil)
 			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
 			rec := httptest.NewRecorder()
 			handleOrders(rec, req)
 
@@ -249,6 +279,8 @@ func TestHandleUpdateStatus(t *testing.T) {
 		method    string
 		body      string
 		current   string // empty: the order does not exist
+		owner     string // default alice@example.com, the caller
+		role      string
 		updateErr error
 		want      int
 	}{
@@ -265,16 +297,25 @@ func TestHandleUpdateStatus(t *testing.T) {
 		{name: "cancelled is final", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, current: "cancelled", want: http.StatusConflict},
 		{name: "unknown current status", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, current: "lost", want: http.StatusBadRequest},
 		{name: "update fails", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, current: "pending", updateErr: errors.New("db down"), want: http.StatusInternalServerError},
+		// Customers change only their own orders. Admin and service callers,
+		// such as the scheduler, change any.
+		{name: "another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", want: http.StatusNotFound},
+		{name: "admin on another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", role: "admin", want: http.StatusOK},
+		{name: "service on another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", role: "service", want: http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
 			if tt.method == http.MethodPut && tt.body != `{` {
-				q := mock.ExpectQuery(sqlText("SELECT status FROM orders WHERE id = $1")).WithArgs(9)
+				q := mock.ExpectQuery(sqlText("SELECT status, customer_id FROM orders WHERE id = $1")).WithArgs(9)
+				owner := tt.owner
+				if owner == "" {
+					owner = "alice@example.com"
+				}
 				if tt.current == "" {
 					q.WillReturnError(sql.ErrNoRows)
 				} else {
-					q.WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(tt.current))
+					q.WillReturnRows(sqlmock.NewRows([]string{"status", "customer_id"}).AddRow(tt.current, owner))
 				}
 			}
 			if tt.want == http.StatusOK || tt.updateErr != nil {
@@ -293,8 +334,11 @@ func TestHandleUpdateStatus(t *testing.T) {
 				}
 			}
 
+			req := httptest.NewRequest(tt.method, "/status", strings.NewReader(tt.body))
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
 			rec := httptest.NewRecorder()
-			handleUpdateStatus(rec, httptest.NewRequest(tt.method, "/status", strings.NewReader(tt.body)))
+			handleUpdateStatus(rec, req)
 
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)

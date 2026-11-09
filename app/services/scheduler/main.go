@@ -303,7 +303,8 @@ func cleanupOldEvents() {
 }
 
 // callService sends a JSON request to another service and returns the status
-// code. The backends require X-User-Email, so the scheduler names itself.
+// code. The backends require X-User-Email, so the scheduler names itself, and
+// role service lets it act on any customer's order.
 func callService(ctx context.Context, method, url string, body interface{}) (int, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -315,6 +316,7 @@ func callService(ctx context.Context, method, url string, body interface{}) (int
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-Email", "scheduler")
+	req.Header.Set("X-User-Role", "service")
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, err

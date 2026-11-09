@@ -89,7 +89,9 @@ func TestHandleSend(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			handleSend(rec, httptest.NewRequest(tt.method, "/send", strings.NewReader(tt.body)))
+			req := httptest.NewRequest(tt.method, "/send", strings.NewReader(tt.body))
+			req.Header.Set("X-User-Role", "service")
+			handleSend(rec, req)
 
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
@@ -107,14 +109,20 @@ func TestHandleSend(t *testing.T) {
 
 func TestHandleHistory(t *testing.T) {
 	cols := []string{"id", "recipient", "channel", "template", "subject", "status", "sent_at", "created_at"}
+	// The caller is alice
 	tests := []struct {
 		name     string
 		url      string
+		role     string
 		wantSQL  string
 		wantArgs []driver.Value
 	}{
-		{"everyone's", "/history", "FROM notifications ORDER BY created_at DESC", nil},
-		{"one recipient", "/history?recipient=alice@example.com", "FROM notifications WHERE recipient = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"admin sees everyone's", "/history", "admin", "FROM notifications ORDER BY created_at DESC", nil},
+		{"admin picks a recipient", "/history?recipient=bob@example.com", "admin", "FROM notifications WHERE recipient = $1 ORDER BY", []driver.Value{"bob@example.com"}},
+		{"service sees everyone's", "/history", "service", "FROM notifications ORDER BY created_at DESC", nil},
+		{"customer sees their own", "/history", "customer", "FROM notifications WHERE recipient = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"customer names themselves", "/history?recipient=alice@example.com", "customer", "FROM notifications WHERE recipient = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"no role is a customer", "/history", "", "FROM notifications WHERE recipient = $1 ORDER BY", []driver.Value{"alice@example.com"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,8 +137,11 @@ func TestHandleHistory(t *testing.T) {
 				AddRow(1, "alice@example.com", "email", "order_shipped", "Shipped", "sent", "t", "t").
 				AddRow(2, "alice@example.com", "email", "order_shipped", "Shipped", "queued", nil, "t"))
 
+			req := httptest.NewRequest(http.MethodGet, tt.url, nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
 			rec := httptest.NewRecorder()
-			handleHistory(rec, httptest.NewRequest(http.MethodGet, tt.url, nil))
+			handleHistory(rec, req)
 
 			var got []struct {
 				SentAt string `json:"sent_at"`
@@ -143,6 +154,30 @@ func TestHandleHistory(t *testing.T) {
 				t.Errorf("NULL sent_at = %q, want empty", got[1].SentAt)
 			}
 		})
+	}
+}
+
+func TestHandleHistoryOtherRecipient(t *testing.T) {
+	mockDB(t) // any SQL fails the test
+	req := httptest.NewRequest(http.MethodGet, "/history?recipient=bob@example.com", nil)
+	req.Header.Set("X-User-Email", "alice@example.com")
+	req.Header.Set("X-User-Role", "customer")
+	rec := httptest.NewRecorder()
+	handleHistory(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestHandleSendNeedsPrivilege(t *testing.T) {
+	mockDB(t) // any SQL fails the test
+	req := httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"recipient":"bob@example.com","template":"x"}`))
+	req.Header.Set("X-User-Email", "alice@example.com")
+	req.Header.Set("X-User-Role", "customer")
+	rec := httptest.NewRecorder()
+	handleSend(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
 	}
 }
 

@@ -178,6 +178,10 @@ func handleProducts(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(products)
 
 	case http.MethodPost:
+		if r.Header.Get("X-User-Role") != "admin" {
+			httpError(w, "only admins can add products", http.StatusForbidden)
+			return
+		}
 		var p struct {
 			ID    string  `json:"id"`
 			Name  string  `json:"name"`
@@ -233,6 +237,12 @@ func handleProduct(w http.ResponseWriter, r *http.Request) {
 func handleReserve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Orders reserve and release stock through internal callers, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -309,6 +319,12 @@ func handleReserve(w http.ResponseWriter, r *http.Request) {
 func handleRelease(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Orders reserve and release stock through internal callers, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -411,6 +427,18 @@ func handleLowStock(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
 }
 
 // requireUser rejects requests without the X-User-Email header that

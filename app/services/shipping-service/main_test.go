@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"io"
@@ -242,8 +243,10 @@ func TestCreateShipment(t *testing.T) {
 					WillReturnResult(sqlmock.NewResult(1, 1))
 			}
 
+			req := httptest.NewRequest(http.MethodPost, "/shipments", strings.NewReader(tt.body))
+			req.Header.Set("X-User-Role", "service")
 			rec := httptest.NewRecorder()
-			handleShipments(rec, httptest.NewRequest(http.MethodPost, "/shipments", strings.NewReader(tt.body)))
+			handleShipments(rec, req)
 
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
@@ -322,6 +325,96 @@ func TestHandleTrack(t *testing.T) {
 				if got.CurrentStatus != "in_transit" || len(got.Events) != 2 {
 					t.Errorf("response = %+v", got)
 				}
+			}
+		})
+	}
+}
+
+func TestCreateShipmentNeedsPrivilege(t *testing.T) {
+	mockDB(t) // any SQL fails the test
+	req := httptest.NewRequest(http.MethodPost, "/shipments", strings.NewReader(`{"order_id":7,"recipient_name":"Alice"}`))
+	req.Header.Set("X-User-Email", "alice@example.com")
+	req.Header.Set("X-User-Role", "customer")
+	rec := httptest.NewRecorder()
+	handleShipments(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+}
+
+// Customers list shipments for their own orders only. Admin and service
+// callers list all of them.
+func TestListShipments(t *testing.T) {
+	cols := []string{"id", "order_id", "carrier", "tracking_number", "status", "recipient_name", "city", "country", "estimated_delivery", "created_at"}
+	tests := []struct {
+		name     string
+		role     string
+		wantSQL  string
+		wantArgs []driver.Value
+	}{
+		{"customer", "customer", "FROM shipments s JOIN orders o ON o.id = s.order_id WHERE o.customer_id = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"no role is a customer", "", "WHERE o.customer_id = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"admin", "admin", "FROM shipments s ORDER BY", nil},
+		{"service", "service", "FROM shipments s ORDER BY", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			mock.ExpectQuery(sqlText(tt.wantSQL)).WithArgs(tt.wantArgs...).WillReturnRows(
+				sqlmock.NewRows(cols).AddRow(3, 7, "royal_mail", "RM1", "label_created", "Alice", "Leeds", "GB", nil, "t"))
+
+			req := httptest.NewRequest(http.MethodGet, "/shipments", nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
+			rec := httptest.NewRecorder()
+			handleShipments(rec, req)
+
+			var got []map[string]interface{}
+			json.NewDecoder(rec.Body).Decode(&got)
+			if rec.Code != http.StatusOK || len(got) != 1 {
+				t.Errorf("status = %d, shipments = %v", rec.Code, got)
+			}
+		})
+	}
+}
+
+// A shipment for another customer's order looks the same as a missing one.
+// Admin and service callers can read any.
+func TestHandleShipmentChecksOwnership(t *testing.T) {
+	tests := []struct {
+		name  string
+		role  string
+		owner string // owner of order 7; empty: the order row is missing
+		want  int
+	}{
+		{"own order", "customer", "alice@example.com", http.StatusOK},
+		{"another customer's order", "customer", "bob@example.com", http.StatusNotFound},
+		{"order row missing", "customer", "", http.StatusNotFound},
+		{"admin", "admin", "", http.StatusOK},
+		{"service", "service", "", http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			mock.ExpectQuery(sqlText("FROM shipments WHERE id = $1")).WithArgs("3").WillReturnRows(
+				sqlmock.NewRows([]string{"id", "order_id", "carrier", "tracking_number", "status", "recipient_name", "city", "country", "weight_kg", "estimated_delivery", "created_at"}).
+					AddRow(3, 7, "royal_mail", "RM1", "label_created", "Alice", "Leeds", "GB", 1.5, "2026-11-12", "t"))
+			if tt.role == "customer" {
+				q := mock.ExpectQuery(sqlText("SELECT customer_id FROM orders WHERE id = $1")).WithArgs(7)
+				if tt.owner == "" {
+					q.WillReturnError(sql.ErrNoRows)
+				} else {
+					q.WillReturnRows(sqlmock.NewRows([]string{"customer_id"}).AddRow(tt.owner))
+				}
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/shipments/3", nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
+			rec := httptest.NewRecorder()
+			handleShipment(rec, req)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
 			}
 		})
 	}

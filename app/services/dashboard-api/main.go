@@ -65,7 +65,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      requireUser(mux),
+		Handler:      requireAdmin(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -329,14 +329,20 @@ func handleShippingOverview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// requireUser rejects /dashboard/* requests without the X-User-Email header
-// that api-gateway sets from the JWT. The UI page and health checks are exempt.
-func requireUser(next http.Handler) http.Handler {
+// requireAdmin limits the /dashboard/* data to admins. It returns 401
+// without the X-User-Email header that api-gateway sets from the JWT, and 403
+// unless X-User-Role is admin. The UI page and health checks are exempt.
+func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/dashboard/") && r.URL.Path != "/dashboard/healthz" &&
-			r.Header.Get("X-User-Email") == "" {
-			httpError(w, "missing user identity", http.StatusUnauthorized)
-			return
+		if strings.HasPrefix(r.URL.Path, "/dashboard/") && r.URL.Path != "/dashboard/healthz" {
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+			if r.Header.Get("X-User-Role") != "admin" {
+				httpError(w, "admin only", http.StatusForbidden)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})

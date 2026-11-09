@@ -29,6 +29,9 @@ var (
 	// Proxies whose X-Forwarded-For the rate limit trusts, from TRUSTED_PROXIES
 	trustedProxies []*net.IPNet
 
+	// Emails whose tokens carry role admin, from ADMIN_EMAILS
+	adminEmails map[string]bool
+
 	// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
 	shuttingDown atomic.Bool
 )
@@ -38,6 +41,8 @@ func main() {
 	if len(jwtSecret) == 0 {
 		log.Fatal("JWT_SECRET is required")
 	}
+
+	adminEmails = parseEmails(os.Getenv("ADMIN_EMAILS"))
 
 	dashboardURL := getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086")
 	routes = newRoutes(dashboardURL)
@@ -178,7 +183,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	// For this project, accept any email/password and return a JWT
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  req.Email,
-		"role": "customer",
+		"role": roleFor(req.Email),
 		"exp":  time.Now().Add(24 * time.Hour).Unix(),
 		"iat":  time.Now().Unix(),
 	})
@@ -218,7 +223,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  req.Email,
 		"name": req.Name,
-		"role": "customer",
+		"role": roleFor(req.Email),
 		"exp":  time.Now().Add(24 * time.Hour).Unix(),
 		"iat":  time.Now().Unix(),
 	})
@@ -303,6 +308,27 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpError(w, "not found", http.StatusNotFound)
+}
+
+// parseEmails reads a comma-separated email list into a set, lower-cased.
+func parseEmails(list string) map[string]bool {
+	emails := map[string]bool{}
+	for _, e := range strings.Split(list, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			emails[e] = true
+		}
+	}
+	return emails
+}
+
+// roleFor is the role a token for email carries: admin for an address in
+// ADMIN_EMAILS, otherwise customer. The gateway never issues role service;
+// only internal callers send it, directly to the backends.
+func roleFor(email string) string {
+	if adminEmails[strings.ToLower(strings.TrimSpace(email))] {
+		return "admin"
+	}
+	return "customer"
 }
 
 func isPublicPath(path string) bool {

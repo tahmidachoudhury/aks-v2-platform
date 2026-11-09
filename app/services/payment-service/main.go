@@ -159,6 +159,12 @@ func handleCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Charges and refunds come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		OrderID    int     `json:"order_id"`
 		CustomerID string  `json:"customer_id"`
@@ -264,6 +270,12 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Charges and refunds come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		PaymentID string  `json:"payment_id"`
 		Amount    float64 `json:"amount"`
@@ -352,10 +364,18 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLedger(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(
-		`SELECT le.id, le.payment_id, le.entry_type, le.debit, le.credit, le.currency, le.description, le.created_at
-		 FROM ledger_entries le ORDER BY le.created_at DESC LIMIT 100`,
-	)
+	query := `SELECT le.id, le.payment_id, le.entry_type, le.debit, le.credit, le.currency, le.description, le.created_at
+		 FROM ledger_entries le`
+	args := []interface{}{}
+	// Customers see the entries for their own payments. Admin and service
+	// callers see all.
+	if !privileged(r) {
+		query += ` JOIN payments p ON p.id = le.payment_id WHERE p.customer_id = $1`
+		args = append(args, r.Header.Get("X-User-Email"))
+	}
+	query += ` ORDER BY le.created_at DESC LIMIT 100`
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		httpError(w, "query failed", http.StatusInternalServerError)
 		return
@@ -388,6 +408,10 @@ func handleBalance(w http.ResponseWriter, r *http.Request) {
 	customerID := strings.TrimPrefix(r.URL.Path, "/balance/")
 	if customerID == "" {
 		httpError(w, "customer id required", http.StatusBadRequest)
+		return
+	}
+	if !owns(r, customerID) {
+		httpError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -471,6 +495,24 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
 }
 
 // requireUser rejects requests without the X-User-Email header that

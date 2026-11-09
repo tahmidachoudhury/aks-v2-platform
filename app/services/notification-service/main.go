@@ -156,6 +156,12 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notifications come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		Recipient string                 `json:"recipient"`
 		Channel   string                 `json:"channel"`
@@ -216,6 +222,17 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 
 func handleHistory(w http.ResponseWriter, r *http.Request) {
 	recipient := r.URL.Query().Get("recipient")
+
+	// Customers see only notifications sent to them. Admin and service
+	// callers see everyone's, or one recipient's.
+	if !privileged(r) {
+		caller := r.Header.Get("X-User-Email")
+		if recipient != "" && recipient != caller {
+			httpError(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		recipient = caller
+	}
 
 	query := "SELECT id, recipient, channel, template, subject, status, sent_at, created_at FROM notifications"
 	args := []interface{}{}
@@ -283,6 +300,18 @@ func handleTemplates(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(templates)
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
 }
 
 // requireUser rejects requests without the X-User-Email header that

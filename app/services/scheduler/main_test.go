@@ -282,9 +282,10 @@ func TestCallService(t *testing.T) {
 			}
 		})
 	}
-	// The backends require X-User-Email (#126), so the scheduler names itself
+	// The backends require X-User-Email (#126), so the scheduler names itself,
+	// and role service lets it cancel any customer's order
 	got := <-headers
-	if got.Get("X-User-Email") != "scheduler" || got.Get("Content-Type") != "application/json" {
+	if got.Get("X-User-Email") != "scheduler" || got.Get("X-User-Role") != "service" || got.Get("Content-Type") != "application/json" {
 		t.Errorf("headers = %v", got)
 	}
 }

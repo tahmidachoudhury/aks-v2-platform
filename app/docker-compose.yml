@@ -42,6 +42,9 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: local-dev-secret
+      # The dashboard UI logs in as this email. Login checks no password, so
+      # set ADMIN_EMAILS only for local use.
+      ADMIN_EMAILS: admin@platform.local
       ORDER_SERVICE_URL: http://order-service:8081
       INVENTORY_SERVICE_URL: http://inventory-service:8082
       PAYMENT_SERVICE_URL: http://payment-service:8083

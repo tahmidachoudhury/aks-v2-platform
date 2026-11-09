@@ -32,6 +32,30 @@ Seven services connect to one Postgres database, `orders`, as one user, `app`. O
 
 Every event goes to one Service Bus queue, `order-events`. The worker receives all of them, but its handlers only log, so no event changes anything downstream yet.
 
+## Identity and roles
+
+api-gateway checks the JWT and sets `X-User-Email` from `sub` and `X-User-Role` from `role` on every proxied request. It drops any copy of either header the client sends. The backends trust these two headers as given.
+
+| Role       | Who                                                    | Set by                                                                       |
+| ---------- | ------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `customer` | Anyone who logs in or registers with any other email   | api-gateway                                                                  |
+| `admin`    | An email in the gateway's `ADMIN_EMAILS`               | api-gateway                                                                  |
+| `service`  | An internal caller. The scheduler sends `X-User-Email: scheduler` | The caller, straight to the backend. The gateway never issues it |
+
+A missing or unknown role counts as `customer`. Every backend applies the same rules:
+
+- Customers see and change only their own data. Lists are filtered to the caller. A record that belongs to another customer returns 404, as if it were missing. Naming another customer in the request, as in `/balance/{customer_id}` or `/history?recipient=`, returns 403.
+- `admin` and `service` see and change every customer's data.
+- Only `admin` and `service` can make these writes: inventory `/reserve` and `/release`, payment `/charge` and `/refund`, notification `/send` and shipping `POST /shipments`.
+- Only `admin` can add products and read the dashboard.
+- Any signed-in user can read products, `/low-stock`, notification `/templates` and shipping `/track/{tracking_number}`.
+
+Limits:
+
+- The headers are not signed. Anything that reaches a backend directly can claim any email and any role, including `service`. The P6-08 NetworkPolicies close this. Until then, only the gateway and internal callers should reach the backends.
+- Login checks no password, so anyone who knows an email in `ADMIN_EMAILS` gets an admin token. Compose sets `admin@platform.local`, the dashboard UI's auto-login. Set it nowhere shared until login checks credentials.
+- The worker calls no service yet. When it does, it must send `X-User-Role: service`.
+
 ## Shutdown
 
 The seven HTTP services (api-gateway, order, inventory, payment, notification, shipping and dashboard-api) handle SIGTERM in this order:
@@ -97,10 +121,10 @@ Order lifecycle and the status state machine.
 
 | Method | Path                 | Purpose                                                                                        |
 | ------ | -------------------- | ---------------------------------------------------------------------------------------------- |
-| GET    | `/`                  | List orders for the customer in the `X-User-Email` header                                      |
-| GET    | `/{id}`              | Get one order. 404 if it belongs to another customer                                           |
+| GET    | `/`                  | List the caller's orders. Admin and service callers get every order                            |
+| GET    | `/{id}`              | Get one order. 404 if it belongs to another customer, unless the caller is admin or service    |
 | POST   | `/`                  | Create an order, publishes `order.created`                                                     |
-| PUT    | `/status`            | Move an order to a new status if the state machine allows it, publishes `order.status_changed` |
+| PUT    | `/status`            | Move an order to a new status if the state machine allows it, publishes `order.status_changed`. 404 for another customer's order, unless the caller is admin or service |
 | GET    | `/livez`, `/healthz` | Health                                                                                         |
 
 **Environment variables**
@@ -124,7 +148,7 @@ Order lifecycle and the status state machine.
 - `publishEvent` sends the `{type, payload, timestamp}` JSON to Service Bus, with `Subject` set to the event type. The sender is created once at startup. A failed send is logged and the request still succeeds, so an event is lost if the bus is down. There is no outbox.
 - Schema migrations run on every pod start. Relevant to P5-04.
 - A schema change to `orders` also touches scheduler and dashboard-api.
-- Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. `PUT /status` does not check the customer. The header can be forged by anything that reaches the service directly, so only the gateway should reach it (P6-08).
+- Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. Access follows [Identity and roles](#identity-and-roles). A customer can make any transition the state machine allows on their own order, such as `delivered`, not only `cancelled`.
 
 ### api-gateway
 
@@ -152,6 +176,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | Variable                                                                                                                                         | Required | Default                   | Secret | Notes                                                                                               |
 | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ------------------------- | ------ | --------------------------------------------------------------------------------------------------- |
 | `JWT_SECRET`                                                                                                                                     | Yes      | none                      | Yes    | HS256 signing key. Exits on startup if unset                                                        |
+| `ADMIN_EMAILS` | No | none | No | Comma-separated emails whose tokens carry role `admin`, matched without case. Compose sets `admin@platform.local`, the dashboard UI's login |
 | `REDIS_URL`                                                                                                                                      | No       | none                      | No     | Rate limiting is off if unset, invalid or unreachable at startup. The compose value has no password |
 | `PORT`                                                                                                                                           | No       | `8080`                    | No     |                                                                                                     |
 | `TRUSTED_PROXIES`                                                                                                                                | No       | none                      | No     | Comma-separated CIDRs of proxies, such as Traefik, whose `X-Forwarded-For` the rate limit trusts. Exits on startup if an entry is invalid. Not set in compose |
@@ -165,9 +190,9 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 
 **Notes:**
 
-- Login and register accept any credentials. There is no user store.
+- Login and register accept any credentials. There is no user store. The token's role is `admin` for an email in `ADMIN_EMAILS` and `customer` otherwise, so anyone who knows an admin email can log in as admin. Set `ADMIN_EMAILS` only where that is acceptable, such as compose, until login checks credentials.
 - These paths skip the JWT check: `/healthz`, `/auth/*`, `/api/shipping/webhook` and any path ending in `/healthz`.
-- The gateway drops any `X-User-Email` or `X-User-Role` the client sends. With a valid JWT, it sets `X-User-Email` from `sub` and `X-User-Role` from `role`. order-service, inventory-service, payment-service, notification-service and shipping-service return 401 without `X-User-Email`, except on `/livez`, `/healthz` and shipping's `/webhook`. They trust the value as given. No service reads `X-User-Role`. Only the gateway should reach the backends (P6-08).
+- The gateway drops any `X-User-Email` or `X-User-Role` the client sends. With a valid JWT, it sets `X-User-Email` from `sub` and `X-User-Role` from `role`. order-service, inventory-service, payment-service, notification-service and shipping-service return 401 without `X-User-Email`, except on `/livez`, `/healthz` and shipping's `/webhook`. They trust both headers as given and apply [Identity and roles](#identity-and-roles). Only the gateway and internal callers should reach the backends (P6-08).
 - The rate limit is 100 requests a minute per client IP. The IP is the TCP peer address without the port. When the peer is in `TRUSTED_PROXIES`, the IP is the right-most `X-Forwarded-For` entry that is not itself a trusted proxy, so a client cannot choose its own counter. With `TRUSTED_PROXIES` unset, the header is ignored.
 - `/api/dashboard/*` reaches dashboard-api as `/dashboard/*`. The gateway strips `/api/dashboard` and the proxy target ends in `/dashboard`.
 
@@ -187,10 +212,10 @@ Product catalogue and stock reservations.
 | Method | Path                 | Purpose                                                                                            |
 | ------ | -------------------- | -------------------------------------------------------------------------------------------------- |
 | GET    | `/products`          | List up to 100 products by name, with available stock                                              |
-| POST   | `/products`          | Create a product                                                                                   |
+| POST   | `/products`          | Create a product. Admin only                                                                       |
 | Any    | `/products/{id}`     | Get one product                                                                                    |
-| POST   | `/reserve`           | Reserve stock for an order in one transaction with row locks. Reservations expire after 15 minutes |
-| POST   | `/release`           | Release an order's active reservations                                                             |
+| POST   | `/reserve`           | Reserve stock for an order in one transaction with row locks. Reservations expire after 15 minutes. Admin and service only |
+| POST   | `/release`           | Release an order's active reservations. Admin and service only                                     |
 | Any    | `/low-stock`         | Products with under 10 available                                                                   |
 | GET    | `/livez`, `/healthz` | Health                                                                                             |
 
@@ -210,7 +235,7 @@ Product catalogue and stock reservations.
 **Notes:**
 
 - Reservation expiry relies on scheduler's `expire_reservations` job. This service never expires reservations itself.
-- No role check. Any signed-in user can create products through the gateway.
+- Only `admin` can create products. Only `admin` and `service` can reserve or release stock. See [Identity and roles](#identity-and-roles).
 - Schema migrations run on every pod start.
 
 ### payment-service
@@ -228,10 +253,10 @@ Simulated charges and refunds, with a double-entry ledger.
 
 | Method | Path                     | Purpose                                                                                                                                                                       |
 | ------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/charge`                | Simulate a charge that succeeds 9 times in 10. Writes the payment and, on success, two ledger rows. Publishes `payment.completed` or `payment.failed`. Returns 402 on failure |
-| POST   | `/refund`                | Refund a completed payment in full or in part. Publishes `payment.refunded`                                                                                                   |
-| Any    | `/ledger`                | Latest 100 ledger entries                                                                                                                                                     |
-| Any    | `/balance/{customer_id}` | Charged, refunded and net totals for one customer                                                                                                                             |
+| POST   | `/charge`                | Simulate a charge that succeeds 9 times in 10. Writes the payment and, on success, two ledger rows. Publishes `payment.completed` or `payment.failed`. Returns 402 on failure. Admin and service only |
+| POST   | `/refund`                | Refund a completed payment in full or in part. Publishes `payment.refunded`. Admin and service only                                                                           |
+| Any    | `/ledger`                | Latest 100 ledger entries. Customers get only entries for their own payments                                                                                                  |
+| Any    | `/balance/{customer_id}` | Charged, refunded and net totals for one customer. 403 for a customer asking for someone else's                                                                              |
 | GET    | `/livez`, `/healthz`     | Health                                                                                                                                                                        |
 
 **Environment variables**
@@ -272,8 +297,8 @@ Simulated email and SMS sends from stored templates.
 
 | Method | Path                 | Purpose                                                             |
 | ------ | -------------------- | ------------------------------------------------------------------- |
-| POST   | `/send`              | Look up the template, record the notification as `sent` and log it  |
-| Any    | `/history`           | Latest 50 notifications, filtered by the `recipient` query if given |
+| POST   | `/send`              | Look up the template, record the notification as `sent` and log it. Admin and service only |
+| Any    | `/history`           | Latest 50 notifications, filtered by the `recipient` query if given. Customers get only their own, and 403 for another `recipient` |
 | Any    | `/templates`         | List templates                                                      |
 | GET    | `/livez`, `/healthz` | Health                                                              |
 
@@ -311,9 +336,9 @@ Shipments, tracking and carrier status webhooks.
 
 | Method | Path                       | Purpose                                                                                              |
 | ------ | -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| GET    | `/shipments`               | Latest 100 shipments                                                                                 |
-| POST   | `/shipments`               | Create a shipment with a generated tracking number. Publishes `shipment.created`                     |
-| Any    | `/shipments/{id}`          | Get one shipment                                                                                     |
+| GET    | `/shipments`               | Latest 100 shipments. Customers get only shipments for their own orders                              |
+| POST   | `/shipments`               | Create a shipment with a generated tracking number. Publishes `shipment.created`. Admin and service only |
+| Any    | `/shipments/{id}`          | Get one shipment. 404 for another customer's, unless the caller is admin or service                  |
 | Any    | `/track/{tracking_number}` | Current status and tracking events                                                                   |
 | POST   | `/webhook`                 | Carrier status update. Checks `X-Webhook-Secret`, updates the shipment, adds a tracking event and publishes `shipment.<status>` |
 | GET    | `/livez`, `/healthz`       | Health                                                                                               |
@@ -329,7 +354,7 @@ Shipments, tracking and carrier status webhooks.
 | `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
 | `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
-**Data:** creates `shipments` and `tracking_events` in `migrate()` at startup and writes both. dashboard-api reads `shipments`.
+**Data:** creates `shipments` and `tracking_events` in `migrate()` at startup and writes both. Reads `orders.customer_id` to scope shipments to a customer. dashboard-api reads `shipments`.
 
 **Events:** publishes `shipment.created` (in `createShipment`) and `shipment.<status>` (in `handleCarrierWebhook`) through `publishEvent`. The status comes from the webhook body and must be `label_created`, `in_transit`, `delivered` or `cancelled`. Consumes nothing.
 
@@ -411,7 +436,7 @@ Timed background jobs that work directly on other services' tables.
 
 **Events:** none directly. Cancelling through order-service publishes `order.status_changed`.
 
-**Outbound calls:** order-service `PUT /status` and inventory-service `POST /release` for abandoned orders, sent with `X-User-Email: scheduler`. Comments mention payment-service `/charge` for retries and notification-service for the digest, with no code.
+**Outbound calls:** order-service `PUT /status` and inventory-service `POST /release` for abandoned orders, sent with `X-User-Email: scheduler` and `X-User-Role: service`. Comments mention payment-service `/charge` for retries and notification-service for the digest, with no code.
 
 **Notes:**
 
@@ -464,6 +489,5 @@ Admin dashboard UI and read-only analytics over the shared database.
 **Notes:**
 
 - The UI loads from api-gateway at `/`, so one origin serves the page, `/auth/*` and `/api/*`. The ingress or HTTPRoute sends every path to api-gateway and none to dashboard-api. Under compose, open the UI at `http://localhost:8080/`.
-- `/dashboard/*`, except `/dashboard/healthz`, returns 401 without `X-User-Email`, as on the other backends. Through the gateway that means a valid JWT. Anything that reaches dashboard-api directly can forge the header, so only the gateway should reach it (P6-08).
-- Every signed-in user can read the dashboard data. Login only issues the `customer` role and nothing checks `X-User-Role`.
+- `/dashboard/*`, except `/dashboard/healthz`, returns 401 without `X-User-Email`, as on the other backends, and 403 unless `X-User-Role` is `admin`. Through the gateway that means a valid JWT for an email in `ADMIN_EMAILS`. Anything that reaches dashboard-api directly can forge the headers, so only the gateway should reach it (P6-08).
 - It reads four tables that four other services own. A schema change there needs a dashboard check.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"io"
@@ -92,7 +93,7 @@ func TestHandleChargeFailures(t *testing.T) {
 			logs := captureLog(t)
 
 			rec := httptest.NewRecorder()
-			handleCharge(rec, httptest.NewRequest(http.MethodPost, "/charge", strings.NewReader(body)))
+			handleCharge(rec, asService(httptest.NewRequest(http.MethodPost, "/charge", strings.NewReader(body))))
 
 			if rec.Code != http.StatusInternalServerError {
 				t.Errorf("status = %d, want 500: %s", rec.Code, rec.Body)
@@ -145,7 +146,7 @@ func TestHandleCharge(t *testing.T) {
 			logs := captureLog(t)
 
 			rec := httptest.NewRecorder()
-			handleCharge(rec, httptest.NewRequest(tt.method, "/charge", strings.NewReader(tt.body)))
+			handleCharge(rec, asService(httptest.NewRequest(tt.method, "/charge", strings.NewReader(tt.body))))
 
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
@@ -206,7 +207,7 @@ func TestHandleRefund(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			handleRefund(rec, httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(tt.body)))
+			handleRefund(rec, asService(httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(tt.body))))
 
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
@@ -228,12 +229,16 @@ func TestHandleBalance(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
+		role     string
 		charged  float64
 		refunded float64
 		want     int
 	}{
 		{name: "no customer", path: "/balance/", want: http.StatusBadRequest},
 		{name: "net of refunds", path: "/balance/alice@example.com", charged: 100, refunded: 30, want: http.StatusOK},
+		// The caller is alice. Customers see only their own balance.
+		{name: "another customer's balance", path: "/balance/bob@example.com", role: "customer", want: http.StatusForbidden},
+		{name: "admin reads another balance", path: "/balance/alice@example.com", role: "admin", charged: 5, want: http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,8 +250,14 @@ func TestHandleBalance(t *testing.T) {
 					WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(tt.refunded))
 			}
 
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
+			if tt.role == "admin" {
+				req.Header.Set("X-User-Email", "root@example.com")
+			}
 			rec := httptest.NewRecorder()
-			handleBalance(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			handleBalance(rec, req)
 
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
@@ -262,22 +273,67 @@ func TestHandleBalance(t *testing.T) {
 	}
 }
 
+// Customers see the ledger entries for their own payments only. Admin and
+// service callers see all of them.
 func TestHandleLedger(t *testing.T) {
-	mock := mockDB(t)
-	mock.ExpectQuery(sqlText("FROM ledger_entries")).WillReturnRows(
-		sqlmock.NewRows([]string{"id", "payment_id", "entry_type", "debit", "credit", "currency", "description", "created_at"}).
-			AddRow(1, "pay_1", "charge", 20.0, 0.0, "GBP", "Order #7 payment", "t").
-			AddRow(2, "pay_1", "revenue", 0.0, 20.0, "GBP", "Order #7 revenue", "t"),
-	)
-
-	rec := httptest.NewRecorder()
-	handleLedger(rec, httptest.NewRequest(http.MethodGet, "/ledger", nil))
-
-	var entries []map[string]interface{}
-	json.NewDecoder(rec.Body).Decode(&entries)
-	if rec.Code != http.StatusOK || len(entries) != 2 {
-		t.Errorf("status = %d, entries = %v", rec.Code, entries)
+	tests := []struct {
+		name     string
+		role     string
+		wantSQL  string
+		wantArgs []driver.Value
+	}{
+		{"customer", "customer", "FROM ledger_entries le JOIN payments p ON p.id = le.payment_id WHERE p.customer_id = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"no role is a customer", "", "WHERE p.customer_id = $1 ORDER BY", []driver.Value{"alice@example.com"}},
+		{"admin", "admin", "FROM ledger_entries le ORDER BY", nil},
+		{"service", "service", "FROM ledger_entries le ORDER BY", nil},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			mock.ExpectQuery(sqlText(tt.wantSQL)).WithArgs(tt.wantArgs...).WillReturnRows(
+				sqlmock.NewRows([]string{"id", "payment_id", "entry_type", "debit", "credit", "currency", "description", "created_at"}).
+					AddRow(1, "pay_1", "charge", 20.0, 0.0, "GBP", "Order #7 payment", "t").
+					AddRow(2, "pay_1", "revenue", 0.0, 20.0, "GBP", "Order #7 revenue", "t"),
+			)
+
+			req := httptest.NewRequest(http.MethodGet, "/ledger", nil)
+			req.Header.Set("X-User-Email", "alice@example.com")
+			req.Header.Set("X-User-Role", tt.role)
+			rec := httptest.NewRecorder()
+			handleLedger(rec, req)
+
+			var entries []map[string]interface{}
+			json.NewDecoder(rec.Body).Decode(&entries)
+			if rec.Code != http.StatusOK || len(entries) != 2 {
+				t.Errorf("status = %d, entries = %v", rec.Code, entries)
+			}
+		})
+	}
+}
+
+// Customers cannot charge or refund. Only internal callers and admins can.
+func TestChargeAndRefundNeedPrivilege(t *testing.T) {
+	handlers := map[string]http.HandlerFunc{"/charge": handleCharge, "/refund": handleRefund}
+	for path, h := range handlers {
+		for _, role := range []string{"", "customer"} {
+			t.Run(path+" role="+role, func(t *testing.T) {
+				mockDB(t) // any SQL fails the test
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"order_id":7,"customer_id":"bob@example.com","amount":5,"payment_id":"pay_1"}`))
+				req.Header.Set("X-User-Email", "alice@example.com")
+				req.Header.Set("X-User-Role", role)
+				rec := httptest.NewRecorder()
+				h(rec, req)
+				if rec.Code != http.StatusForbidden {
+					t.Errorf("status = %d, want 403", rec.Code)
+				}
+			})
+		}
+	}
+}
+
+func asService(req *http.Request) *http.Request {
+	req.Header.Set("X-User-Role", "service")
+	return req
 }
 
 // Pins #126: every path but the health checks needs X-User-Email.

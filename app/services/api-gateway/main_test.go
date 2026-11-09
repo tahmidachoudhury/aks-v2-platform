@@ -478,6 +478,10 @@ func unsignedToken(t *testing.T, claims jwt.MapClaims) string {
 }
 
 func TestAuthHandlers(t *testing.T) {
+	orig := adminEmails
+	adminEmails = parseEmails("root@example.com")
+	t.Cleanup(func() { adminEmails = orig })
+
 	tests := []struct {
 		name     string
 		handler  http.HandlerFunc
@@ -485,6 +489,8 @@ func TestAuthHandlers(t *testing.T) {
 		body     string
 		want     int
 		wantName string
+		wantSub  string // default alice@example.com
+		wantRole string // default customer
 	}{
 		{name: "login wrong method", handler: handleLogin, method: http.MethodGet, want: http.StatusMethodNotAllowed},
 		{name: "login invalid json", handler: handleLogin, method: http.MethodPost, body: `{`, want: http.StatusBadRequest},
@@ -494,6 +500,13 @@ func TestAuthHandlers(t *testing.T) {
 		{name: "register without password", handler: handleRegister, method: http.MethodPost, body: `{"email":"alice@example.com"}`, want: http.StatusBadRequest},
 		{name: "register without email", handler: handleRegister, method: http.MethodPost, body: `{"password":"pw"}`, want: http.StatusBadRequest},
 		{name: "register", handler: handleRegister, method: http.MethodPost, body: `{"email":"alice@example.com","password":"pw","name":"Alice"}`, want: http.StatusCreated, wantName: "Alice"},
+		// ADMIN_EMAILS decides the role, on login and register alike
+		{name: "login as an admin email", handler: handleLogin, method: http.MethodPost, body: `{"email":"root@example.com","password":"pw"}`, want: http.StatusOK,
+			wantSub: "root@example.com", wantRole: "admin"},
+		{name: "admin email in another case", handler: handleLogin, method: http.MethodPost, body: `{"email":"Root@Example.com","password":"pw"}`, want: http.StatusOK,
+			wantSub: "Root@Example.com", wantRole: "admin"},
+		{name: "register an admin email", handler: handleRegister, method: http.MethodPost, body: `{"email":"root@example.com","password":"pw"}`, want: http.StatusCreated,
+			wantSub: "root@example.com", wantRole: "admin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -517,13 +530,39 @@ func TestAuthHandlers(t *testing.T) {
 			if err != nil {
 				t.Fatalf("issued token rejected: %v", err)
 			}
-			if claims["sub"] != "alice@example.com" || claims["role"] != "customer" {
-				t.Errorf("claims = %v", claims)
+			wantSub, wantRole := tt.wantSub, tt.wantRole
+			if wantSub == "" {
+				wantSub, wantRole = "alice@example.com", "customer"
+			}
+			if claims["sub"] != wantSub || claims["role"] != wantRole {
+				t.Errorf("claims = %v, want sub %s and role %s", claims, wantSub, wantRole)
 			}
 			if tt.wantName != "" && claims["name"] != tt.wantName {
 				t.Errorf("name = %v, want %s", claims["name"], tt.wantName)
 			}
 		})
+	}
+}
+
+func TestParseEmails(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"a@x.com", []string{"a@x.com"}},
+		{" A@x.com , b@x.com,,", []string{"a@x.com", "b@x.com"}},
+	}
+	for _, tt := range tests {
+		got := parseEmails(tt.in)
+		if len(got) != len(tt.want) {
+			t.Errorf("parseEmails(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+		for _, e := range tt.want {
+			if !got[e] {
+				t.Errorf("parseEmails(%q) = %v, missing %s", tt.in, got, e)
+			}
+		}
 	}
 }
 

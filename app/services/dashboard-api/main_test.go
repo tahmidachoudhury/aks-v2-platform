@@ -43,35 +43,42 @@ func sqlText(s string) string { return regexp.QuoteMeta(s) }
 func one(v interface{}) *sqlmock.Rows { return sqlmock.NewRows([]string{"v"}).AddRow(v) }
 
 // Pins #129: the dashboard data needs X-User-Email, which only the gateway
-// sets after checking the JWT. The UI page and health checks stay open.
-func TestRequireUser(t *testing.T) {
+// sets after checking the JWT, and role admin. The UI page and health checks
+// stay open.
+func TestRequireAdmin(t *testing.T) {
 	tests := []struct {
 		path string
 		user string
+		role string
 		want int
 	}{
-		{"/dashboard/summary", "", http.StatusUnauthorized},
-		{"/dashboard/orders/stats", "", http.StatusUnauthorized},
-		{"/dashboard/revenue", "", http.StatusUnauthorized},
-		{"/dashboard/inventory/alerts", "", http.StatusUnauthorized},
-		{"/dashboard/shipping/overview", "", http.StatusUnauthorized},
-		{"/dashboard/anything-new", "", http.StatusUnauthorized},
-		{"/dashboard/summary", "alice@example.com", http.StatusOK},
-		{"/dashboard/healthz", "", http.StatusOK},
-		{"/healthz", "", http.StatusOK},
-		{"/livez", "", http.StatusOK},
-		{"/", "", http.StatusOK},
-		{"/index.html", "", http.StatusOK},
+		{"/dashboard/summary", "", "", http.StatusUnauthorized},
+		{"/dashboard/orders/stats", "", "", http.StatusUnauthorized},
+		{"/dashboard/revenue", "", "", http.StatusUnauthorized},
+		{"/dashboard/inventory/alerts", "", "", http.StatusUnauthorized},
+		{"/dashboard/shipping/overview", "", "", http.StatusUnauthorized},
+		{"/dashboard/anything-new", "", "", http.StatusUnauthorized},
+		{"/dashboard/summary", "root@example.com", "admin", http.StatusOK},
+		{"/dashboard/revenue", "root@example.com", "admin", http.StatusOK},
+		{"/dashboard/summary", "alice@example.com", "customer", http.StatusForbidden},
+		{"/dashboard/summary", "alice@example.com", "", http.StatusForbidden},
+		{"/dashboard/summary", "scheduler", "service", http.StatusForbidden},
+		{"/dashboard/healthz", "", "", http.StatusOK},
+		{"/healthz", "", "", http.StatusOK},
+		{"/livez", "", "", http.StatusOK},
+		{"/", "", "", http.StatusOK},
+		{"/index.html", "", "", http.StatusOK},
 	}
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	for _, tt := range tests {
-		t.Run(tt.path+" user="+tt.user, func(t *testing.T) {
+		t.Run(tt.path+" user="+tt.user+" role="+tt.role, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			if tt.user != "" {
 				req.Header.Set("X-User-Email", tt.user)
 			}
+			req.Header.Set("X-User-Role", tt.role)
 			rec := httptest.NewRecorder()
-			requireUser(next).ServeHTTP(rec, req)
+			requireAdmin(next).ServeHTTP(rec, req)
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d", rec.Code, tt.want)
 			}

@@ -267,12 +267,18 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func listOrders(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-User-Email")
 	status := r.URL.Query().Get("status")
 
-	query := "SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE customer_id = $1"
-	args := []interface{}{customerID}
-	argN := 2
+	query := "SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE 1=1"
+	args := []interface{}{}
+	argN := 1
+
+	// Customers see their own orders. Admin and service callers see all.
+	if !privileged(r) {
+		query += fmt.Sprintf(" AND customer_id = $%d", argN)
+		args = append(args, r.Header.Get("X-User-Email"))
+		argN++
+	}
 
 	if status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argN)
@@ -310,11 +316,11 @@ func getOrder(w http.ResponseWriter, r *http.Request, id string) {
 	// Another customer's order gets the same 404 as a missing one
 	var o Order
 	err := db.QueryRow(
-		"SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE id = $1 AND customer_id = $2",
-		id, r.Header.Get("X-User-Email"),
+		"SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE id = $1",
+		id,
 	).Scan(&o.ID, &o.CustomerID, &o.Status, &o.Items, &o.Total, &o.Currency, &o.Notes, &o.CreatedAt, &o.UpdatedAt)
 
-	if err != nil {
+	if err != nil || !owns(r, o.CustomerID) {
 		httpError(w, "order not found", http.StatusNotFound)
 		return
 	}
@@ -338,10 +344,11 @@ func handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get current status
-	var currentStatus string
-	err := db.QueryRow("SELECT status FROM orders WHERE id = $1", req.OrderID).Scan(&currentStatus)
-	if err != nil {
+	// Get current status. Another customer's order gets the same 404 as a
+	// missing one.
+	var currentStatus, owner string
+	err := db.QueryRow("SELECT status, customer_id FROM orders WHERE id = $1", req.OrderID).Scan(&currentStatus, &owner)
+	if err != nil || !owns(r, owner) {
 		httpError(w, "order not found", http.StatusNotFound)
 		return
 	}
@@ -452,6 +459,24 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
 }
 
 // requireUser rejects requests without the X-User-Email header that

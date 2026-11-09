@@ -175,11 +175,19 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleShipments(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := db.Query(
-			`SELECT id, order_id, carrier, tracking_number, status, recipient_name,
-			        city, country, estimated_delivery, created_at
-			 FROM shipments ORDER BY created_at DESC LIMIT 100`,
-		)
+		query := `SELECT s.id, s.order_id, s.carrier, s.tracking_number, s.status, s.recipient_name,
+			        s.city, s.country, s.estimated_delivery, s.created_at
+			 FROM shipments s`
+		args := []interface{}{}
+		// Customers see shipments for their own orders. Admin and service
+		// callers see all.
+		if !privileged(r) {
+			query += ` JOIN orders o ON o.id = s.order_id WHERE o.customer_id = $1`
+			args = append(args, r.Header.Get("X-User-Email"))
+		}
+		query += ` ORDER BY s.created_at DESC LIMIT 100`
+
+		rows, err := db.Query(query, args...)
 		if err != nil {
 			httpError(w, "query failed", http.StatusInternalServerError)
 			return
@@ -218,6 +226,11 @@ func handleShipments(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(shipments)
 
 	case http.MethodPost:
+		// Shipments are created by internal callers and admins, not customers
+		if !privileged(r) {
+			httpError(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		createShipment(w, r)
 
 	default:
@@ -330,6 +343,16 @@ func handleShipment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpError(w, "shipment not found", http.StatusNotFound)
 		return
+	}
+
+	// A shipment for another customer's order gets the same 404 as a missing one
+	if !privileged(r) {
+		var owner string
+		err := db.QueryRow("SELECT customer_id FROM orders WHERE id = $1", s.OrderID).Scan(&owner)
+		if err != nil || !owns(r, owner) {
+			httpError(w, "shipment not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -521,6 +544,24 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
 }
 
 // requireUser rejects requests without the X-User-Email header that

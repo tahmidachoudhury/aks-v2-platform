@@ -128,11 +128,34 @@ func TestHandleReserve(t *testing.T) {
 				tt.setup(mock)
 			}
 			rec := httptest.NewRecorder()
-			handleReserve(rec, httptest.NewRequest(tt.method, "/reserve", strings.NewReader(tt.body)))
+			req := httptest.NewRequest(tt.method, "/reserve", strings.NewReader(tt.body))
+			req.Header.Set("X-User-Role", "service")
+			handleReserve(rec, req)
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
 			}
 		})
+	}
+}
+
+// Customers cannot reserve or release stock. Only internal callers, such as
+// the scheduler, and admins can.
+func TestReserveAndReleaseNeedPrivilege(t *testing.T) {
+	handlers := map[string]http.HandlerFunc{"/reserve": handleReserve, "/release": handleRelease}
+	for path, h := range handlers {
+		for _, role := range []string{"", "customer"} {
+			t.Run(path+" role="+role, func(t *testing.T) {
+				mockDB(t) // any SQL fails the test
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"order_id":7}`))
+				req.Header.Set("X-User-Email", "alice@example.com")
+				req.Header.Set("X-User-Role", role)
+				rec := httptest.NewRecorder()
+				h(rec, req)
+				if rec.Code != http.StatusForbidden {
+					t.Errorf("status = %d, want 403", rec.Code)
+				}
+			})
+		}
 	}
 }
 
@@ -197,7 +220,9 @@ func TestHandleRelease(t *testing.T) {
 				tt.setup(mock)
 			}
 			rec := httptest.NewRecorder()
-			handleRelease(rec, httptest.NewRequest(tt.method, "/release", strings.NewReader(tt.body)))
+			req := httptest.NewRequest(tt.method, "/release", strings.NewReader(tt.body))
+			req.Header.Set("X-User-Role", "service")
+			handleRelease(rec, req)
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
 			}
@@ -219,6 +244,7 @@ func TestHandleProducts(t *testing.T) {
 		name   string
 		method string
 		body   string
+		role   string // default admin
 		setup  func(mock sqlmock.Sqlmock)
 		want   int
 	}{
@@ -250,6 +276,15 @@ func TestHandleProducts(t *testing.T) {
 			},
 		},
 		{name: "wrong method", method: http.MethodDelete, want: http.StatusMethodNotAllowed},
+		// Product writes are admin only. Anyone signed in can list.
+		{name: "customer cannot create", method: http.MethodPost, role: "customer", body: `{"id":"p1","name":"Mug"}`, want: http.StatusForbidden},
+		{name: "service cannot create", method: http.MethodPost, role: "service", body: `{"id":"p1","name":"Mug"}`, want: http.StatusForbidden},
+		{
+			name: "customer can list", method: http.MethodGet, role: "customer", want: http.StatusOK,
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(sqlText("FROM products ORDER BY name")).WillReturnRows(sqlmock.NewRows(productColumns))
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -258,7 +293,13 @@ func TestHandleProducts(t *testing.T) {
 				tt.setup(mock)
 			}
 			rec := httptest.NewRecorder()
-			handleProducts(rec, httptest.NewRequest(tt.method, "/products", strings.NewReader(tt.body)))
+			req := httptest.NewRequest(tt.method, "/products", strings.NewReader(tt.body))
+			role := tt.role
+			if role == "" {
+				role = "admin"
+			}
+			req.Header.Set("X-User-Role", role)
+			handleProducts(rec, req)
 			if rec.Code != tt.want {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
 			}
