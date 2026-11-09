@@ -152,9 +152,9 @@ func handleSummary(w http.ResponseWriter, r *http.Request) {
 	db.QueryRow("SELECT COUNT(*) FROM shipments WHERE status NOT IN ('delivered', 'cancelled')").Scan(&activeShipments)
 
 	summary["orders"] = map[string]interface{}{
-		"total":      totalOrders,
-		"today":      ordersToday,
-		"by_status":  statusCounts,
+		"total":     totalOrders,
+		"today":     ordersToday,
+		"by_status": statusCounts,
 	}
 	summary["revenue"] = map[string]interface{}{
 		"total":    totalRevenue,
