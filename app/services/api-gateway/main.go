@@ -27,7 +27,10 @@ var (
 )
 
 func main() {
-	jwtSecret = []byte(getEnv("JWT_SECRET", "change-me-in-production"))
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+	if len(jwtSecret) == 0 {
+		log.Fatal("JWT_SECRET is required")
+	}
 
 	// Service routes - internal service URLs
 	routes = map[string]string{
