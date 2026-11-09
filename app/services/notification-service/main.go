@@ -4,17 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync/atomic"
 	"syscall"
+	"text/template"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
 var db *sql.DB
+
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -43,9 +51,13 @@ func main() {
 	mux.HandleFunc("/templates", handleTemplates)
 
 	port := getEnv("PORT", "8084")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -62,7 +74,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -127,7 +143,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -141,13 +160,23 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notifications come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		Recipient string                 `json:"recipient"`
 		Channel   string                 `json:"channel"`
 		Template  string                 `json:"template"`
 		Data      map[string]interface{} `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// UseNumber keeps numbers as written, so {{.Total}} renders 1234567 or
+	// 12.50 rather than the float64 forms 1.234567e+06 and 12.5
+	dec := json.NewDecoder(r.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&req); err != nil {
 		httpError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -161,16 +190,29 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		req.Channel = "email"
 	}
 
-	// Look up template
+	// Look up the template and fill its {{.Field}} placeholders from data
 	var subject, body string
 	err := db.QueryRow(
 		"SELECT subject, body FROM notification_templates WHERE id = $1",
 		req.Template,
 	).Scan(&subject, &body)
-	if err != nil {
-		// Use template name as-is if not found
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Use template name as-is if not found. It is not rendered, since it
+		// comes from the request.
 		subject = req.Template
 		body = req.Template
+	case err != nil:
+		httpError(w, "template lookup failed", http.StatusInternalServerError)
+		return
+	default:
+		if subject, err = render(subject, req.Data); err == nil {
+			body, err = render(body, req.Data)
+		}
+		if err != nil {
+			httpError(w, "template data: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	metadata, _ := json.Marshal(req.Data)
@@ -181,13 +223,18 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 	sentAt := time.Now()
 
 	var notifID int
-	db.QueryRow(
+	if err := db.QueryRow(
 		`INSERT INTO notifications (recipient, channel, template, subject, body, metadata, status, sent_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		req.Recipient, req.Channel, req.Template, subject, body, metadata, status, sentAt,
-	).Scan(&notifID)
+	).Scan(&notifID); err != nil {
+		log.Printf("Recording notification failed: %v", err)
+		httpError(w, "failed to record notification", http.StatusInternalServerError)
+		return
+	}
 
-	log.Printf("Notification sent: [%s] %s -> %s (template: %s)", req.Channel, req.Template, req.Recipient, req.Template)
+	// The recipient is an email or phone number, so it stays out of the log
+	log.Printf("Notification %d sent: [%s] template %s", notifID, req.Channel, req.Template)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -199,8 +246,37 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// render fills a stored template's {{.Field}} placeholders from data. A
+// placeholder with no value in data is an error, so nothing is sent with
+// "<no value>" in it.
+func render(text string, data map[string]interface{}) (string, error) {
+	t, err := template.New("").Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", fmt.Errorf("bad template: %w", err)
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	var b strings.Builder
+	if err := t.Execute(&b, data); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
 func handleHistory(w http.ResponseWriter, r *http.Request) {
 	recipient := r.URL.Query().Get("recipient")
+
+	// Customers see only notifications sent to them. Admin and service
+	// callers see everyone's, or one recipient's.
+	if !privileged(r) {
+		caller := r.Header.Get("X-User-Email")
+		if recipient != "" && recipient != caller {
+			httpError(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		recipient = caller
+	}
 
 	query := "SELECT id, recipient, channel, template, subject, status, sent_at, created_at FROM notifications"
 	args := []interface{}{}
@@ -268,6 +344,34 @@ func handleTemplates(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(templates)
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

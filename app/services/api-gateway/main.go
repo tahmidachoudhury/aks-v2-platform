@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,19 +25,38 @@ var (
 	ctx         = context.Background()
 	jwtSecret   []byte
 	routes      map[string]string
+
+	// Proxies whose X-Forwarded-For the rate limit trusts, from TRUSTED_PROXIES
+	trustedProxies []*net.IPNet
+
+	// Emails whose tokens carry role admin, from ADMIN_EMAILS
+	adminEmails map[string]bool
+
+	// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+	shuttingDown atomic.Bool
 )
 
 func main() {
-	jwtSecret = []byte(getEnv("JWT_SECRET", "change-me-in-production"))
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+	if len(jwtSecret) == 0 {
+		log.Fatal("JWT_SECRET is required")
+	}
 
-	// Service routes - internal service URLs
-	routes = map[string]string{
-		"/api/orders":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
-		"/api/inventory":     getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
-		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
-		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
-		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
-		"/api/dashboard":     getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086"),
+	adminEmails = parseEmails(os.Getenv("ADMIN_EMAILS"))
+
+	dashboardURL := getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086")
+	routes = newRoutes(dashboardURL)
+
+	// Comma-separated CIDRs, such as Traefik's pod range. Empty means trust no proxy.
+	for _, cidr := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
+		if cidr = strings.TrimSpace(cidr); cidr == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			log.Fatalf("invalid TRUSTED_PROXIES entry %q: %v", cidr, err)
+		}
+		trustedProxies = append(trustedProxies, ipNet)
 	}
 
 	// Redis for rate limiting
@@ -56,14 +76,16 @@ func main() {
 		}
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.HandleFunc("/healthz", handleHealth)
-	mux.HandleFunc("/auth/login", handleLogin)
-	mux.HandleFunc("/auth/register", handleRegister)
-	mux.HandleFunc("/", handleProxy)
+	mux, err := newMux(dashboardURL)
+	if err != nil {
+		log.Fatalf("invalid DASHBOARD_SERVICE_URL: %v", err)
+	}
 
 	port := getEnv("PORT", "8080")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      mux,
@@ -72,17 +94,74 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	go gracefulShutdown(server)
+	go func() {
+		log.Printf("API Gateway listening on :%s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
 
-	log.Printf("API Gateway listening on :%s", port)
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish. main
+	// waits for Shutdown, so the process does not exit under them.
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown error: %v", err)
+	}
+	if redisClient != nil {
+		redisClient.Close()
 	}
 }
 
+// newRoutes maps each /api prefix to the internal URL of its service.
+func newRoutes(dashboardURL string) map[string]string {
+	return map[string]string{
+		"/api/orders":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
+		"/api/inventory":     getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
+		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
+		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
+		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
+		// dashboard-api serves under /dashboard. The proxy joins the target's path
+		// to the stripped one, so /api/dashboard/summary reaches /dashboard/summary.
+		"/api/dashboard": dashboardURL + "/dashboard",
+	}
+}
+
+func newMux(dashboardURL string) (*http.ServeMux, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/healthz", handleHealth)
+	mux.HandleFunc("/auth/login", handleLogin)
+	mux.HandleFunc("/auth/register", handleRegister)
+
+	// The dashboard UI page, served by dashboard-api, without a JWT. This puts
+	// it on the same origin as /auth and /api, where it sends its calls. The
+	// page holds no data: its /api/dashboard calls go through handleProxy.
+	dashboard, err := url.Parse(dashboardURL)
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("GET /{$}", httputil.NewSingleHostReverseProxy(dashboard))
+	mux.HandleFunc("/", handleProxy)
+	return mux, nil
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "api-gateway"})
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "api-gateway"})
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -103,10 +182,10 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	// In production this would validate against a user database
 	// For this project, accept any email/password and return a JWT
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":   req.Email,
-		"role":  "customer",
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
-		"iat":   time.Now().Unix(),
+		"sub":  req.Email,
+		"role": roleFor(req.Email),
+		"exp":  time.Now().Add(24 * time.Hour).Unix(),
+		"iat":  time.Now().Unix(),
 	})
 
 	tokenString, err := token.SignedString(jwtSecret)
@@ -144,7 +223,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":  req.Email,
 		"name": req.Name,
-		"role": "customer",
+		"role": roleFor(req.Email),
 		"exp":  time.Now().Add(24 * time.Hour).Unix(),
 		"iat":  time.Now().Unix(),
 	})
@@ -180,6 +259,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Only the gateway sets the identity headers. Drop any the client sent.
+	r.Header.Del("X-User-Email")
+	r.Header.Del("X-User-Role")
+
 	// Auth check (skip for public endpoints)
 	if !isPublicPath(r.URL.Path) {
 		claims, err := validateToken(r)
@@ -196,9 +279,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Find matching route
+	// Find matching route. A prefix matches only up to a "/", so
+	// /api/ordersfoo does not reach order-service.
 	for prefix, targetURL := range routes {
-		if strings.HasPrefix(r.URL.Path, prefix) {
+		if r.URL.Path == prefix || strings.HasPrefix(r.URL.Path, prefix+"/") {
 			target, err := url.Parse(targetURL)
 			if err != nil {
 				httpError(w, "bad upstream config", http.StatusInternalServerError)
@@ -216,7 +300,6 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "" {
 				r.URL.Path = "/"
 			}
-			r.Header.Set("X-Forwarded-For", r.RemoteAddr)
 			r.Header.Set("X-Request-ID", fmt.Sprintf("%d", time.Now().UnixNano()))
 
 			proxy.ServeHTTP(w, r)
@@ -225,6 +308,27 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpError(w, "not found", http.StatusNotFound)
+}
+
+// parseEmails reads a comma-separated email list into a set, lower-cased.
+func parseEmails(list string) map[string]bool {
+	emails := map[string]bool{}
+	for _, e := range strings.Split(list, ",") {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			emails[e] = true
+		}
+	}
+	return emails
+}
+
+// roleFor is the role a token for email carries: admin for an address in
+// ADMIN_EMAILS, otherwise customer. The gateway never issues role service;
+// only internal callers send it, directly to the backends.
+func roleFor(email string) string {
+	if adminEmails[strings.ToLower(strings.TrimSpace(email))] {
+		return "admin"
+	}
+	return "customer"
 }
 
 func isPublicPath(path string) bool {
@@ -281,31 +385,42 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// clientIP returns the address the rate limit counts against. It reads
+// X-Forwarded-For only when the direct peer is a trusted proxy, and then takes
+// the right-most address that is not a trusted proxy: the one the nearest
+// proxy saw. Anything a client writes into the header sits to the left of
+// that, so it cannot change the result.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !isTrustedProxy(ip) {
+		return ip
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop == "" {
+			continue
 		}
-		return strings.TrimSpace(xff)
+		if !isTrustedProxy(hop) {
+			return hop
+		}
+		ip = hop
 	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return xrip
-	}
-	return r.RemoteAddr
+	return ip
 }
 
-var shutdownOnce sync.Once
-
-func gracefulShutdown(server *http.Server) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-	shutdownOnce.Do(func() {
-		log.Println("Shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		server.Shutdown(ctx)
-	})
+func isTrustedProxy(addr string) bool {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+	for _, ipNet := range trustedProxies {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
-
-

@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,10 +24,17 @@ import (
 
 var db *sql.DB
 
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
+
 var (
 	sbClient *azservicebus.Client
 	sbSender *azservicebus.Sender
 )
+
+// Simulates the payment provider: 90% of charges succeed. A variable so tests
+// can fix the outcome.
+var chargeSucceeds = func() bool { return rand.Intn(10) != 0 }
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -55,9 +65,13 @@ func main() {
 	mux.HandleFunc("/balance/", handleBalance)
 
 	port := getEnv("PORT", "8083")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -74,7 +88,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -126,7 +144,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -137,6 +158,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleCharge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Charges and refunds come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -163,9 +190,8 @@ func handleCharge(w http.ResponseWriter, r *http.Request) {
 		currency = "GBP"
 	}
 
-	// Simulate payment processing (90% success rate)
 	status := "completed"
-	if rand.Intn(10) == 0 {
+	if !chargeSucceeds() {
 		status = "failed"
 	}
 
@@ -188,19 +214,31 @@ func handleCharge(w http.ResponseWriter, r *http.Request) {
 
 	if status == "completed" {
 		// Double-entry: debit customer, credit revenue
-		tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO ledger_entries (payment_id, entry_type, debit, currency, description)
 			 VALUES ($1, 'charge', $2, $3, $4)`,
 			paymentID, req.Amount, currency, fmt.Sprintf("Order #%d payment", req.OrderID),
-		)
-		tx.Exec(
+		); err != nil {
+			log.Printf("Ledger insert failed for %s: %v", paymentID, err)
+			httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+			return
+		}
+		if _, err := tx.Exec(
 			`INSERT INTO ledger_entries (payment_id, entry_type, credit, currency, description)
 			 VALUES ($1, 'revenue', $2, $3, $4)`,
 			paymentID, req.Amount, currency, fmt.Sprintf("Order #%d revenue", req.OrderID),
-		)
+		); err != nil {
+			log.Printf("Ledger insert failed for %s: %v", paymentID, err)
+			httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+			return
+		}
 	}
 
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("Commit failed for %s: %v", paymentID, err)
+		httpError(w, "failed to process payment", http.StatusInternalServerError)
+		return
+	}
 
 	// Publish event
 	publishEvent("payment."+status, map[string]interface{}{
@@ -234,6 +272,12 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Charges and refunds come from internal callers and admins, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		PaymentID string  `json:"payment_id"`
 		Amount    float64 `json:"amount"`
@@ -244,30 +288,13 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get original payment
-	var originalAmount float64
-	var orderID int
-	var paymentStatus, customerID, currency string
-	err := db.QueryRow(
-		"SELECT amount, order_id, status, customer_id, currency FROM payments WHERE id = $1",
-		req.PaymentID,
-	).Scan(&originalAmount, &orderID, &paymentStatus, &customerID, &currency)
-	if err != nil {
-		httpError(w, "payment not found", http.StatusNotFound)
+	// Work in pence, as the database does. A positive amount under half a
+	// penny rounds to nothing, and 0 would mean a full refund, so refuse it.
+	requested := math.Round(req.Amount*100) / 100
+	if req.Amount > 0 && requested <= 0 {
+		httpError(w, "amount must be at least 0.01", http.StatusBadRequest)
 		return
 	}
-
-	if paymentStatus != "completed" {
-		httpError(w, "can only refund completed payments", http.StatusConflict)
-		return
-	}
-
-	refundAmount := req.Amount
-	if refundAmount <= 0 || refundAmount > originalAmount {
-		refundAmount = originalAmount
-	}
-
-	refundID := generatePaymentID()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -275,6 +302,56 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+
+	// Lock the original payment, so concurrent refunds of it run one at a time
+	// and each sees what the ones before it refunded
+	var originalAmount float64
+	var orderID int
+	var paymentStatus, customerID, currency string
+	var method sql.NullString
+	err = tx.QueryRow(
+		"SELECT amount, order_id, status, customer_id, currency, method FROM payments WHERE id = $1 FOR UPDATE",
+		req.PaymentID,
+	).Scan(&originalAmount, &orderID, &paymentStatus, &customerID, &currency, &method)
+	if errors.Is(err, sql.ErrNoRows) {
+		httpError(w, "payment not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		httpError(w, "payment lookup failed", http.StatusInternalServerError)
+		return
+	}
+
+	if method.String == "refund" || (paymentStatus != "completed" && paymentStatus != "partially_refunded") {
+		httpError(w, "can only refund completed or partially refunded payments", http.StatusConflict)
+		return
+	}
+
+	// A partially refunded payment can be refunded again, up to what is left
+	var refunded float64
+	if err := tx.QueryRow(
+		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE reference = $1 AND method = 'refund'",
+		req.PaymentID,
+	).Scan(&refunded); err != nil {
+		httpError(w, "refund lookup failed", http.StatusInternalServerError)
+		return
+	}
+	remaining := math.Round((originalAmount-refunded)*100) / 100
+	if remaining <= 0 {
+		httpError(w, "payment already fully refunded", http.StatusConflict)
+		return
+	}
+
+	refundAmount := requested
+	if refundAmount <= 0 || refundAmount > remaining {
+		refundAmount = remaining
+	}
+	newStatus := "partially_refunded"
+	if refundAmount >= remaining {
+		newStatus = "refunded"
+	}
+
+	refundID := generatePaymentID()
 
 	_, err = tx.Exec(
 		`INSERT INTO payments (id, order_id, customer_id, amount, currency, status, method, reference)
@@ -287,16 +364,22 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reverse ledger entries
-	tx.Exec(
+	if _, err := tx.Exec(
 		`INSERT INTO ledger_entries (payment_id, entry_type, credit, currency, description)
 		 VALUES ($1, 'refund', $2, $3, $4)`,
 		refundID, refundAmount, currency, fmt.Sprintf("Refund for payment %s: %s", req.PaymentID, req.Reason),
-	)
+	); err != nil {
+		log.Printf("Ledger insert failed for refund %s: %v", refundID, err)
+		httpError(w, "failed to record ledger entry", http.StatusInternalServerError)
+		return
+	}
 
-	if refundAmount >= originalAmount {
-		tx.Exec("UPDATE payments SET status = 'refunded', updated_at = NOW() WHERE id = $1", req.PaymentID)
-	} else {
-		tx.Exec("UPDATE payments SET status = 'partially_refunded', updated_at = NOW() WHERE id = $1", req.PaymentID)
+	if _, err := tx.Exec(
+		"UPDATE payments SET status = $1, updated_at = NOW() WHERE id = $2",
+		newStatus, req.PaymentID,
+	); err != nil {
+		httpError(w, "failed to update payment", http.StatusInternalServerError)
+		return
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -322,10 +405,18 @@ func handleRefund(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLedger(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query(
-		`SELECT le.id, le.payment_id, le.entry_type, le.debit, le.credit, le.currency, le.description, le.created_at
-		 FROM ledger_entries le ORDER BY le.created_at DESC LIMIT 100`,
-	)
+	query := `SELECT le.id, le.payment_id, le.entry_type, le.debit, le.credit, le.currency, le.description, le.created_at
+		 FROM ledger_entries le`
+	args := []interface{}{}
+	// Customers see the entries for their own payments. Admin and service
+	// callers see all.
+	if !privileged(r) {
+		query += ` JOIN payments p ON p.id = le.payment_id WHERE p.customer_id = $1`
+		args = append(args, r.Header.Get("X-User-Email"))
+	}
+	query += ` ORDER BY le.created_at DESC LIMIT 100`
+
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		httpError(w, "query failed", http.StatusInternalServerError)
 		return
@@ -360,17 +451,27 @@ func handleBalance(w http.ResponseWriter, r *http.Request) {
 		httpError(w, "customer id required", http.StatusBadRequest)
 		return
 	}
+	if !owns(r, customerID) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	var totalCharged, totalRefunded float64
-	db.QueryRow(
+	err := db.QueryRow(
 		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND status IN ('completed', 'partially_refunded', 'refunded') AND (method IS NULL OR method != 'refund')",
 		customerID,
 	).Scan(&totalCharged)
-
-	db.QueryRow(
-		"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND method = 'refund'",
-		customerID,
-	).Scan(&totalRefunded)
+	if err == nil {
+		err = db.QueryRow(
+			"SELECT COALESCE(SUM(amount), 0) FROM payments WHERE customer_id = $1 AND method = 'refund'",
+			customerID,
+		).Scan(&totalRefunded)
+	}
+	if err != nil {
+		log.Printf("balance query error: %v", err)
+		httpError(w, "query failed", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -441,6 +542,40 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

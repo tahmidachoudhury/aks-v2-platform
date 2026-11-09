@@ -42,6 +42,9 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: local-dev-secret
+      # The dashboard UI logs in as this email. Login checks no password, so
+      # set ADMIN_EMAILS only for local use.
+      ADMIN_EMAILS: admin@platform.local
       ORDER_SERVICE_URL: http://order-service:8081
       INVENTORY_SERVICE_URL: http://inventory-service:8082
       PAYMENT_SERVICE_URL: http://payment-service:8083
@@ -99,6 +102,7 @@ services:
       - "8085:8085"
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
+      SHIPPING_WEBHOOK_SECRET: local-webhook-secret
       SERVICEBUS_QUEUE: order-events
       SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
     depends_on:
@@ -122,8 +126,12 @@ services:
     build: ./services/scheduler
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
+      ORDER_SERVICE_URL: http://order-service:8081
+      INVENTORY_SERVICE_URL: http://inventory-service:8082
     depends_on:
       - postgres
+      - order-service
+      - inventory-service
 
   dashboard-api:
     build: ./services/dashboard-api

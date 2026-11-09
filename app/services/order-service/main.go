@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 )
 
 var db *sql.DB
+
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
 
 var (
 	sbClient *azservicebus.Client
@@ -87,9 +91,13 @@ func main() {
 	mux.HandleFunc("/status", handleUpdateStatus)
 
 	port := getEnv("PORT", "8081")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -106,7 +114,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -156,7 +168,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -252,18 +267,19 @@ func createOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func listOrders(w http.ResponseWriter, r *http.Request) {
-	customerID := r.Header.Get("X-User-Email")
 	status := r.URL.Query().Get("status")
 
 	query := "SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE 1=1"
 	args := []interface{}{}
 	argN := 1
 
-	if customerID != "" {
+	// Customers see their own orders. Admin and service callers see all.
+	if !privileged(r) {
 		query += fmt.Sprintf(" AND customer_id = $%d", argN)
-		args = append(args, customerID)
+		args = append(args, r.Header.Get("X-User-Email"))
 		argN++
 	}
+
 	if status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argN)
 		args = append(args, status)
@@ -297,13 +313,14 @@ func listOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func getOrder(w http.ResponseWriter, r *http.Request, id string) {
+	// Another customer's order gets the same 404 as a missing one
 	var o Order
 	err := db.QueryRow(
 		"SELECT id, customer_id, status, items, total, currency, notes, created_at, updated_at FROM orders WHERE id = $1",
 		id,
 	).Scan(&o.ID, &o.CustomerID, &o.Status, &o.Items, &o.Total, &o.Currency, &o.Notes, &o.CreatedAt, &o.UpdatedAt)
 
-	if err != nil {
+	if err != nil || !owns(r, o.CustomerID) {
 		httpError(w, "order not found", http.StatusNotFound)
 		return
 	}
@@ -327,10 +344,18 @@ func handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get current status
-	var currentStatus string
-	err := db.QueryRow("SELECT status FROM orders WHERE id = $1", req.OrderID).Scan(&currentStatus)
-	if err != nil {
+	// Customers may only cancel their own order. Every other transition is
+	// made by admins and internal callers, such as after payment or shipping.
+	if !privileged(r) && req.NewStatus != "cancelled" {
+		httpError(w, "customers can only cancel an order", http.StatusForbidden)
+		return
+	}
+
+	// Get current status. Another customer's order gets the same 404 as a
+	// missing one.
+	var currentStatus, owner string
+	err := db.QueryRow("SELECT status, customer_id FROM orders WHERE id = $1", req.OrderID).Scan(&currentStatus, &owner)
+	if err != nil || !owns(r, owner) {
 		httpError(w, "order not found", http.StatusNotFound)
 		return
 	}
@@ -441,6 +466,40 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

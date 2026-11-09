@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +18,9 @@ import (
 )
 
 var db *sql.DB
+
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
 
 type Product struct {
 	ID        string  `json:"id"`
@@ -69,9 +73,13 @@ func main() {
 	mux.HandleFunc("/low-stock", handleLowStock)
 
 	port := getEnv("PORT", "8082")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -88,7 +96,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -131,7 +143,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -163,6 +178,10 @@ func handleProducts(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(products)
 
 	case http.MethodPost:
+		if r.Header.Get("X-User-Role") != "admin" {
+			httpError(w, "only admins can add products", http.StatusForbidden)
+			return
+		}
 		var p struct {
 			ID    string  `json:"id"`
 			Name  string  `json:"name"`
@@ -218,6 +237,12 @@ func handleProduct(w http.ResponseWriter, r *http.Request) {
 func handleReserve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Orders reserve and release stock through internal callers, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -297,6 +322,12 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders reserve and release stock through internal callers, not customers
+	if !privileged(r) {
+		httpError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	var req struct {
 		OrderID int `json:"order_id"`
 	}
@@ -312,12 +343,18 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback()
 
+	// Claim the order's active reservations before returning any stock. The
+	// UPDATE takes only rows still active, so when the scheduler's
+	// expire_reservations claims a row at the same time, one of them returns
+	// its stock and the other skips it.
 	rows, err := tx.Query(
-		"SELECT product_id, quantity FROM reservations WHERE order_id = $1 AND status = 'active'",
+		`UPDATE reservations SET status = 'released'
+		 WHERE order_id = $1 AND status = 'active'
+		 RETURNING product_id, quantity`,
 		req.OrderID,
 	)
 	if err != nil {
-		httpError(w, "query failed", http.StatusInternalServerError)
+		httpError(w, "release update failed", http.StatusInternalServerError)
 		return
 	}
 
@@ -342,16 +379,11 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, it := range items {
-		if _, err := tx.Exec("UPDATE products SET reserved = reserved - $1, updated_at = NOW() WHERE id = $2",
+		if _, err := tx.Exec("UPDATE products SET reserved = GREATEST(reserved - $1, 0), updated_at = NOW() WHERE id = $2",
 			it.quantity, it.productID); err != nil {
 			httpError(w, "release update failed", http.StatusInternalServerError)
 			return
 		}
-	}
-
-	if _, err := tx.Exec("UPDATE reservations SET status = 'released' WHERE order_id = $1 AND status = 'active'", req.OrderID); err != nil {
-		httpError(w, "release update failed", http.StatusInternalServerError)
-		return
 	}
 	if err := tx.Commit(); err != nil {
 		httpError(w, "commit failed", http.StatusInternalServerError)
@@ -396,6 +428,34 @@ func handleLowStock(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(items)
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {

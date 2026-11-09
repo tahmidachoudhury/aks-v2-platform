@@ -1,0 +1,74 @@
+# Checks gofmt, vets and unit tests each Go service. The tests need no database, Redis or
+# Service Bus. Every service runs on every change under app/services; running
+# only the services that changed is P8-02.
+name: test
+
+on:
+  pull_request:
+    paths:
+      - "app/services/**"
+      - ".github/workflows/test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/services/**"
+      - ".github/workflows/test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Test on the Go version in go.mod, which the Dockerfiles build with, and
+  # fail rather than download a newer toolchain.
+  GOTOOLCHAIN: local
+
+jobs:
+  go-test:
+    name: go test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - order-service
+          - inventory-service
+          - payment-service
+          - notification-service
+          - shipping-service
+          - worker
+          - scheduler
+          - dashboard-api
+    defaults:
+      run:
+        working-directory: app/services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/services/${{ matrix.service }}/go.mod
+          cache: true
+          cache-dependency-path: app/services/${{ matrix.service }}/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Run gofmt -w on these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...

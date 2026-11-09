@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,10 +24,24 @@ import (
 
 var db *sql.DB
 
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
+
 var (
 	sbClient *azservicebus.Client
 	sbSender *azservicebus.Sender
 )
+
+// Shared secret carriers send in X-Webhook-Secret, from SHIPPING_WEBHOOK_SECRET
+var webhookSecret string
+
+// Statuses the carrier webhook accepts. The status becomes part of the event name.
+var webhookStatuses = map[string]bool{
+	"label_created": true,
+	"in_transit":    true,
+	"delivered":     true,
+	"cancelled":     true,
+}
 
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
@@ -38,6 +55,11 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	webhookSecret = os.Getenv("SHIPPING_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		log.Println("WARNING: SHIPPING_WEBHOOK_SECRET not set, the carrier webhook will reject every request")
+	}
 
 	db.SetMaxOpenConns(15)
 	db.SetMaxIdleConns(3)
@@ -55,9 +77,13 @@ func main() {
 	mux.HandleFunc("/webhook", handleCarrierWebhook)
 
 	port := getEnv("PORT", "8085")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
-		Handler:      mux,
+		Handler:      requireUser(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -74,7 +100,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -132,7 +162,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -143,11 +176,19 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 func handleShipments(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := db.Query(
-			`SELECT id, order_id, carrier, tracking_number, status, recipient_name,
-			        city, country, estimated_delivery, created_at
-			 FROM shipments ORDER BY created_at DESC LIMIT 100`,
-		)
+		query := `SELECT s.id, s.order_id, s.carrier, s.tracking_number, s.status, s.recipient_name,
+			        s.city, s.country, s.estimated_delivery, s.created_at
+			 FROM shipments s`
+		args := []interface{}{}
+		// Customers see shipments for their own orders. Admin and service
+		// callers see all.
+		if !privileged(r) {
+			query += ` JOIN orders o ON o.id = s.order_id WHERE o.customer_id = $1`
+			args = append(args, r.Header.Get("X-User-Email"))
+		}
+		query += ` ORDER BY s.created_at DESC LIMIT 100`
+
+		rows, err := db.Query(query, args...)
 		if err != nil {
 			httpError(w, "query failed", http.StatusInternalServerError)
 			return
@@ -167,25 +208,36 @@ func handleShipments(w http.ResponseWriter, r *http.Request) {
 			CreatedAt         string `json:"created_at"`
 		}
 
+		// As in handleShipment, the nullable columns scan into Null types
 		shipments := []ShipmentSummary{}
 		for rows.Next() {
 			var s ShipmentSummary
-			var estDel, tracking sql.NullString
-			rows.Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status, &s.RecipientName,
-				&s.City, &s.Country, &estDel, &s.CreatedAt)
-			if tracking.Valid {
-				s.TrackingNumber = tracking.String
+			var tracking, recipient, city, country, estDel sql.NullString
+			if err := rows.Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status, &recipient,
+				&city, &country, &estDel, &s.CreatedAt); err != nil {
+				log.Printf("shipments scan error: %v", err)
+				httpError(w, "scan failed", http.StatusInternalServerError)
+				return
 			}
-			if estDel.Valid {
-				s.EstimatedDelivery = estDel.String
-			}
+			s.TrackingNumber, s.RecipientName, s.City, s.Country = tracking.String, recipient.String, city.String, country.String
+			s.EstimatedDelivery = estDel.String
 			shipments = append(shipments, s)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("shipments query error: %v", err)
+			httpError(w, "query failed", http.StatusInternalServerError)
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(shipments)
 
 	case http.MethodPost:
+		// Shipments are created by internal callers and admins, not customers
+		if !privileged(r) {
+			httpError(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		createShipment(w, r)
 
 	default:
@@ -287,17 +339,42 @@ func handleShipment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt         string  `json:"created_at"`
 	}
 
+	// Only id, order_id, carrier and status are NOT NULL. The rest scan into
+	// Null types, so a NULL column comes back empty rather than as a 404.
+	var tracking, recipient, city, country, estDel sql.NullString
+	var weight sql.NullFloat64
 	err := db.QueryRow(
 		`SELECT id, order_id, carrier, tracking_number, status, recipient_name,
 		        city, country, weight_kg, estimated_delivery, created_at
 		 FROM shipments WHERE id = $1`,
 		id,
-	).Scan(&s.ID, &s.OrderID, &s.Carrier, &s.TrackingNumber, &s.Status,
-		&s.RecipientName, &s.City, &s.Country, &s.WeightKg, &s.EstimatedDelivery, &s.CreatedAt)
-
-	if err != nil {
+	).Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status,
+		&recipient, &city, &country, &weight, &estDel, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		httpError(w, "shipment not found", http.StatusNotFound)
 		return
+	}
+	if err != nil {
+		httpError(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	s.TrackingNumber, s.RecipientName, s.City, s.Country = tracking.String, recipient.String, city.String, country.String
+	s.WeightKg, s.EstimatedDelivery = weight.Float64, estDel.String
+
+	// A shipment for another customer's order gets the same 404 as a missing
+	// one. So does a shipment whose order row is gone; any other error is a 500.
+	if !privileged(r) {
+		var owner string
+		err := db.QueryRow("SELECT customer_id FROM orders WHERE id = $1", s.OrderID).Scan(&owner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("shipment %s owner lookup error: %v", id, err)
+			httpError(w, "query failed", http.StatusInternalServerError)
+			return
+		}
+		if err != nil || !owns(r, owner) {
+			httpError(w, "shipment not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -361,6 +438,12 @@ func handleCarrierWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	secret := r.Header.Get("X-Webhook-Secret")
+	if webhookSecret == "" || subtle.ConstantTimeCompare([]byte(secret), []byte(webhookSecret)) != 1 {
+		httpError(w, "invalid webhook secret", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
 		TrackingNumber string `json:"tracking_number"`
 		Status         string `json:"status"`
@@ -369,6 +452,10 @@ func handleCarrierWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !webhookStatuses[req.Status] {
+		httpError(w, "unknown status", http.StatusBadRequest)
 		return
 	}
 
@@ -479,6 +566,42 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 		return
 	}
 	log.Printf("Event -> Service Bus: %s", string(data))
+}
+
+// privileged reports whether the caller may act on every customer's data: an
+// admin, or an internal caller such as the scheduler. api-gateway sets
+// X-User-Role from the JWT and only issues customer or admin. Internal callers
+// send role service themselves.
+func privileged(r *http.Request) bool {
+	switch r.Header.Get("X-User-Role") {
+	case "admin", "service":
+		return true
+	}
+	return false
+}
+
+// owns reports whether the caller may see or change data that belongs to
+// customer.
+func owns(r *http.Request, customer string) bool {
+	return privileged(r) || r.Header.Get("X-User-Email") == customer
+}
+
+// requireUser rejects requests without the X-User-Email header that
+// api-gateway sets from the JWT. Health checks are exempt.
+// The carrier webhook is also exempt: carriers call it without a JWT, and it
+// checks its own secret.
+func requireUser(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/livez", "/healthz", "/webhook":
+		default:
+			if r.Header.Get("X-User-Email") == "" {
+				httpError(w, "missing user identity", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpError(w http.ResponseWriter, msg string, code int) {
