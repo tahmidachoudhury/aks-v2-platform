@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+Dockerfile
+.dockerignore
+*_test.go
+*.md
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
