@@ -76,8 +76,10 @@ func main() {
 	log.Printf("Worker started, receiving events from Service Bus queue %s...", queue)
 	pollAndProcess(ctx, receiver, services)
 
-	receiver.Close(context.Background())
-	sbClient.Close(context.Background())
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer closeCancel()
+	receiver.Close(closeCtx)
+	sbClient.Close(closeCtx)
 }
 
 func newServiceBusClient() (*azservicebus.Client, error) {
@@ -101,6 +103,10 @@ func pollAndProcess(ctx context.Context, receiver *azservicebus.Receiver, servic
 	for {
 		messages, err := receiver.ReceiveMessages(ctx, 10, nil)
 		if ctx.Err() != nil {
+			// Release anything received during shutdown so it is redelivered straight away
+			for _, msg := range messages {
+				abandon(receiver, msg)
+			}
 			log.Println("Worker stopped")
 			return
 		}

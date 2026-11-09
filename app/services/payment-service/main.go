@@ -81,8 +81,10 @@ func main() {
 		log.Printf("graceful shutdown error: %v", err)
 	}
 	if sbClient != nil {
-		sbSender.Close(shutdownCtx)
-		sbClient.Close(shutdownCtx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		sbSender.Close(closeCtx)
+		sbClient.Close(closeCtx)
 	}
 }
 
