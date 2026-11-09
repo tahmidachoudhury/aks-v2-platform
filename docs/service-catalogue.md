@@ -32,6 +32,20 @@ Seven services connect to one Postgres database, `orders`, as one user, `app`. O
 
 Every event goes to one Service Bus queue, `order-events`. The worker receives all of them, but its handlers only log, so no event changes anything downstream yet.
 
+## Shutdown
+
+The seven HTTP services (api-gateway, order, inventory, payment, notification, shipping and dashboard-api) handle SIGTERM in this order:
+
+1. `/healthz` returns 503 `shutting down`, so a readiness probe removes the pod from the Service endpoints. `/livez` stays 200.
+2. The service keeps serving for `SHUTDOWN_DRAIN_DELAY`, a Go duration, default `5s`. This covers the time kube-proxy and the ingress take to stop sending traffic.
+3. `server.Shutdown` stops accepting connections and waits up to 30 seconds for in-flight requests.
+4. The service closes its Service Bus sender and client, Redis client and database pool, then exits.
+
+Steps 2 and 3 can take 35 seconds together, so set `terminationGracePeriodSeconds` on the Deployments above that, such as 40. Kubernetes defaults to 30.
+
+The worker finishes its current batch and abandons any messages received after SIGTERM, so Service Bus redelivers them. It then closes its receiver and client.
+
+The scheduler starts no new job runs and waits for a running job to finish. It then stops its health server and closes the database pool.
 ## Services
 
 <!--
@@ -119,7 +133,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | ------------- | -------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `go-redis/v8`, `golang-jwt/v5`                                                            |
 | **Port**      | `PORT`, default `8080`                                                                             |
-| **Health**    | `/livez` always 200. `/healthz` always returns 200 `ok`. It checks neither Redis nor the upstreams |
+| **Health**    | `/livez` always 200. `/healthz` returns 200 `ok` until SIGTERM. It checks neither Redis nor the upstreams |
 | **Called by** | none. Clients and the dashboard UI call it                                                         |
 
 **Endpoints**

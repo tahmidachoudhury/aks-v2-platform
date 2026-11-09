@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,21 +52,23 @@ func main() {
 	defer cancel()
 
 	// Health check
+	mux := http.NewServeMux()
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		status := "ok"
+		if err := db.Ping(); err != nil {
+			status = "unhealthy"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "scheduler"})
+	})
+	health := &http.Server{Addr: ":" + getEnv("HEALTH_PORT", "8091"), Handler: mux}
 	go func() {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			status := "ok"
-			if err := db.Ping(); err != nil {
-				status = "unhealthy"
-				w.WriteHeader(http.StatusServiceUnavailable)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "scheduler"})
-		})
-		port := getEnv("HEALTH_PORT", "8091")
-		log.Printf("Scheduler health check on :%s", port)
-		http.ListenAndServe(":"+port, mux)
+		log.Printf("Scheduler health check on %s", health.Addr)
+		if err := health.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("health server error: %v", err)
+		}
 	}()
 
 	// Graceful shutdown
@@ -79,14 +82,28 @@ func main() {
 
 	log.Println("Scheduler started")
 
-	// Run scheduled jobs
-	go runEvery(ctx, 1*time.Minute, "expire_reservations", expireReservations)
-	go runEvery(ctx, 5*time.Minute, "abandoned_carts", detectAbandonedOrders)
-	go runEvery(ctx, 15*time.Minute, "retry_failed_payments", retryFailedPayments)
-	go runEvery(ctx, 1*time.Hour, "daily_digest", generateDigest)
-	go runEvery(ctx, 30*time.Minute, "cleanup_old_events", cleanupOldEvents)
+	// Run scheduled jobs. On shutdown, a job that is running finishes before
+	// the database is closed; no new run starts.
+	var jobs sync.WaitGroup
+	schedule := func(interval time.Duration, name string, fn func()) {
+		jobs.Add(1)
+		go func() {
+			defer jobs.Done()
+			runEvery(ctx, interval, name, fn)
+		}()
+	}
+	schedule(1*time.Minute, "expire_reservations", expireReservations)
+	schedule(5*time.Minute, "abandoned_carts", detectAbandonedOrders)
+	schedule(15*time.Minute, "retry_failed_payments", retryFailedPayments)
+	schedule(1*time.Hour, "daily_digest", generateDigest)
+	schedule(30*time.Minute, "cleanup_old_events", cleanupOldEvents)
 
 	<-ctx.Done()
+	log.Println("Waiting for running jobs to finish")
+	jobs.Wait()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	health.Shutdown(shutdownCtx)
 	log.Println("Scheduler stopped")
 }
 
@@ -104,6 +121,9 @@ func runEvery(ctx context.Context, interval time.Duration, name string, fn func(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("Running job: %s", name)
 			start := time.Now()
 			fn()

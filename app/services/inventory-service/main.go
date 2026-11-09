@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +18,9 @@ import (
 )
 
 var db *sql.DB
+
+// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+var shuttingDown atomic.Bool
 
 type Product struct {
 	ID        string  `json:"id"`
@@ -69,6 +73,10 @@ func main() {
 	mux.HandleFunc("/low-stock", handleLowStock)
 
 	port := getEnv("PORT", "8082")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      requireUser(mux),
@@ -88,7 +96,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Println("Shutting down...")
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -131,7 +143,10 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
-	if err := db.Ping(); err != nil {
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}

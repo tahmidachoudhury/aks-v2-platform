@@ -12,7 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,6 +28,9 @@ var (
 
 	// Proxies whose X-Forwarded-For the rate limit trusts, from TRUSTED_PROXIES
 	trustedProxies []*net.IPNet
+
+	// Set on SIGTERM so /healthz fails and the pod leaves the Service endpoints
+	shuttingDown atomic.Bool
 )
 
 func main() {
@@ -96,6 +99,10 @@ func main() {
 	mux.HandleFunc("/", handleProxy)
 
 	port := getEnv("PORT", "8080")
+	drainDelay, err := time.ParseDuration(getEnv("SHUTDOWN_DRAIN_DELAY", "5s"))
+	if err != nil {
+		log.Fatalf("invalid SHUTDOWN_DRAIN_DELAY: %v", err)
+	}
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      mux,
@@ -104,17 +111,41 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	go gracefulShutdown(server)
+	go func() {
+		log.Printf("API Gateway listening on :%s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
 
-	log.Printf("API Gateway listening on :%s", port)
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	// Fail readiness and keep serving while the pod leaves the Service endpoints,
+	// then stop accepting connections and let in-flight requests finish. main
+	// waits for Shutdown, so the process does not exit under them.
+	log.Printf("Shutting down, draining for %s", drainDelay)
+	shuttingDown.Store(true)
+	time.Sleep(drainDelay)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown error: %v", err)
+	}
+	if redisClient != nil {
+		redisClient.Close()
 	}
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "api-gateway"})
+	if shuttingDown.Load() {
+		status = "shutting down"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "api-gateway"})
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -356,19 +387,3 @@ func isTrustedProxy(addr string) bool {
 	}
 	return false
 }
-
-var shutdownOnce sync.Once
-
-func gracefulShutdown(server *http.Server) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-	shutdownOnce.Do(func() {
-		log.Println("Shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		server.Shutdown(ctx)
-	})
-}
-
-
