@@ -1,0 +1,369 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
+
+func TestMain(m *testing.M) {
+	log.SetOutput(io.Discard)
+	os.Exit(m.Run())
+}
+
+// mockDB points the package-level db at a sqlmock and checks every
+// expectation was met when the test ends. Pings are expectations too.
+func mockDB(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	conn, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	db = conn
+	t.Cleanup(func() {
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet SQL expectations: %v", err)
+		}
+		conn.Close()
+	})
+	return mock
+}
+
+func sqlText(s string) string { return regexp.QuoteMeta(s) }
+
+func setWebhookSecret(t *testing.T, secret string) {
+	t.Helper()
+	orig := webhookSecret
+	webhookSecret = secret
+	t.Cleanup(func() { webhookSecret = orig })
+}
+
+// expectWebhookUpdate sets up the queries a webhook with an accepted status runs.
+func expectWebhookUpdate(mock sqlmock.Sqlmock, status string) {
+	mock.ExpectQuery(sqlText("SELECT id, order_id FROM shipments WHERE tracking_number = $1")).
+		WithArgs("RM123").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "order_id"}).AddRow(3, 7))
+	mock.ExpectExec(sqlText("UPDATE shipments SET status = $1")).WithArgs(status, 3).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	switch status {
+	case "delivered":
+		mock.ExpectExec(sqlText("SET delivered_at = NOW()")).WithArgs(3).WillReturnResult(sqlmock.NewResult(0, 1))
+	case "in_transit":
+		mock.ExpectExec(sqlText("SET shipped_at = COALESCE(shipped_at, NOW())")).WithArgs(3).WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectExec(sqlText("INSERT INTO tracking_events")).WithArgs(3, status, "Leeds", "").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+}
+
+func webhookRequest(secret, status string) *http.Request {
+	body := `{"tracking_number":"RM123","status":"` + status + `","location":"Leeds"}`
+	req := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	if secret != "" {
+		req.Header.Set("X-Webhook-Secret", secret)
+	}
+	return req
+}
+
+// Pins #127: the webhook needs X-Webhook-Secret to match
+// SHIPPING_WEBHOOK_SECRET, and rejects everything when that is unset.
+func TestCarrierWebhookSecret(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		sent       string
+		want       int
+	}{
+		{"secret unset, none sent", "", "", http.StatusUnauthorized},
+		{"secret unset, one sent", "", "anything", http.StatusUnauthorized},
+		{"no secret sent", "s3cret", "", http.StatusUnauthorized},
+		{"wrong secret", "s3cret", "guess", http.StatusUnauthorized},
+		{"prefix of the secret", "s3cret", "s3cre", http.StatusUnauthorized},
+		{"secret with extra", "s3cret", "s3cret!", http.StatusUnauthorized},
+		{"matching secret", "s3cret", "s3cret", http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setWebhookSecret(t, tt.configured)
+			mock := mockDB(t)
+			if tt.want == http.StatusOK {
+				expectWebhookUpdate(mock, "in_transit")
+			}
+
+			rec := httptest.NewRecorder()
+			handleCarrierWebhook(rec, webhookRequest(tt.sent, "in_transit"))
+
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+		})
+	}
+}
+
+// Pins #127: only the four carrier statuses are accepted, since the status
+// becomes part of the published event name.
+func TestCarrierWebhookStatusAllowlist(t *testing.T) {
+	tests := []struct {
+		status string
+		want   int
+	}{
+		{"label_created", http.StatusOK},
+		{"in_transit", http.StatusOK},
+		{"delivered", http.StatusOK},
+		{"cancelled", http.StatusOK},
+		{"", http.StatusBadRequest},
+		{"returned", http.StatusBadRequest},
+		{"DELIVERED", http.StatusBadRequest},
+		{"delivered.extra", http.StatusBadRequest},
+		{"created", http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run("status="+tt.status, func(t *testing.T) {
+			setWebhookSecret(t, "s3cret")
+			mock := mockDB(t)
+			if tt.want == http.StatusOK {
+				expectWebhookUpdate(mock, tt.status)
+			}
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(io.Discard) })
+
+			rec := httptest.NewRecorder()
+			handleCarrierWebhook(rec, webhookRequest("s3cret", tt.status))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+			published := strings.Contains(logs.String(), "shipment.")
+			if published != (tt.want == http.StatusOK) {
+				t.Errorf("published = %v for status %q:\n%s", published, tt.status, logs.String())
+			}
+		})
+	}
+}
+
+func TestCarrierWebhookRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+		want   int
+	}{
+		{name: "wrong method", method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "invalid json", method: http.MethodPost, body: `{`, want: http.StatusBadRequest},
+		{name: "unknown tracking number", method: http.MethodPost, body: `{"tracking_number":"NOPE","status":"delivered"}`, want: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setWebhookSecret(t, "s3cret")
+			mock := mockDB(t)
+			if tt.want == http.StatusNotFound {
+				mock.ExpectQuery(sqlText("FROM shipments WHERE tracking_number = $1")).WithArgs("NOPE").
+					WillReturnError(sql.ErrNoRows)
+			}
+			req := httptest.NewRequest(tt.method, "/webhook", strings.NewReader(tt.body))
+			req.Header.Set("X-Webhook-Secret", "s3cret")
+			rec := httptest.NewRecorder()
+			handleCarrierWebhook(rec, req)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+// Pins #126 and #127: every path needs X-User-Email except the health checks
+// and the carrier webhook, which carriers call without a JWT.
+func TestRequireUser(t *testing.T) {
+	tests := []struct {
+		path string
+		user string
+		want int
+	}{
+		{"/livez", "", http.StatusOK},
+		{"/healthz", "", http.StatusOK},
+		{"/webhook", "", http.StatusOK},
+		{"/shipments", "", http.StatusUnauthorized},
+		{"/shipments/3", "", http.StatusUnauthorized},
+		{"/track/RM123", "", http.StatusUnauthorized},
+		{"/shipments", "alice@example.com", http.StatusOK},
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	for _, tt := range tests {
+		t.Run(tt.path+" user="+tt.user, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.user != "" {
+				req.Header.Set("X-User-Email", tt.user)
+			}
+			rec := httptest.NewRecorder()
+			requireUser(next).ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreateShipment(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantCarrier string
+		wantCountry string
+		wantPrefix  string
+		want        int
+	}{
+		{name: "invalid json", body: `{`, want: http.StatusBadRequest},
+		{name: "no order", body: `{"recipient_name":"Alice"}`, want: http.StatusBadRequest},
+		{name: "no recipient", body: `{"order_id":7}`, want: http.StatusBadRequest},
+		{name: "defaults to Royal Mail in GB", body: `{"order_id":7,"recipient_name":"Alice","city":"Leeds"}`,
+			wantCarrier: "royal_mail", wantCountry: "GB", wantPrefix: "RM", want: http.StatusCreated},
+		{name: "named carrier and country", body: `{"order_id":7,"recipient_name":"Alice","city":"Leeds","carrier":"dpd","country":"IE"}`,
+			wantCarrier: "dpd", wantCountry: "IE", wantPrefix: "DPD", want: http.StatusCreated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if tt.want == http.StatusCreated {
+				mock.ExpectQuery(sqlText("INSERT INTO shipments")).
+					WithArgs(7, tt.wantCarrier, sqlmock.AnyArg(), "Alice", "", "", "Leeds", "", tt.wantCountry, 0.0, sqlmock.AnyArg()).
+					WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(3))
+				mock.ExpectExec(sqlText("INSERT INTO tracking_events")).WithArgs(3, "Leeds").
+					WillReturnResult(sqlmock.NewResult(1, 1))
+			}
+
+			rec := httptest.NewRecorder()
+			handleShipments(rec, httptest.NewRequest(http.MethodPost, "/shipments", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+			if tt.want == http.StatusCreated {
+				var got map[string]interface{}
+				json.NewDecoder(rec.Body).Decode(&got)
+				if tn, _ := got["tracking_number"].(string); !strings.HasPrefix(tn, tt.wantPrefix) {
+					t.Errorf("tracking_number = %v, want prefix %s", got["tracking_number"], tt.wantPrefix)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateTrackingNumber(t *testing.T) {
+	tests := []struct {
+		carrier string
+		prefix  string
+	}{
+		{"royal_mail", "RM"},
+		{"dpd", "DPD"},
+		{"hermes", "EVR"},
+		{"ups", "1Z"},
+		{"unknown", "RM"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.carrier, func(t *testing.T) {
+			got := generateTrackingNumber(tt.carrier)
+			if !strings.HasPrefix(got, tt.prefix) || len(got) <= len(tt.prefix) {
+				t.Errorf("generateTrackingNumber(%q) = %q, want prefix %q", tt.carrier, got, tt.prefix)
+			}
+		})
+	}
+}
+
+func TestHandleTrack(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		found bool
+		want  int
+	}{
+		{name: "no tracking number", path: "/track/", want: http.StatusBadRequest},
+		{name: "unknown tracking number", path: "/track/RM123", want: http.StatusNotFound},
+		{name: "found", path: "/track/RM123", found: true, want: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if tt.path != "/track/" {
+				q := mock.ExpectQuery(sqlText("SELECT id, status FROM shipments WHERE tracking_number = $1")).WithArgs("RM123")
+				if !tt.found {
+					q.WillReturnError(sql.ErrNoRows)
+				} else {
+					q.WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow(3, "in_transit"))
+					mock.ExpectQuery(sqlText("FROM tracking_events")).WithArgs(3).WillReturnRows(
+						sqlmock.NewRows([]string{"status", "location", "description", "occurred_at"}).
+							AddRow("in_transit", "Leeds", "", "t").
+							AddRow("label_created", "Leeds", "Shipping label created", "t"))
+				}
+			}
+
+			rec := httptest.NewRecorder()
+			handleTrack(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if tt.found {
+				var got struct {
+					CurrentStatus string            `json:"current_status"`
+					Events        []json.RawMessage `json:"events"`
+				}
+				json.NewDecoder(rec.Body).Decode(&got)
+				if got.CurrentStatus != "in_transit" || len(got.Events) != 2 {
+					t.Errorf("response = %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleShipmentNotFound(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM shipments WHERE id = $1")).WithArgs("99").WillReturnError(sql.ErrNoRows)
+
+	rec := httptest.NewRecorder()
+	handleShipment(rec, httptest.NewRequest(http.MethodGet, "/shipments/99", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandleHealth(t *testing.T) {
+	tests := []struct {
+		name         string
+		shuttingDown bool
+		pingErr      error
+		want         int
+	}{
+		{"healthy", false, nil, http.StatusOK},
+		{"database down", false, errors.New("db down"), http.StatusServiceUnavailable},
+		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
+		{"shutting down", true, nil, http.StatusServiceUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			if !tt.shuttingDown {
+				mock.ExpectPing().WillReturnError(tt.pingErr)
+			}
+			shuttingDown.Store(tt.shuttingDown)
+			t.Cleanup(func() { shuttingDown.Store(false) })
+
+			rec := httptest.NewRecorder()
+			handleHealth(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if rec.Code != tt.want {
+				t.Errorf("status = %d, want %d", rec.Code, tt.want)
+			}
+		})
+	}
+}
