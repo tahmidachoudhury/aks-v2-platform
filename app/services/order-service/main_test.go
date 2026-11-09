@@ -280,7 +280,7 @@ func TestHandleUpdateStatus(t *testing.T) {
 		body      string
 		current   string // empty: the order does not exist
 		owner     string // default alice@example.com, the caller
-		role      string
+		role      string // default service
 		updateErr error
 		want      int
 	}{
@@ -299,14 +299,27 @@ func TestHandleUpdateStatus(t *testing.T) {
 		{name: "update fails", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, current: "pending", updateErr: errors.New("db down"), want: http.StatusInternalServerError},
 		// Customers change only their own orders. Admin and service callers,
 		// such as the scheduler, change any.
-		{name: "another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", want: http.StatusNotFound},
+		{name: "another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", role: "customer", want: http.StatusNotFound},
+		// Customers may only cancel their own order, so they cannot walk it
+		// through to delivered without paying
+		{name: "customer cancels their own order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", role: "customer", want: http.StatusOK},
+		{name: "customer cannot confirm their own order", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, role: "customer", want: http.StatusForbidden},
+		{name: "customer cannot mark their order delivered", method: http.MethodPut, body: `{"order_id":9,"new_status":"delivered"}`, role: "customer", want: http.StatusForbidden},
+		{name: "no role cannot confirm", method: http.MethodPut, body: `{"order_id":9,"new_status":"confirmed"}`, role: "none", want: http.StatusForbidden},
 		{name: "admin on another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", role: "admin", want: http.StatusOK},
 		{name: "service on another customer's order", method: http.MethodPut, body: `{"order_id":9,"new_status":"cancelled"}`, current: "pending", owner: "bob@example.com", role: "service", want: http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
-			if tt.method == http.MethodPut && tt.body != `{` {
+			role := tt.role
+			switch role {
+			case "":
+				role = "service"
+			case "none":
+				role = ""
+			}
+			if tt.method == http.MethodPut && tt.body != `{` && tt.want != http.StatusForbidden {
 				q := mock.ExpectQuery(sqlText("SELECT status, customer_id FROM orders WHERE id = $1")).WithArgs(9)
 				owner := tt.owner
 				if owner == "" {
@@ -336,7 +349,7 @@ func TestHandleUpdateStatus(t *testing.T) {
 
 			req := httptest.NewRequest(tt.method, "/status", strings.NewReader(tt.body))
 			req.Header.Set("X-User-Email", "alice@example.com")
-			req.Header.Set("X-User-Role", tt.role)
+			req.Header.Set("X-User-Role", role)
 			rec := httptest.NewRecorder()
 			handleUpdateStatus(rec, req)
 

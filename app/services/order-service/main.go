@@ -344,6 +344,13 @@ func handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Customers may only cancel their own order. Every other transition is
+	// made by admins and internal callers, such as after payment or shipping.
+	if !privileged(r) && req.NewStatus != "cancelled" {
+		httpError(w, "customers can only cancel an order", http.StatusForbidden)
+		return
+	}
+
 	// Get current status. Another customer's order gets the same 404 as a
 	// missing one.
 	var currentStatus, owner string

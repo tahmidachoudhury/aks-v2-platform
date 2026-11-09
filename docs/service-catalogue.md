@@ -45,6 +45,7 @@ api-gateway checks the JWT and sets `X-User-Email` from `sub` and `X-User-Role` 
 A missing or unknown role counts as `customer`. Every backend applies the same rules:
 
 - Customers see and change only their own data. Lists are filtered to the caller. A record that belongs to another customer returns 404, as if it were missing. Naming another customer in the request, as in `/balance/{customer_id}` or `/history?recipient=`, returns 403.
+- The only order status change a customer can make is cancelling their own order. Any other transition returns 403 unless the caller is `admin` or `service`.
 - `admin` and `service` see and change every customer's data.
 - Only `admin` and `service` can make these writes: inventory `/reserve` and `/release`, payment `/charge` and `/refund`, notification `/send` and shipping `POST /shipments`.
 - Only `admin` can add products and read the dashboard.
@@ -124,7 +125,7 @@ Order lifecycle and the status state machine.
 | GET    | `/`                  | List the caller's orders. Admin and service callers get every order                            |
 | GET    | `/{id}`              | Get one order. 404 if it belongs to another customer, unless the caller is admin or service    |
 | POST   | `/`                  | Create an order, publishes `order.created`                                                     |
-| PUT    | `/status`            | Move an order to a new status if the state machine allows it, publishes `order.status_changed`. 404 for another customer's order, unless the caller is admin or service |
+| PUT    | `/status`            | Move an order to a new status if the state machine allows it, publishes `order.status_changed`. 404 for another customer's order, and 403 for a customer's move other than `cancelled`, unless the caller is admin or service |
 | GET    | `/livez`, `/healthz` | Health                                                                                         |
 
 **Environment variables**
@@ -148,7 +149,7 @@ Order lifecycle and the status state machine.
 - `publishEvent` sends the `{type, payload, timestamp}` JSON to Service Bus, with `Subject` set to the event type. The sender is created once at startup. A failed send is logged and the request still succeeds, so an event is lost if the bus is down. There is no outbox.
 - Schema migrations run on every pod start. Relevant to P5-04.
 - A schema change to `orders` also touches scheduler and dashboard-api.
-- Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. Access follows [Identity and roles](#identity-and-roles). A customer can make any transition the state machine allows on their own order, such as `delivered`, not only `cancelled`.
+- Every path except `/livez` and `/healthz` returns 401 without `X-User-Email`. Access follows [Identity and roles](#identity-and-roles). A customer can only cancel their own order through `PUT /status`.
 
 ### api-gateway
 
