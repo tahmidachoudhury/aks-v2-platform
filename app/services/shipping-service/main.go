@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -332,18 +333,27 @@ func handleShipment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt         string  `json:"created_at"`
 	}
 
+	// Only id, order_id, carrier and status are NOT NULL. The rest scan into
+	// Null types, so a NULL column comes back empty rather than as a 404.
+	var tracking, recipient, city, country, estDel sql.NullString
+	var weight sql.NullFloat64
 	err := db.QueryRow(
 		`SELECT id, order_id, carrier, tracking_number, status, recipient_name,
 		        city, country, weight_kg, estimated_delivery, created_at
 		 FROM shipments WHERE id = $1`,
 		id,
-	).Scan(&s.ID, &s.OrderID, &s.Carrier, &s.TrackingNumber, &s.Status,
-		&s.RecipientName, &s.City, &s.Country, &s.WeightKg, &s.EstimatedDelivery, &s.CreatedAt)
-
-	if err != nil {
+	).Scan(&s.ID, &s.OrderID, &s.Carrier, &tracking, &s.Status,
+		&recipient, &city, &country, &weight, &estDel, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		httpError(w, "shipment not found", http.StatusNotFound)
 		return
 	}
+	if err != nil {
+		httpError(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	s.TrackingNumber, s.RecipientName, s.City, s.Country = tracking.String, recipient.String, city.String, country.String
+	s.WeightKg, s.EstimatedDelivery = weight.Float64, estDel.String
 
 	// A shipment for another customer's order gets the same 404 as a missing one
 	if !privileged(r) {

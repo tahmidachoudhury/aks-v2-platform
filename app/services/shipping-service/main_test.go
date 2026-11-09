@@ -420,6 +420,38 @@ func TestHandleShipmentChecksOwnership(t *testing.T) {
 	}
 }
 
+// The nullable columns can all be NULL without a 404
+func TestHandleShipmentNullColumns(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM shipments WHERE id = $1")).WithArgs("3").WillReturnRows(
+		sqlmock.NewRows([]string{"id", "order_id", "carrier", "tracking_number", "status", "recipient_name", "city", "country", "weight_kg", "estimated_delivery", "created_at"}).
+			AddRow(3, 7, "royal_mail", nil, "label_created", nil, nil, nil, nil, nil, "2026-11-09T10:00:00Z"))
+
+	req := httptest.NewRequest(http.MethodGet, "/shipments/3", nil)
+	req.Header.Set("X-User-Role", "admin")
+	rec := httptest.NewRecorder()
+	handleShipment(rec, req)
+
+	var got map[string]interface{}
+	json.NewDecoder(rec.Body).Decode(&got)
+	if rec.Code != http.StatusOK || got["id"] != 3.0 || got["tracking_number"] != "" || got["weight_kg"] != 0.0 {
+		t.Errorf("status = %d, shipment = %v", rec.Code, got)
+	}
+}
+
+func TestHandleShipmentQueryError(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM shipments WHERE id = $1")).WithArgs("3").WillReturnError(errors.New("db down"))
+
+	req := httptest.NewRequest(http.MethodGet, "/shipments/3", nil)
+	req.Header.Set("X-User-Role", "admin")
+	rec := httptest.NewRecorder()
+	handleShipment(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
 func TestHandleShipmentNotFound(t *testing.T) {
 	mock := mockDB(t)
 	mock.ExpectQuery(sqlText("FROM shipments WHERE id = $1")).WithArgs("99").WillReturnError(sql.ErrNoRows)
