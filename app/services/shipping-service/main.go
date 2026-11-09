@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,17 @@ var (
 	sbSender *azservicebus.Sender
 )
 
+// Shared secret carriers send in X-Webhook-Secret, from SHIPPING_WEBHOOK_SECRET
+var webhookSecret string
+
+// Statuses the carrier webhook accepts. The status becomes part of the event name.
+var webhookStatuses = map[string]bool{
+	"label_created": true,
+	"in_transit":    true,
+	"delivered":     true,
+	"cancelled":     true,
+}
+
 func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -38,6 +50,11 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
+
+	webhookSecret = os.Getenv("SHIPPING_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		log.Println("WARNING: SHIPPING_WEBHOOK_SECRET not set, the carrier webhook will reject every request")
+	}
 
 	db.SetMaxOpenConns(15)
 	db.SetMaxIdleConns(3)
@@ -361,6 +378,12 @@ func handleCarrierWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	secret := r.Header.Get("X-Webhook-Secret")
+	if webhookSecret == "" || subtle.ConstantTimeCompare([]byte(secret), []byte(webhookSecret)) != 1 {
+		httpError(w, "invalid webhook secret", http.StatusUnauthorized)
+		return
+	}
+
 	var req struct {
 		TrackingNumber string `json:"tracking_number"`
 		Status         string `json:"status"`
@@ -369,6 +392,10 @@ func handleCarrierWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !webhookStatuses[req.Status] {
+		httpError(w, "unknown status", http.StatusBadRequest)
 		return
 	}
 
@@ -483,7 +510,8 @@ func publishEvent(eventType string, payload map[string]interface{}) {
 
 // requireUser rejects requests without the X-User-Email header that
 // api-gateway sets from the JWT. Health checks are exempt.
-// The carrier webhook is also exempt, since carriers call it without a JWT.
+// The carrier webhook is also exempt: carriers call it without a JWT, and it
+// checks its own secret.
 func requireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -99,6 +99,7 @@ services:
       - "8085:8085"
     environment:
       DATABASE_URL: postgres://app:localdev@postgres:5432/orders?sslmode=disable
+      SHIPPING_WEBHOOK_SECRET: local-webhook-secret
       SERVICEBUS_QUEUE: order-events
       SERVICEBUS_CONNECTION_STRING: Endpoint=sb://servicebus-emulator;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;
     depends_on:

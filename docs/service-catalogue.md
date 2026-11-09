@@ -301,7 +301,7 @@ Shipments, tracking and carrier status webhooks.
 | POST   | `/shipments`               | Create a shipment with a generated tracking number. Publishes `shipment.created`                     |
 | Any    | `/shipments/{id}`          | Get one shipment                                                                                     |
 | Any    | `/track/{tracking_number}` | Current status and tracking events                                                                   |
-| POST   | `/webhook`                 | Carrier status update. Updates the shipment, adds a tracking event and publishes `shipment.<status>` |
+| POST   | `/webhook`                 | Carrier status update. Checks `X-Webhook-Secret`, updates the shipment, adds a tracking event and publishes `shipment.<status>` |
 | GET    | `/livez`, `/healthz`       | Health                                                                                               |
 
 **Environment variables**
@@ -310,20 +310,21 @@ Shipments, tracking and carrier status webhooks.
 | ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database                                                             |
 | `PORT`                         | No       | `8085`  | No     |                                                                                                                                          |
+| `SHIPPING_WEBHOOK_SECRET`      | No       | none    | Yes    | Shared secret carriers send in `X-Webhook-Secret`. If unset, `/webhook` rejects every request. Compose sets a local value
 | `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
 | `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
 | `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `shipments` and `tracking_events` in `migrate()` at startup and writes both. dashboard-api reads `shipments`.
 
-**Events:** publishes `shipment.created` (in `createShipment`) and `shipment.<status>` (in `handleCarrierWebhook`) through `publishEvent`. The status comes from the webhook body. Consumes nothing.
+**Events:** publishes `shipment.created` (in `createShipment`) and `shipment.<status>` (in `handleCarrierWebhook`) through `publishEvent`. The status comes from the webhook body and must be `label_created`, `in_transit`, `delivered` or `cancelled`. Consumes nothing.
 
 **Outbound calls:** none.
 
 **Notes:**
 
 - `publishEvent` works as in order-service.
-- The webhook has no signature check and the gateway lets it through without a JWT. Anyone who can reach it can set any shipment status. That status becomes the event name without validation.
+- The gateway lets the webhook through without a JWT. The service returns 401 unless `X-Webhook-Secret` matches `SHIPPING_WEBHOOK_SECRET`, compared in constant time, and 400 for a status outside the four above. It is a shared secret, not a signature over the body.
 - No carrier API. Tracking numbers are generated locally.
 - Schema migrations run on every pod start.
 
