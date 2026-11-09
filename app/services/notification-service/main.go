@@ -172,7 +172,11 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		Template  string                 `json:"template"`
 		Data      map[string]interface{} `json:"data"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// UseNumber keeps numbers as written, so {{.Total}} renders 1234567 or
+	// 12.50 rather than the float64 forms 1.234567e+06 and 12.5
+	dec := json.NewDecoder(r.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&req); err != nil {
 		httpError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

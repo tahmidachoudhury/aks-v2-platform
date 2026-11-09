@@ -320,7 +320,7 @@ Simulated email and SMS sends from stored templates.
 **Notes:**
 
 - Nothing is sent. There is no SES, SNS or other provider, so no provider credentials yet.
-- `/send` renders the stored subject and body with Go's `text/template`, filling placeholders such as `{{.OrderID}}` from the request's `data` object, whose keys must match the placeholder names. A placeholder with no value in `data` returns 400. An unknown template name is used as the subject and body without rendering. The request data also goes into `metadata`.
+- `/send` renders the stored subject and body with Go's `text/template`, filling placeholders such as `{{.OrderID}}` from the request's `data` object, whose keys must match the placeholder names. Numbers render as written in the request, such as `12.50`. A placeholder with no value in `data` returns 400. An unknown template name is used as the subject and body without rendering. The request data also goes into `metadata`.
 - Schema migrations and template seeding run on every pod start.
 
 ### shipping-service

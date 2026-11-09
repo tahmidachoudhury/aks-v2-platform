@@ -70,6 +70,12 @@ func TestHandleSend(t *testing.T) {
 			wantChannel: "email", wantSubject: "Shipped - #7", wantBody: "Order #7 shipped. Tracking: RM123", want: http.StatusCreated,
 		},
 		{
+			name: "numbers render as written", method: http.MethodPost,
+			body:     `{"recipient":"alice@example.com","template":"order_confirmed","data":{"OrderID":1234567,"Total":12.50}}`,
+			template: true, storedSubject: "#{{.OrderID}}", storedBody: "Total {{.Total}}",
+			wantChannel: "email", wantSubject: "#1234567", wantBody: "Total 12.50", want: http.StatusCreated,
+		},
+		{
 			name: "missing placeholder data", method: http.MethodPost,
 			body:     `{"recipient":"alice@example.com","template":"order_shipped","data":{"OrderID":7}}`,
 			template: true, storedSubject: "Shipped - #{{.OrderID}}", storedBody: "Tracking: {{.TrackingNumber}}", want: http.StatusBadRequest,
