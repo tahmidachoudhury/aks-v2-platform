@@ -442,7 +442,7 @@ Timed background jobs that work directly on other services' tables.
 **Notes:**
 
 - Each job runs once at startup and then on a ticker:
-  - `expire_reservations`, every minute: releases expired active reservations in `products` and `reservations`.
+  - `expire_reservations`, every minute: releases expired active reservations in `products` and `reservations`, one transaction per reservation. It first moves the reservation from `active` to `expired` with a conditional UPDATE, so overlapping runs return its stock once. A failed reservation is rolled back, logged and retried on the next run.
   - `abandoned_carts`, every 5 minutes: cancels `pending` orders older than 30 minutes through order-service's `PUT /status`, then releases their stock through inventory-service's `POST /release`. If the cancel fails, the order stays `pending` and the next run retries it. If the release fails, `expire_reservations` frees the stock when the reservation expires.
   - `retry_failed_payments`, every 15 minutes: counts failed payments from the last hour and logs the count. It retries nothing.
   - `daily_digest`, every hour: logs order and revenue counts.

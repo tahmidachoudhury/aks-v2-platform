@@ -169,6 +169,21 @@ func TestHandleHistoryOtherRecipient(t *testing.T) {
 	}
 }
 
+// A failed INSERT returns 500, not 201 with id 0
+func TestHandleSendInsertFails(t *testing.T) {
+	mock := mockDB(t)
+	mock.ExpectQuery(sqlText("FROM notification_templates WHERE id = $1")).WithArgs("custom").WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(sqlText("INSERT INTO notifications")).WillReturnError(errors.New("db down"))
+
+	req := httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"recipient":"alice@example.com","template":"custom"}`))
+	req.Header.Set("X-User-Role", "service")
+	rec := httptest.NewRecorder()
+	handleSend(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestHandleSendNeedsPrivilege(t *testing.T) {
 	mockDB(t) // any SQL fails the test
 	req := httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"recipient":"bob@example.com","template":"x"}`))

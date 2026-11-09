@@ -390,24 +390,120 @@ func TestRunEveryRepeats(t *testing.T) {
 	}
 }
 
+// Each expired reservation is claimed with a conditional UPDATE before its
+// stock is returned, so overlapping runs return it once. Errors roll back
+// that reservation and the run moves on.
 func TestExpireReservations(t *testing.T) {
-	mock := mockDB(t)
-	mock.ExpectQuery(sqlText("WHERE r.status = 'active' AND r.expires_at < NOW()")).WillReturnRows(
-		sqlmock.NewRows([]string{"order_id", "product_id", "quantity"}).AddRow(5, "p1", 2).AddRow(6, "p2", 1))
-	for _, r := range []struct {
-		order   int
-		product string
-		qty     int
-	}{{5, "p1", 2}, {6, "p2", 1}} {
-		mock.ExpectBegin()
-		mock.ExpectExec(sqlText("UPDATE products SET reserved = GREATEST(reserved - $1, 0)")).WithArgs(r.qty, r.product).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectExec(sqlText("UPDATE reservations SET status = 'expired'")).WithArgs(r.order, r.product).
-			WillReturnResult(sqlmock.NewResult(0, 1))
-		mock.ExpectCommit()
+	claim := sqlText("UPDATE reservations SET status = 'expired'")
+	release := sqlText("UPDATE products SET reserved = GREATEST(reserved - $1, 0)")
+	claimed := func(product string, qty int) *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"product_id", "quantity"}).AddRow(product, qty)
 	}
+	tests := []struct {
+		name  string
+		setup func(mock sqlmock.Sqlmock)
+		want  string // expected log line
+	}{
+		{
+			name: "returns the stock of each reservation",
+			setup: func(mock sqlmock.Sqlmock) {
+				for _, r := range []struct {
+					id      int
+					product string
+					qty     int
+				}{{1, "p1", 2}, {2, "p2", 1}} {
+					mock.ExpectBegin()
+					mock.ExpectQuery(claim).WithArgs(r.id).WillReturnRows(claimed(r.product, r.qty))
+					mock.ExpectExec(release).WithArgs(r.qty, r.product).WillReturnResult(sqlmock.NewResult(0, 1))
+					mock.ExpectCommit()
+				}
+			},
+			want: "Expired 2 reservations",
+		},
+		{
+			name: "already expired by another run is skipped",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"product_id", "quantity"}))
+				mock.ExpectRollback()
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(2).WillReturnRows(claimed("p2", 1))
+				mock.ExpectExec(release).WithArgs(1, "p2").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			},
+			want: "Expired 1 reservations",
+		},
+		{
+			name: "failed stock update rolls back and moves on",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(1).WillReturnRows(claimed("p1", 2))
+				mock.ExpectExec(release).WithArgs(2, "p1").WillReturnError(errors.New("db down"))
+				mock.ExpectRollback()
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(2).WillReturnRows(claimed("p2", 1))
+				mock.ExpectExec(release).WithArgs(1, "p2").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			},
+			want: "reservation 1: db down",
+		},
+		{
+			name: "failed claim and failed commit are logged",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(1).WillReturnError(errors.New("lock timeout"))
+				mock.ExpectRollback()
+				mock.ExpectBegin()
+				mock.ExpectQuery(claim).WithArgs(2).WillReturnRows(claimed("p2", 1))
+				mock.ExpectExec(release).WithArgs(1, "p2").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit().WillReturnError(errors.New("serialization failure"))
+			},
+			want: "reservation 2: serialization failure",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			mock.ExpectQuery(sqlText("SELECT id FROM reservations")).WillReturnRows(
+				sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2))
+			tt.setup(mock)
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(io.Discard) })
 
-	expireReservations()
+			expireReservations()
+
+			if !strings.Contains(logs.String(), tt.want) {
+				t.Errorf("logs = %q, want %q", logs.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestExpireReservationsQueryErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		rows func(mock sqlmock.Sqlmock)
+	}{
+		{"query fails", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT id FROM reservations")).WillReturnError(errors.New("db down"))
+		}},
+		{"scan fails", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT id FROM reservations")).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("not-a-number"))
+		}},
+		{"row error", func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT id FROM reservations")).WillReturnRows(
+				sqlmock.NewRows([]string{"id"}).AddRow(1).RowError(0, errors.New("connection reset")))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			tt.rows(mock)
+			// Nothing else may run: sqlmock fails any statement not expected
+			expireReservations()
+		})
+	}
 }
 
 func TestCleanupOldEvents(t *testing.T) {

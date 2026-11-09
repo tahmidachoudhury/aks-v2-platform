@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -156,41 +157,83 @@ func runEvery(ctx context.Context, interval time.Duration, name string, fn func(
 
 // expireReservations releases inventory reservations that have expired
 func expireReservations() {
-	// Find expired reservations and release them
 	rows, err := db.Query(
-		`SELECT r.order_id, r.product_id, r.quantity
-		 FROM reservations r
-		 WHERE r.status = 'active' AND r.expires_at < NOW()`,
+		`SELECT id FROM reservations
+		 WHERE status = 'active' AND expires_at < NOW()`,
 	)
 	if err != nil {
 		log.Printf("expire_reservations query error: %v", err)
 		return
 	}
-	defer rows.Close()
+	var ids []int
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			log.Printf("expire_reservations scan error: %v", err)
+			return
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Printf("expire_reservations query error: %v", err)
+		return
+	}
 
 	count := 0
-	for rows.Next() {
-		var orderID int
-		var productID string
-		var quantity int
-		rows.Scan(&orderID, &productID, &quantity)
-
-		tx, err := db.Begin()
+	for _, id := range ids {
+		released, err := expireReservation(id)
 		if err != nil {
-			log.Printf("expire_reservations begin error: %v", err)
+			log.Printf("expire_reservations: reservation %d: %v", id, err)
 			continue
 		}
-		tx.Exec("UPDATE products SET reserved = GREATEST(reserved - $1, 0), updated_at = NOW() WHERE id = $2",
-			quantity, productID)
-		tx.Exec("UPDATE reservations SET status = 'expired' WHERE order_id = $1 AND product_id = $2 AND status = 'active'",
-			orderID, productID)
-		tx.Commit()
-		count++
+		if released {
+			count++
+		}
 	}
 
 	if count > 0 {
 		log.Printf("Expired %d reservations", count)
 	}
+}
+
+// expireReservation marks one reservation expired and returns its stock, in
+// one transaction. The UPDATE claims the reservation only while it is still
+// active, so when two runs overlap, or inventory-service releases it first,
+// the stock is returned once. It reports whether this call returned it.
+func expireReservation(id int) (bool, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var productID string
+	var quantity int
+	err = tx.QueryRow(
+		`UPDATE reservations SET status = 'expired'
+		 WHERE id = $1 AND status = 'active'
+		 RETURNING product_id, quantity`,
+		id,
+	).Scan(&productID, &quantity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if _, err := tx.Exec(
+		"UPDATE products SET reserved = GREATEST(reserved - $1, 0), updated_at = NOW() WHERE id = $2",
+		quantity, productID,
+	); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // detectAbandonedOrders finds orders stuck in pending for too long. It stops

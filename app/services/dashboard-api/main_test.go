@@ -245,6 +245,72 @@ func TestHandleShippingOverview(t *testing.T) {
 	}
 }
 
+// A failed query, scan or row returns 500 instead of zeros with a 200. The
+// handler stops at the first failure, so sqlmock fails any later query.
+func TestHandlersFailOnQueryError(t *testing.T) {
+	dbDown := errors.New("db down")
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		setup   func(mock sqlmock.Sqlmock)
+	}{
+		{"summary, first count", handleSummary, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT COUNT(*) FROM orders")).WillReturnError(dbDown)
+		}},
+		{"summary, status counts scan", handleSummary, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT COUNT(*) FROM orders")).WillReturnRows(one(12))
+			mock.ExpectQuery(sqlText("FROM orders WHERE created_at >= $1")).WillReturnRows(one(3))
+			mock.ExpectQuery(sqlText("GROUP BY status")).WillReturnRows(
+				sqlmock.NewRows([]string{"status", "count"}).AddRow("pending", "many"))
+		}},
+		{"summary, last count", handleSummary, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("SELECT COUNT(*) FROM orders")).WillReturnRows(one(12))
+			mock.ExpectQuery(sqlText("FROM orders WHERE created_at >= $1")).WillReturnRows(one(3))
+			mock.ExpectQuery(sqlText("GROUP BY status")).WillReturnRows(sqlmock.NewRows([]string{"status", "count"}))
+			for i := 0; i < 6; i++ {
+				mock.ExpectQuery(".").WillReturnRows(one(1))
+			}
+			mock.ExpectQuery(sqlText("FROM shipments")).WillReturnError(dbDown)
+		}},
+		{"revenue, total", handleRevenue, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("(method IS NULL OR method != 'refund')")).WillReturnError(dbDown)
+		}},
+		{"revenue, daily", handleRevenue, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("(method IS NULL OR method != 'refund')")).WillReturnRows(one(200.0))
+			mock.ExpectQuery(sqlText("AND method = 'refund'")).WillReturnRows(one(45.5))
+			mock.ExpectQuery(sqlText("INTERVAL '7 days'")).WillReturnError(dbDown)
+		}},
+		{"order stats, row error", handleOrderStats, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("INTERVAL '30 days'")).WillReturnRows(
+				sqlmock.NewRows([]string{"day", "count", "sum"}).AddRow("2026-11-08", 4, 99.5).RowError(0, dbDown))
+		}},
+		{"inventory alerts, scan", handleInventoryAlerts, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("WHERE (stock - reserved) < 10")).WillReturnRows(
+				sqlmock.NewRows([]string{"id", "name", "sku", "stock", "reserved", "available"}).AddRow("p1", "Mug", "MUG-1", "five", 2, 3))
+		}},
+		{"shipping overview, carriers", handleShippingOverview, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("GROUP BY status")).WillReturnRows(sqlmock.NewRows([]string{"status", "count"}))
+			mock.ExpectQuery(sqlText("GROUP BY carrier")).WillReturnError(dbDown)
+		}},
+		{"shipping overview, average", handleShippingOverview, func(mock sqlmock.Sqlmock) {
+			mock.ExpectQuery(sqlText("GROUP BY status")).WillReturnRows(sqlmock.NewRows([]string{"status", "count"}))
+			mock.ExpectQuery(sqlText("GROUP BY carrier")).WillReturnRows(sqlmock.NewRows([]string{"carrier", "count"}))
+			mock.ExpectQuery(sqlText("AVG(EXTRACT")).WillReturnError(dbDown)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := mockDB(t)
+			tt.setup(mock)
+			rec := httptest.NewRecorder()
+			tt.handler(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500: %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
 func TestHandleHealth(t *testing.T) {
 	tests := []struct {
 		name         string

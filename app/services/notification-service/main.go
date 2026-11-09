@@ -202,13 +202,18 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 	sentAt := time.Now()
 
 	var notifID int
-	db.QueryRow(
+	if err := db.QueryRow(
 		`INSERT INTO notifications (recipient, channel, template, subject, body, metadata, status, sent_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
 		req.Recipient, req.Channel, req.Template, subject, body, metadata, status, sentAt,
-	).Scan(&notifID)
+	).Scan(&notifID); err != nil {
+		log.Printf("Recording notification failed: %v", err)
+		httpError(w, "failed to record notification", http.StatusInternalServerError)
+		return
+	}
 
-	log.Printf("Notification sent: [%s] %s -> %s (template: %s)", req.Channel, req.Template, req.Recipient, req.Template)
+	// The recipient is an email or phone number, so it stays out of the log
+	log.Printf("Notification %d sent: [%s] template %s", notifID, req.Channel, req.Template)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
