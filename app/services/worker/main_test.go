@@ -142,6 +142,24 @@ func TestNewServiceBusClient(t *testing.T) {
 	}
 }
 
+// Readiness fails while the worker cannot reach its queue.
+func TestHandleHealthServiceBusDown(t *testing.T) {
+	t.Setenv("SERVICEBUS_CONNECTION_STRING", "Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true")
+	client, err := newServiceBusClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+
+	rec := httptest.NewRecorder()
+	handleHealth(client, "order-events")(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var body map[string]string
+	json.NewDecoder(rec.Body).Decode(&body)
+	if rec.Code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["service"] != "worker" {
+		t.Errorf("got %d %v, want 503 unhealthy from worker", rec.Code, body)
+	}
+}
+
 func TestGetEnv(t *testing.T) {
 	tests := []struct {
 		name, value, want string

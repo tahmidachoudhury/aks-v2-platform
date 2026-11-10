@@ -55,10 +55,7 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "worker"})
-		})
+		mux.HandleFunc("/healthz", handleHealth(sbClient, queue))
 		port := getEnv("HEALTH_PORT", "8090")
 		log.Printf("Worker health check on :%s", port)
 		http.ListenAndServe(":"+port, mux)
@@ -95,6 +92,35 @@ func newServiceBusClient() (*azservicebus.Client, error) {
 		return nil, err
 	}
 	return azservicebus.NewClient(namespace, cred, nil)
+}
+
+// handleHealth fails readiness while the worker cannot reach its queue.
+func handleHealth(sbClient *azservicebus.Client, queue string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := "ok"
+		w.Header().Set("Content-Type", "application/json")
+		if err := checkServiceBus(r.Context(), sbClient, queue); err != nil {
+			status = "unhealthy"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "worker"})
+	}
+}
+
+// checkServiceBus attaches a new receiver link to the queue, peeks and closes
+// it. A peek on the receive loop's own receiver kept failing after the
+// emulator came back, so it is no guide. Peeking locks nothing, so it takes
+// no message from the receive loop.
+func checkServiceBus(ctx context.Context, sbClient *azservicebus.Client, queue string) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	receiver, err := sbClient.NewReceiverForQueue(queue, nil)
+	if err != nil {
+		return err
+	}
+	defer receiver.Close(ctx)
+	_, err = receiver.PeekMessages(ctx, 1, nil)
+	return err
 }
 
 func pollAndProcess(ctx context.Context, receiver *azservicebus.Receiver, services map[string]string) {
