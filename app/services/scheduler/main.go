@@ -30,10 +30,7 @@ var (
 )
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
-	}
+	dbURL := requireEnv("DATABASE_URL")
 
 	var err error
 	db, err = sql.Open("postgres", dbURL)
@@ -45,8 +42,8 @@ func main() {
 	// Internal service URLs. Abandoned orders are cancelled through order-service
 	// and their stock released through inventory-service.
 	services = map[string]string{
-		"order":     getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
-		"inventory": getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
+		"order":     requireEnv("ORDER_SERVICE_URL"),
+		"inventory": requireEnv("INVENTORY_SERVICE_URL"),
 	}
 
 	shutdownTimeout, err := time.ParseDuration(getEnv("SHUTDOWN_TIMEOUT", "20s"))
@@ -416,6 +413,15 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireEnv returns the value of key, or exits if it is unset or empty.
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return v
 }
 
 func waitForDB() {

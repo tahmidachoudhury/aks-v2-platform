@@ -38,10 +38,7 @@ var (
 var chargeSucceeds = func() bool { return rand.Intn(10) != 0 }
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
-	}
+	dbURL := requireEnv("DATABASE_URL")
 
 	var err error
 	db, err = sql.Open("postgres", dbURL)
@@ -53,9 +50,11 @@ func main() {
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	// Before waitForDB, so missing Service Bus settings fail at once. Creating
+	// the client and sender opens no connection.
+	connectServiceBus()
 	waitForDB()
 	migrate()
-	connectServiceBus()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -492,12 +491,11 @@ func generatePaymentID() string {
 }
 
 func connectServiceBus() {
-	queue := os.Getenv("SERVICEBUS_QUEUE")
+	queue := requireEnv("SERVICEBUS_QUEUE")
 	connStr := os.Getenv("SERVICEBUS_CONNECTION_STRING")
 	namespace := os.Getenv("SERVICEBUS_NAMESPACE")
-	if queue == "" || (connStr == "" && namespace == "") {
-		log.Println("Service Bus not configured, events will only be logged")
-		return
+	if connStr == "" && namespace == "" {
+		log.Fatal("SERVICEBUS_CONNECTION_STRING or SERVICEBUS_NAMESPACE is required")
 	}
 
 	var err error
@@ -572,6 +570,7 @@ func checkServiceBus() error {
 }
 
 func publishEvent(eventType string, payload map[string]interface{}) {
+	// Only unit tests reach this: main exits without Service Bus settings
 	if sbSender == nil {
 		log.Printf("Event (no Service Bus): %s %v", eventType, payload)
 		return
@@ -644,6 +643,15 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireEnv returns the value of key, or exits if it is unset or empty.
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return v
 }
 
 func waitForDB() {

@@ -104,6 +104,8 @@ These are not requirements. They are the kind of problems you will hit in produc
 docker compose up --build
 ```
 
+Gateway login accepts any email and password by design: there is no user store, and a token carries role `admin` only for an email in `ADMIN_EMAILS`. See [api-gateway](../docs/service-catalogue.md#api-gateway) in the service catalogue.
+
 ---
 
 ## Advanced

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,8 +22,77 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// The subprocess in TestMainRefusesToStart runs main itself
+	if os.Getenv("SCHEDULER_TEST_RUN_MAIN") == "1" {
+		main()
+		os.Exit(0)
+	}
 	log.SetOutput(io.Discard)
 	os.Exit(m.Run())
+}
+
+// The settings main exits without, as key=value. sql.Open does not connect,
+// so the database URL need not reach a database.
+var requiredEnv = []string{
+	"DATABASE_URL=unused",
+	"ORDER_SERVICE_URL=http://order-service:8081",
+	"INVENTORY_SERVICE_URL=http://inventory-service:8082",
+}
+
+// withoutEnv returns requiredEnv less the entry for key. An empty key keeps
+// every entry.
+func withoutEnv(key string) []string {
+	var env []string
+	for _, kv := range requiredEnv {
+		if !strings.HasPrefix(kv, key+"=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// Pins #18: the scheduler exits on startup when the database or a service URL
+// is unset, rather than falling back to a built-in value.
+func TestMainRefusesToStart(t *testing.T) {
+	type test struct {
+		name    string
+		env     []string
+		wantLog string
+	}
+	tests := []test{
+		// With every setting, main gets past the checks and stops at the next bad
+		// one, before it waits for the database
+		{"all set", append(withoutEnv(""), "SHUTDOWN_TIMEOUT=soon"), "invalid SHUTDOWN_TIMEOUT"},
+	}
+	for _, kv := range requiredEnv {
+		key, _, _ := strings.Cut(kv, "=")
+		tests = append(tests, test{key + " unset", withoutEnv(key), key + " is required"})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// If main ever starts its jobs instead, the timeout kills it and the test fails
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+			for _, kv := range os.Environ() {
+				key, _, _ := strings.Cut(kv, "=")
+				if !strings.HasSuffix(key, "_SERVICE_URL") && key != "DATABASE_URL" && key != "SHUTDOWN_TIMEOUT" {
+					cmd.Env = append(cmd.Env, kv)
+				}
+			}
+			cmd.Env = append(cmd.Env, "SCHEDULER_TEST_RUN_MAIN=1", "HEALTH_PORT=0")
+			cmd.Env = append(cmd.Env, tt.env...)
+
+			out, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || ctx.Err() != nil {
+				t.Fatalf("main exited with %v, want exit status 1. Output:\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tt.wantLog) {
+				t.Errorf("output %q does not contain %q", out, tt.wantLog)
+			}
+		})
+	}
 }
 
 // mockDB points the package-level db at a sqlmock and checks every

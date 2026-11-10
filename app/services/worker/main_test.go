@@ -3,19 +3,92 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestMain(m *testing.M) {
+	// The subprocess in TestMainRefusesToStart runs main itself
+	if os.Getenv("WORKER_TEST_RUN_MAIN") == "1" {
+		main()
+		os.Exit(0)
+	}
 	log.SetOutput(io.Discard)
 	os.Exit(m.Run())
+}
+
+// The settings main exits without, as key=value
+var requiredEnv = []string{
+	"SERVICEBUS_QUEUE=order-events",
+	"ORDER_SERVICE_URL=http://order-service:8081",
+	"INVENTORY_SERVICE_URL=http://inventory-service:8082",
+	"PAYMENT_SERVICE_URL=http://payment-service:8083",
+	"NOTIFICATION_SERVICE_URL=http://notification-service:8084",
+	"SHIPPING_SERVICE_URL=http://shipping-service:8085",
+}
+
+// withoutEnv returns requiredEnv less the entry for key. An empty key keeps
+// every entry.
+func withoutEnv(key string) []string {
+	var env []string
+	for _, kv := range requiredEnv {
+		if !strings.HasPrefix(kv, key+"=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// Pins #18: the worker exits on startup when the queue or a service URL is
+// unset, rather than falling back to a built-in value.
+func TestMainRefusesToStart(t *testing.T) {
+	type test struct {
+		name    string
+		env     []string
+		wantLog string
+	}
+	tests := []test{
+		// With every setting but a connection, main stops at the Service Bus client
+		{"all set", withoutEnv(""), "SERVICEBUS_CONNECTION_STRING or SERVICEBUS_NAMESPACE is required"},
+	}
+	for _, kv := range requiredEnv {
+		key, _, _ := strings.Cut(kv, "=")
+		tests = append(tests, test{key + " unset", withoutEnv(key), key + " is required"})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// If main ever starts receiving instead, the timeout kills it and the test fails
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+			for _, kv := range os.Environ() {
+				key, _, _ := strings.Cut(kv, "=")
+				if !strings.HasSuffix(key, "_SERVICE_URL") && !strings.HasPrefix(key, "SERVICEBUS_") {
+					cmd.Env = append(cmd.Env, kv)
+				}
+			}
+			cmd.Env = append(cmd.Env, "WORKER_TEST_RUN_MAIN=1", "HEALTH_PORT=0")
+			cmd.Env = append(cmd.Env, tt.env...)
+
+			out, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || ctx.Err() != nil {
+				t.Fatalf("main exited with %v, want exit status 1. Output:\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tt.wantLog) {
+				t.Errorf("output %q does not contain %q", out, tt.wantLog)
+			}
+		})
+	}
 }
 
 // The publishers send {type, payload, timestamp}. The worker must read the
