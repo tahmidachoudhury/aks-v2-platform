@@ -27,6 +27,7 @@ var shuttingDown atomic.Bool
 var (
 	sbClient *azservicebus.Client
 	sbSender *azservicebus.Sender
+	sbQueue  string
 )
 
 type Order struct {
@@ -172,6 +173,9 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "shutting down"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else if err := db.Ping(); err != nil {
+		status = "unhealthy"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else if err := checkServiceBus(r.Context()); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
@@ -437,7 +441,27 @@ func connectServiceBus() {
 	if err != nil {
 		log.Fatalf("Failed to create Service Bus sender: %v", err)
 	}
+	sbQueue = queue
 	log.Printf("Publishing events to Service Bus queue %s", queue)
+}
+
+// checkServiceBus attaches a new sender link to the queue and closes it, so
+// readiness fails while Service Bus is unreachable. sbSender cannot answer
+// this: its open link reports no error until a send fails, even after the
+// connection drops. Returns nil when Service Bus is not configured.
+func checkServiceBus(ctx context.Context) error {
+	if sbClient == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	sender, err := sbClient.NewSender(sbQueue, nil)
+	if err != nil {
+		return err
+	}
+	defer sender.Close(ctx)
+	_, err = sender.NewMessageBatch(ctx, nil)
+	return err
 }
 
 func publishEvent(eventType string, payload map[string]interface{}) {

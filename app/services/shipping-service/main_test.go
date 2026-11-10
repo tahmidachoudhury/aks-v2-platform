@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -508,18 +510,23 @@ func TestHandleHealth(t *testing.T) {
 		name         string
 		shuttingDown bool
 		pingErr      error
+		sbDown       bool
 		want         int
 	}{
-		{"healthy", false, nil, http.StatusOK},
-		{"database down", false, errors.New("db down"), http.StatusServiceUnavailable},
+		{"healthy", false, nil, false, http.StatusOK},
+		{"database down", false, errors.New("db down"), false, http.StatusServiceUnavailable},
+		{"service bus down", false, nil, true, http.StatusServiceUnavailable},
 		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
-		{"shutting down", true, nil, http.StatusServiceUnavailable},
+		{"shutting down", true, nil, false, http.StatusServiceUnavailable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
 			if !tt.shuttingDown {
 				mock.ExpectPing().WillReturnError(tt.pingErr)
+			}
+			if tt.sbDown {
+				unreachableServiceBus(t)
 			}
 			shuttingDown.Store(tt.shuttingDown)
 			t.Cleanup(func() { shuttingDown.Store(false) })
@@ -531,4 +538,18 @@ func TestHandleHealth(t *testing.T) {
 			}
 		})
 	}
+}
+
+// unreachableServiceBus points sbClient at a port nothing listens on.
+func unreachableServiceBus(t *testing.T) {
+	t.Helper()
+	client, err := azservicebus.NewClientFromConnectionString("Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true;", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbClient, sbQueue = client, "order-events"
+	t.Cleanup(func() {
+		client.Close(context.Background())
+		sbClient, sbQueue = nil, ""
+	})
 }
