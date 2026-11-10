@@ -30,6 +30,7 @@ var shuttingDown atomic.Bool
 var (
 	sbClient *azservicebus.Client
 	sbSender *azservicebus.Sender
+	sbQueue  string
 )
 
 // Shared secret carriers send in X-Webhook-Secret, from SHIPPING_WEBHOOK_SECRET
@@ -162,6 +163,7 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
+	w.Header().Set("Content-Type", "application/json")
 	if shuttingDown.Load() {
 		status = "shutting down"
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -169,8 +171,11 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "shipping-service"})
+	body := map[string]string{"status": status, "service": "shipping-service"}
+	if !shuttingDown.Load() {
+		body["servicebus"] = serviceBusState()
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 func handleShipments(w http.ResponseWriter, r *http.Request) {
@@ -537,7 +542,57 @@ func connectServiceBus() {
 	if err != nil {
 		log.Fatalf("Failed to create Service Bus sender: %v", err)
 	}
+	sbQueue = queue
 	log.Printf("Publishing events to Service Bus queue %s", queue)
+
+	// The first check runs before the server starts, so /healthz never
+	// reports a state nobody has checked
+	sbUp.Store(checkServiceBus() == nil)
+	go watchServiceBus(time.Tick(5 * time.Second))
+}
+
+// sbUp holds the result of the last checkServiceBus, run by watchServiceBus.
+var sbUp atomic.Bool
+
+// watchServiceBus runs checkServiceBus on every tick and stores the result,
+// so /healthz never waits on Service Bus. That is one link per tick per pod,
+// whatever the request rate.
+func watchServiceBus(ticks <-chan time.Time) {
+	for range ticks {
+		sbUp.Store(checkServiceBus() == nil)
+	}
+}
+
+// serviceBusState is "disabled" without Service Bus, "degraded" while the
+// queue is unreachable and "ok" otherwise. It never fails readiness: the
+// service still serves, and publishEvent logs the events it cannot send.
+func serviceBusState() string {
+	if sbClient == nil {
+		return "disabled"
+	}
+	if !sbUp.Load() {
+		return "degraded"
+	}
+	return "ok"
+}
+
+// checkServiceBus attaches a new sender link to the queue and closes it.
+// sbSender cannot answer this: its open link reports no error until a send
+// fails, even after the connection drops.
+func checkServiceBus() error {
+	sender, err := sbClient.NewSender(sbQueue, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sender.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = sender.NewMessageBatch(ctx, nil)
+	return err
 }
 
 func publishEvent(eventType string, payload map[string]interface{}) {

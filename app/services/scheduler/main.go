@@ -67,11 +67,11 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		status := "ok"
+		w.Header().Set("Content-Type", "application/json")
 		if err := db.Ping(); err != nil {
 			status = "unhealthy"
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "scheduler"})
 	})
 	health := &http.Server{Addr: ":" + getEnv("HEALTH_PORT", "8091"), Handler: mux}

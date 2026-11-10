@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -15,7 +16,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -445,21 +448,30 @@ func TestRequireUser(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	tests := []struct {
-		name         string
-		shuttingDown bool
-		pingErr      error
-		want         int
+		name           string
+		shuttingDown   bool
+		pingErr        error
+		sbDown         bool
+		want           int
+		wantStatus     string
+		wantServiceBus string
 	}{
-		{"healthy", false, nil, http.StatusOK},
-		{"database down", false, errors.New("db down"), http.StatusServiceUnavailable},
+		{"healthy", false, nil, false, http.StatusOK, "ok", "disabled"},
+		{"database down", false, errors.New("db down"), false, http.StatusServiceUnavailable, "unhealthy", "disabled"},
+		// Service Bus is report-only: the service still serves without it.
+		// handleHealth reads the stored result, so this opens no link.
+		{"service bus down", false, nil, true, http.StatusOK, "ok", "degraded"},
 		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
-		{"shutting down", true, nil, http.StatusServiceUnavailable},
+		{"shutting down", true, nil, false, http.StatusServiceUnavailable, "shutting down", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := mockDB(t)
 			if !tt.shuttingDown {
 				mock.ExpectPing().WillReturnError(tt.pingErr)
+			}
+			if tt.sbDown {
+				unreachableServiceBus(t)
 			}
 			shuttingDown.Store(tt.shuttingDown)
 			t.Cleanup(func() { shuttingDown.Store(false) })
@@ -469,6 +481,50 @@ func TestHandleHealth(t *testing.T) {
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d", rec.Code, tt.want)
 			}
+			if got := rec.Result().Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+			var body map[string]string
+			json.NewDecoder(rec.Body).Decode(&body)
+			if body["status"] != tt.wantStatus || body["servicebus"] != tt.wantServiceBus {
+				t.Errorf("body = %v, want status %q servicebus %q", body, tt.wantStatus, tt.wantServiceBus)
+			}
 		})
 	}
+}
+
+// watchServiceBus stores the result of a check on each tick, and stops when
+// the ticks stop.
+func TestWatchServiceBus(t *testing.T) {
+	unreachableServiceBus(t)
+	sbUp.Store(true)
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		watchServiceBus(ticks)
+		close(done)
+	}()
+	ticks <- time.Now()
+	close(ticks)
+	<-done
+	if sbUp.Load() {
+		t.Error("sbUp = true after a failed check, want false")
+	}
+}
+
+// unreachableServiceBus points sbClient at a port nothing listens on, with
+// the stored check result down.
+func unreachableServiceBus(t *testing.T) {
+	t.Helper()
+	client, err := azservicebus.NewClientFromConnectionString("Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true;", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbClient, sbQueue = client, "order-events"
+	sbUp.Store(false)
+	t.Cleanup(func() {
+		client.Close(context.Background())
+		sbClient, sbQueue = nil, ""
+		sbUp.Store(false)
+	})
 }

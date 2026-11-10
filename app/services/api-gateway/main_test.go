@@ -589,27 +589,51 @@ func TestIsPublicPath(t *testing.T) {
 	}
 }
 
-// #19: readiness fails on SIGTERM so the pod leaves the endpoints.
+// #19: readiness fails on SIGTERM so the pod leaves the endpoints. Redis is
+// reported but never fails readiness: the gateway serves without it.
 func TestHandleHealth(t *testing.T) {
 	tests := []struct {
 		name         string
 		shuttingDown bool
+		redisURL     string
+		redis        string // "none", "up" or "down"
 		want         int
 		wantStatus   string
+		wantRedis    string
 	}{
-		{"serving", false, http.StatusOK, "ok"},
-		{"shutting down", true, http.StatusServiceUnavailable, "shutting down"},
+		{"serving", false, "redis://redis:6379", "up", http.StatusOK, "ok", "ok"},
+		// Shutting down skips the Redis ping, so the field is absent
+		{"shutting down", true, "redis://redis:6379", "up", http.StatusServiceUnavailable, "shutting down", ""},
+		{"redis not configured", false, "", "none", http.StatusOK, "ok", "disabled"},
+		{"redis down since startup", false, "redis://redis:6379", "none", http.StatusOK, "ok", "degraded"},
+		{"redis went down", false, "redis://redis:6379", "down", http.StatusOK, "ok", "degraded"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("REDIS_URL", tt.redisURL)
+			orig := redisClient
+			redisClient = nil
+			if tt.redis != "none" {
+				mr := miniredis.RunT(t)
+				redisClient = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+				if tt.redis == "down" {
+					mr.Close()
+				}
+			}
+			t.Cleanup(func() {
+				if redisClient != nil {
+					redisClient.Close()
+				}
+				redisClient = orig
+			})
 			shuttingDown.Store(tt.shuttingDown)
 			t.Cleanup(func() { shuttingDown.Store(false) })
 			rec := httptest.NewRecorder()
 			handleHealth(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 			var body map[string]string
 			json.NewDecoder(rec.Body).Decode(&body)
-			if rec.Code != tt.want || body["status"] != tt.wantStatus {
-				t.Errorf("status = %d %q, want %d %q", rec.Code, body["status"], tt.want, tt.wantStatus)
+			if rec.Code != tt.want || body["status"] != tt.wantStatus || body["redis"] != tt.wantRedis {
+				t.Errorf("status = %d %q redis %q, want %d %q redis %q", rec.Code, body["status"], body["redis"], tt.want, tt.wantStatus, tt.wantRedis)
 			}
 		})
 	}

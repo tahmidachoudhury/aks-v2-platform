@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,14 +52,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The first check runs before the health server starts, so /healthz
+	// never reports a state nobody has checked
+	sbUp.Store(checkServiceBus(sbClient, queue) == nil)
+	go watchServiceBus(time.Tick(5*time.Second), sbClient, queue)
+
 	// Health check endpoint
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok", "service": "worker"})
-		})
+		mux.HandleFunc("/healthz", handleHealth)
 		port := getEnv("HEALTH_PORT", "8090")
 		log.Printf("Worker health check on :%s", port)
 		http.ListenAndServe(":"+port, mux)
@@ -95,6 +98,51 @@ func newServiceBusClient() (*azservicebus.Client, error) {
 		return nil, err
 	}
 	return azservicebus.NewClient(namespace, cred, nil)
+}
+
+// handleHealth fails readiness while the worker cannot reach its queue.
+// Receiving is its whole job, so a new pod that cannot receive must not
+// replace a working one during a rollout. It reads the result watchServiceBus
+// stored, so it never waits on Service Bus.
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
+	w.Header().Set("Content-Type", "application/json")
+	if !sbUp.Load() {
+		status = "unhealthy"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "worker"})
+}
+
+// sbUp holds the result of the last checkServiceBus, run by watchServiceBus.
+var sbUp atomic.Bool
+
+// watchServiceBus runs checkServiceBus on every tick and stores the result.
+// That is one link per tick, whatever the probe rate.
+func watchServiceBus(ticks <-chan time.Time, sbClient *azservicebus.Client, queue string) {
+	for range ticks {
+		sbUp.Store(checkServiceBus(sbClient, queue) == nil)
+	}
+}
+
+// checkServiceBus attaches a new receiver link to the queue, peeks and closes
+// it. A peek on the receive loop's own receiver kept failing after the
+// emulator came back, so it is no guide. Peeking locks nothing, so it takes
+// no message from the receive loop.
+func checkServiceBus(sbClient *azservicebus.Client, queue string) error {
+	receiver, err := sbClient.NewReceiverForQueue(queue, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		receiver.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = receiver.PeekMessages(ctx, 1, nil)
+	return err
 }
 
 func pollAndProcess(ctx context.Context, receiver *azservicebus.Receiver, services map[string]string) {
