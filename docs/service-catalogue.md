@@ -134,9 +134,9 @@ Order lifecycle and the status state machine.
 | ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset                                                                                                                |
 | `PORT`                         | No       | `8081`  | No     |                                                                                                                                          |
-| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
-| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
-| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
+| `SERVICEBUS_QUEUE`             | Yes      | none    | No     | Queue name. Exits on startup if unset. Compose sets `order-events`                                                                       |
+| `SERVICEBUS_CONNECTION_STRING` | One of these two | none | Yes | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Exits on startup if both are unset. Compose uses the emulator's fixed local string |
+| `SERVICEBUS_NAMESPACE`         | One of these two | none | No  | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `orders` and `order_events` in `migrate()` at startup with `CREATE TABLE IF NOT EXISTS`. It is the only service that inserts into them. Every create and status change writes an `order_events` row. It is not the only writer: scheduler DELETEs `order_events` rows older than 90 days. scheduler and dashboard-api read `orders`.
 
@@ -266,9 +266,9 @@ Simulated charges and refunds, with a double-entry ledger.
 | ------------------------------ | -------- | ------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database                                                             |
 | `PORT`                         | No       | `8083`  | No     |                                                                                                                                          |
-| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
-| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
-| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
+| `SERVICEBUS_QUEUE`             | Yes      | none    | No     | Queue name. Exits on startup if unset. Compose sets `order-events`                                                                       |
+| `SERVICEBUS_CONNECTION_STRING` | One of these two | none | Yes | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Exits on startup if both are unset. Compose uses the emulator's fixed local string |
+| `SERVICEBUS_NAMESPACE`         | One of these two | none | No  | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `payments` and `ledger_entries` in `migrate()` at startup and writes both. scheduler and dashboard-api read `payments`.
 
@@ -352,9 +352,9 @@ Shipments, tracking and carrier status webhooks.
 | `DATABASE_URL`                 | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database                                                             |
 | `PORT`                         | No       | `8085`  | No     |                                                                                                                                          |
 | `SHIPPING_WEBHOOK_SECRET`      | No       | none    | Yes    | Shared secret carriers send in `X-Webhook-Secret`. If unset, `/webhook` rejects every request. Compose sets a local value
-| `SERVICEBUS_QUEUE`             | No       | none    | No     | Queue name. Compose sets `order-events`. If unset, or if neither connection setting is set, events are only logged                       |
-| `SERVICEBUS_CONNECTION_STRING` | No       | none    | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Compose uses the emulator's fixed local string                    |
-| `SERVICEBUS_NAMESPACE`         | No       | none    | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
+| `SERVICEBUS_QUEUE`             | Yes      | none    | No     | Queue name. Exits on startup if unset. Compose sets `order-events`                                                                       |
+| `SERVICEBUS_CONNECTION_STRING` | One of these two | none | Yes | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Exits on startup if both are unset. Compose uses the emulator's fixed local string |
+| `SERVICEBUS_NAMESPACE`         | One of these two | none | No  | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 
 **Data:** creates `shipments` and `tracking_events` in `migrate()` at startup and writes both. Reads `orders.customer_id` to scope shipments to a customer. dashboard-api reads `shipments`.
 

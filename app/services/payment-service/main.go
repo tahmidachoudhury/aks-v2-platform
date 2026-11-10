@@ -52,9 +52,11 @@ func main() {
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	// Before waitForDB, so missing Service Bus settings fail at once. Creating
+	// the client and sender opens no connection.
+	connectServiceBus()
 	waitForDB()
 	migrate()
-	connectServiceBus()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -488,11 +490,13 @@ func generatePaymentID() string {
 
 func connectServiceBus() {
 	queue := os.Getenv("SERVICEBUS_QUEUE")
+	if queue == "" {
+		log.Fatal("SERVICEBUS_QUEUE is required")
+	}
 	connStr := os.Getenv("SERVICEBUS_CONNECTION_STRING")
 	namespace := os.Getenv("SERVICEBUS_NAMESPACE")
-	if queue == "" || (connStr == "" && namespace == "") {
-		log.Println("Service Bus not configured, events will only be logged")
-		return
+	if connStr == "" && namespace == "" {
+		log.Fatal("SERVICEBUS_CONNECTION_STRING or SERVICEBUS_NAMESPACE is required")
 	}
 
 	var err error

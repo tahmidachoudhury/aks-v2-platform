@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -10,17 +11,87 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func TestMain(m *testing.M) {
+	// The subprocess in TestMainRefusesToStart runs main itself
+	if os.Getenv("ORDER_TEST_RUN_MAIN") == "1" {
+		main()
+		os.Exit(0)
+	}
 	// publishEvent and the handlers log on every call
 	log.SetOutput(io.Discard)
 	os.Exit(m.Run())
+}
+
+// The settings main exits without, as key=value. sql.Open does not connect,
+// so the database URL need not reach a database.
+var requiredEnv = []string{
+	"DATABASE_URL=unused",
+	"SERVICEBUS_QUEUE=order-events",
+	"SERVICEBUS_CONNECTION_STRING=not-a-connection-string",
+}
+
+// withoutEnv returns requiredEnv less the entry for key. An empty key keeps
+// every entry.
+func withoutEnv(key string) []string {
+	var env []string
+	for _, kv := range requiredEnv {
+		if !strings.HasPrefix(kv, key+"=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// Pins #18: the service exits on startup when the database or Service Bus is
+// not configured, rather than only logging the events it should publish.
+func TestMainRefusesToStart(t *testing.T) {
+	type test struct {
+		name    string
+		env     []string
+		wantLog string
+	}
+	tests := []test{
+		{"DATABASE_URL unset", withoutEnv("DATABASE_URL"), "DATABASE_URL is required"},
+		{"SERVICEBUS_QUEUE unset", withoutEnv("SERVICEBUS_QUEUE"), "SERVICEBUS_QUEUE is required"},
+		{"no Service Bus connection", withoutEnv("SERVICEBUS_CONNECTION_STRING"), "SERVICEBUS_CONNECTION_STRING or SERVICEBUS_NAMESPACE is required"},
+		// With every setting, main gets past the checks and stops at the bad
+		// connection string, before it waits for the database
+		{"all set", withoutEnv(""), "Failed to create Service Bus client"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// If main ever starts serving instead, the timeout kills it and the test fails
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+			for _, kv := range os.Environ() {
+				key, _, _ := strings.Cut(kv, "=")
+				if key != "DATABASE_URL" && !strings.HasPrefix(key, "SERVICEBUS_") {
+					cmd.Env = append(cmd.Env, kv)
+				}
+			}
+			cmd.Env = append(cmd.Env, "ORDER_TEST_RUN_MAIN=1", "PORT=0")
+			cmd.Env = append(cmd.Env, tt.env...)
+
+			out, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || ctx.Err() != nil {
+				t.Fatalf("main exited with %v, want exit status 1. Output:\n%s", err, out)
+			}
+			if !strings.Contains(string(out), tt.wantLog) {
+				t.Errorf("output %q does not contain %q", out, tt.wantLog)
+			}
+		})
+	}
 }
 
 // mockDB points the package-level db at a sqlmock and checks every
