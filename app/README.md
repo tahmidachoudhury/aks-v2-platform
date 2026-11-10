@@ -104,7 +104,7 @@ These are not requirements. They are the kind of problems you will hit in produc
 docker compose up --build
 ```
 
-Compose builds each service from its Dockerfile, the same image that ships. Services wait for Postgres and Redis to pass their healthchecks. The four Service Bus clients (order, payment, shipping and worker) wait for the emulator's `/health`, which usually takes 30 to 60 seconds from a cold start. The one-shot `servicebus-ready` container runs that check, because the emulator image has no shell or HTTP client, and exits once the emulator is healthy. After 300 seconds it gives up and `up` fails with `Service Bus emulator not healthy after 300s` in `docker compose logs servicebus-ready`.
+Compose builds each service from its Dockerfile, the same image that ships. Services wait for Postgres and Redis to pass their healthchecks. The four Service Bus clients (order, payment, shipping and worker) wait for the emulator's `/health`, which usually takes 30 to 90 seconds from a cold start. The one-shot `servicebus-ready` container runs that check, because the emulator image has no shell or HTTP client, and exits once the emulator is healthy. After 300 seconds it gives up and `up` fails with `Service Bus emulator not healthy after 300s` in `docker compose logs servicebus-ready`.
 
 Gateway login accepts any email and password by design: there is no user store, and a token carries role `admin` only for an email in `ADMIN_EMAILS`. See [api-gateway](../docs/service-catalogue.md#api-gateway) in the service catalogue.
 

@@ -54,7 +54,7 @@ services:
   # The emulator image has no shell or HTTP client, so it cannot run its own
   # healthcheck. This one-shot container polls the emulator's health endpoint
   # and exits 0 once it is healthy, and the Service Bus clients wait for that.
-  # The emulator usually takes 30 to 60s from cold. After 300s the poller
+  # The emulator usually takes 30 to 90s from cold. After 300s the poller
   # exits 1 with "Service Bus emulator not healthy after 300s".
   servicebus-ready:
     image: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
