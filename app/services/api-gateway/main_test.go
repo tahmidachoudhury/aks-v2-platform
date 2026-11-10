@@ -602,7 +602,8 @@ func TestHandleHealth(t *testing.T) {
 		wantRedis    string
 	}{
 		{"serving", false, "redis://redis:6379", "up", http.StatusOK, "ok", "ok"},
-		{"shutting down", true, "redis://redis:6379", "up", http.StatusServiceUnavailable, "shutting down", "ok"},
+		// Shutting down skips the Redis ping, so the field is absent
+		{"shutting down", true, "redis://redis:6379", "up", http.StatusServiceUnavailable, "shutting down", ""},
 		{"redis not configured", false, "", "none", http.StatusOK, "ok", "disabled"},
 		{"redis down since startup", false, "redis://redis:6379", "none", http.StatusOK, "ok", "degraded"},
 		{"redis went down", false, "redis://redis:6379", "down", http.StatusOK, "ok", "degraded"},
