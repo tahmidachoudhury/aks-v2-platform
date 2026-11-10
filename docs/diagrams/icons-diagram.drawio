@@ -161,7 +161,7 @@
         <mxCell id="dgYd3Sv2mvM2XHrTNMKt-27" parent="aGEL2Bxalsuub27Lxyfx-3" style="image;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/azure2/containers/Container_Registries.svg;" value="ACR" vertex="1">
           <mxGeometry height="61" width="68" x="1800.9999999999998" y="954.5" as="geometry" />
         </mxCell>
-        <mxCell id="dgYd3Sv2mvM2XHrTNMKt-28" parent="aGEL2Bxalsuub27Lxyfx-3" style="verticalLabelPosition=bottom;html=1;verticalAlign=top;align=center;strokeColor=none;fillColor=#00BEF2;shape=mxgraph.azure.storage_blob;" value="&lt;div&gt;Terraform State&lt;/div&gt;&lt;div&gt;(Azure Blob, lease locking)&lt;/div&gt;" vertex="1">
+        <mxCell id="dgYd3Sv2mvM2XHrTNMKt-28" parent="aGEL2Bxalsuub27Lxyfx-3" style="verticalLabelPosition=bottom;html=1;verticalAlign=top;align=center;strokeColor=none;fillColor=#00BEF2;shape=mxgraph.azure.storage_blob;" value="&lt;div&gt;OpenTofu State&lt;/div&gt;&lt;div&gt;(Azure Blob, lease locking)&lt;/div&gt;" vertex="1">
           <mxGeometry height="45" width="50" x="1810" y="1090" as="geometry" />
         </mxCell>
         <mxCell id="dgYd3Sv2mvM2XHrTNMKt-29" parent="aGEL2Bxalsuub27Lxyfx-3" style="image;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/azure2/compute/Disks_Snapshots.svg;" value="managed disk snapshots" vertex="1">

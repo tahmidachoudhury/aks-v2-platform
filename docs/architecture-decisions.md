@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -14,6 +14,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Autoscaling](#autoscaling)        | HPA for HTTP services, KEDA for the worker, fixed for the rest  | Accepted | [#9](https://github.com/tahmidachoudhury/aks-v2-platform/issues/9)   |
 | [Observability](#observability)    | New Relic                                                       | Accepted | [#10](https://github.com/tahmidachoudhury/aks-v2-platform/issues/10) |
 | [Secrets delivery](#secrets-delivery) | External Secrets Operator (ESO)                              | Accepted | [#11](https://github.com/tahmidachoudhury/aks-v2-platform/issues/11) |
+| [Infrastructure as code](#infrastructure-as-code) | OpenTofu, not Terraform                  | Accepted | none                                                               |
 
 ## Event bus
 
@@ -36,9 +37,9 @@ Prices checked on 9 November 2026, UK South. Sources: [Service Bus pricing](http
 
 **Consequences / trade-offs**
 
-- Service Bus gives the dead-letter behaviour the brief asks for with one Terraform setting. With Kafka we build it.
+- Service Bus gives the dead-letter behaviour the brief asks for with one OpenTofu setting. With Kafka we build it.
 - Service Bus private endpoints need the Premium tier ([Private Link docs](https://learn.microsoft.com/en-us/azure/service-bus-messaging/private-link-service)). The brief asks for a private endpoint, and Premium costs about $677 a month.
-- Standard can restrict access with IP firewall rules set through Terraform, but has no private endpoint. Event Hubs Standard supports Private Link ([Event Hubs quotas](https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-quotas)).
+- Standard can restrict access with IP firewall rules set through OpenTofu, but has no private endpoint. Event Hubs Standard supports Private Link ([Event Hubs quotas](https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-quotas)).
 - Known gap: Service Bus has no private endpoint in this build. P3-14 drops Service Bus and keeps private endpoints for ACR, Key Vault and state storage. A production team should pay for Premium and add the private endpoint.
 - Standard caps messages at 256 KB. Our event payloads are small JSON, so this does not matter.
 - The code has three publishers, not the four the brief mentions. scheduler only has a comment about a cancellation event.
@@ -196,3 +197,29 @@ Behaviour checked on 9 November 2026. Sources: [CSI driver configuration options
 - ESO is a third-party install, so it goes in with Helm per [Manifest tooling](#manifest-tooling).
 
 Ticket: [#11](https://github.com/tahmidachoudhury/aks-v2-platform/issues/11)
+
+## Infrastructure as code
+
+**Status:** Accepted
+
+**Context:** The brief asks for Terraform with remote state in an Azure Storage Account. In August 2023, HashiCorp moved Terraform 1.6 and later from the Mozilla Public License 2.0 (MPL 2.0) to the Business Source License 1.1 (BSL). The BSL restricts use in competing products. IBM completed its purchase of HashiCorp in February 2025. One company now owns Terraform's licence and roadmap and can change either again.
+
+**Decision:** OpenTofu. It is the open-source fork of Terraform 1.5. It stays on MPL 2.0, which puts no limit on how we use it, and a foundation runs it rather than a single vendor. It reads the same HCL and uses the same `azurerm` provider and `azurerm` state backend with blob lease locking. The rest of the brief's state design holds unchanged. If IBM makes major changes to Terraform's licence, pricing or direction, this project is not affected and has nothing to migrate.
+
+**Options compared**
+
+| Option    | Licence                                                         | Who controls it                                                   | If the owner changes direction                                     |
+| --------- | --------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Terraform | BSL 1.1 since 1.6. Source-available, not open source            | HashiCorp, owned by IBM                                           | We follow their licence and release line, or migrate under pressure |
+| OpenTofu  | MPL 2.0, open source (OSI-approved)                             | Linux Foundation project, in the CNCF Sandbox since April 2025    | No single vendor can relicense it. The code can always be forked again |
+
+Checked on 10 November 2026. Sources: [OpenTofu](https://en.wikipedia.org/wiki/OpenTofu), [Terraform and OpenTofu timeline](https://hidekazu-konishi.com/entry/terraform_and_opentofu_history_and_timeline.html), [OpenTofu joins the CNCF](https://thenewstack.io/opentofu-joins-cncf-new-home-for-open-source-iac-project/).
+
+**Consequences / trade-offs**
+
+- The CLI is `tofu`, not `terraform`: `tofu init`, `tofu plan`, `tofu apply`. The infra workflow, when it exists, installs it with `opentofu/setup-opentofu`.
+- Code stays HCL in `.tf` files. The working directory and lock file keep their Terraform names (`.terraform/`, `.terraform.lock.hcl`), so the gitignore entries do not change.
+- Providers come from the OpenTofu registry, which serves the same providers, including `hashicorp/azurerm`.
+- The two tools have drifted apart since 1.6. Where their docs disagree, follow the OpenTofu docs.
+- OpenTofu can encrypt state and plan files on the client, which Terraform cannot. Consider it for the state account (P3-01).
+- This departs from the brief, which names Terraform. We keep the brief in [README.md](README.md) as written.
