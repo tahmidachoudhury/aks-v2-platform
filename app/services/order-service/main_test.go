@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/DATA-DOG/go-sqlmock"
@@ -364,18 +365,20 @@ func TestHandleUpdateStatus(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	tests := []struct {
-		name         string
-		shuttingDown bool
-		pingErr      error
-		sbDown       bool
-		want         int
-		wantStatus   string
+		name           string
+		shuttingDown   bool
+		pingErr        error
+		sbDown         bool
+		want           int
+		wantStatus     string
+		wantServiceBus string
 	}{
-		{"healthy", false, nil, false, http.StatusOK, "ok"},
-		{"database down", false, errors.New("db down"), false, http.StatusServiceUnavailable, "unhealthy"},
-		{"service bus down", false, nil, true, http.StatusServiceUnavailable, "unhealthy"},
+		{"healthy", false, nil, false, http.StatusOK, "ok", "disabled"},
+		{"database down", false, errors.New("db down"), false, http.StatusServiceUnavailable, "unhealthy", "disabled"},
+		// Service Bus is report-only: the service still serves without it
+		{"service bus down", false, nil, true, http.StatusOK, "ok", "degraded"},
 		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
-		{"shutting down", true, nil, false, http.StatusServiceUnavailable, "shutting down"},
+		{"shutting down", true, nil, false, http.StatusServiceUnavailable, "shutting down", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -391,7 +394,6 @@ func TestHandleHealth(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			handleHealth(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d", rec.Code, tt.want)
 			}
@@ -399,15 +401,32 @@ func TestHandleHealth(t *testing.T) {
 				t.Errorf("Content-Type = %q, want application/json", got)
 			}
 			var body map[string]string
-			decode(t, rec, &body)
-			if body["status"] != tt.wantStatus {
-				t.Errorf("body status = %q, want %q", body["status"], tt.wantStatus)
+			json.NewDecoder(rec.Body).Decode(&body)
+			if body["status"] != tt.wantStatus || body["servicebus"] != tt.wantServiceBus {
+				t.Errorf("body = %v, want status %q servicebus %q", body, tt.wantStatus, tt.wantServiceBus)
 			}
 		})
 	}
 }
 
-// unreachableServiceBus points sbClient at a port nothing listens on.
+// The check result is reused for 5 seconds, so a loop on /healthz does not
+// open a link per request.
+func TestServiceBusStateCached(t *testing.T) {
+	unreachableServiceBus(t)
+	if got := serviceBusState(); got != "degraded" {
+		t.Fatalf("first check = %q, want degraded", got)
+	}
+	start := time.Now()
+	if got := serviceBusState(); got != "degraded" {
+		t.Errorf("cached check = %q, want degraded", got)
+	}
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("cached check took %s, want no new link", d)
+	}
+}
+
+// unreachableServiceBus points sbClient at a port nothing listens on and
+// clears the cached check.
 func unreachableServiceBus(t *testing.T) {
 	t.Helper()
 	client, err := azservicebus.NewClientFromConnectionString("Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true;", nil)
@@ -415,9 +434,11 @@ func unreachableServiceBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	sbClient, sbQueue = client, "order-events"
+	sbCheck.at = time.Time{}
 	t.Cleanup(func() {
 		client.Close(context.Background())
 		sbClient, sbQueue = nil, ""
+		sbCheck.at = time.Time{}
 	})
 }
 

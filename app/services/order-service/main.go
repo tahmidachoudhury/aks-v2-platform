@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -176,11 +177,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	} else if err := db.Ping(); err != nil {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
-	} else if err := checkServiceBus(r.Context()); err != nil {
-		status = "unhealthy"
-		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "order-service"})
+	body := map[string]string{"status": status, "service": "order-service"}
+	if !shuttingDown.Load() {
+		body["servicebus"] = serviceBusState()
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 func handleOrders(w http.ResponseWriter, r *http.Request) {
@@ -445,21 +447,49 @@ func connectServiceBus() {
 	log.Printf("Publishing events to Service Bus queue %s", queue)
 }
 
-// checkServiceBus attaches a new sender link to the queue and closes it, so
-// readiness fails while Service Bus is unreachable. sbSender cannot answer
-// this: its open link reports no error until a send fails, even after the
-// connection drops. Returns nil when Service Bus is not configured.
-func checkServiceBus(ctx context.Context) error {
+// sbCheck holds the last checkServiceBus result. /healthz is public through
+// the gateway, so the result is reused for 5 seconds instead of opening a
+// link on every request.
+var sbCheck struct {
+	sync.Mutex
+	at  time.Time
+	err error
+}
+
+// serviceBusState is "disabled" without Service Bus, "degraded" while the
+// queue is unreachable and "ok" otherwise. It never fails readiness: the
+// service still serves, and publishEvent logs the events it cannot send.
+func serviceBusState() string {
 	if sbClient == nil {
-		return nil
+		return "disabled"
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+	sbCheck.Lock()
+	defer sbCheck.Unlock()
+	if time.Since(sbCheck.at) >= 5*time.Second {
+		sbCheck.err = checkServiceBus()
+		sbCheck.at = time.Now()
+	}
+	if sbCheck.err != nil {
+		return "degraded"
+	}
+	return "ok"
+}
+
+// checkServiceBus attaches a new sender link to the queue and closes it.
+// sbSender cannot answer this: its open link reports no error until a send
+// fails, even after the connection drops.
+func checkServiceBus() error {
 	sender, err := sbClient.NewSender(sbQueue, nil)
 	if err != nil {
 		return err
 	}
-	defer sender.Close(ctx)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		sender.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	_, err = sender.NewMessageBatch(ctx, nil)
 	return err
 }
