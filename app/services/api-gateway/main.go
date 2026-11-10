@@ -37,14 +37,11 @@ var (
 )
 
 func main() {
-	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
-	if len(jwtSecret) == 0 {
-		log.Fatal("JWT_SECRET is required")
-	}
+	jwtSecret = []byte(requireEnv("JWT_SECRET"))
 
 	adminEmails = parseEmails(os.Getenv("ADMIN_EMAILS"))
 
-	dashboardURL := getEnv("DASHBOARD_SERVICE_URL", "http://dashboard-api:8086")
+	dashboardURL := requireEnv("DASHBOARD_SERVICE_URL")
 	routes = newRoutes(dashboardURL)
 
 	// Comma-separated CIDRs, such as Traefik's pod range. Empty means trust no proxy.
@@ -124,11 +121,11 @@ func main() {
 // newRoutes maps each /api prefix to the internal URL of its service.
 func newRoutes(dashboardURL string) map[string]string {
 	return map[string]string{
-		"/api/orders":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
-		"/api/inventory":     getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
-		"/api/payments":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
-		"/api/notifications": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
-		"/api/shipping":      getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
+		"/api/orders":        requireEnv("ORDER_SERVICE_URL"),
+		"/api/inventory":     requireEnv("INVENTORY_SERVICE_URL"),
+		"/api/payments":      requireEnv("PAYMENT_SERVICE_URL"),
+		"/api/notifications": requireEnv("NOTIFICATION_SERVICE_URL"),
+		"/api/shipping":      requireEnv("SHIPPING_SERVICE_URL"),
 		// dashboard-api serves under /dashboard. The proxy joins the target's path
 		// to the stripped one, so /api/dashboard/summary reaches /dashboard/summary.
 		"/api/dashboard": dashboardURL + "/dashboard",
@@ -383,6 +380,15 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireEnv returns the value of key, or exits if it is unset or empty.
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return v
 }
 
 // clientIP returns the address the rate limit counts against. It reads

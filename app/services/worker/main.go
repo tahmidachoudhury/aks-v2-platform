@@ -23,9 +23,15 @@ type Event struct {
 }
 
 func main() {
-	queue := os.Getenv("SERVICEBUS_QUEUE")
-	if queue == "" {
-		log.Fatal("SERVICEBUS_QUEUE is required")
+	queue := requireEnv("SERVICEBUS_QUEUE")
+
+	// Internal service URLs for event-driven calls
+	services := map[string]string{
+		"inventory":    requireEnv("INVENTORY_SERVICE_URL"),
+		"payment":      requireEnv("PAYMENT_SERVICE_URL"),
+		"notification": requireEnv("NOTIFICATION_SERVICE_URL"),
+		"shipping":     requireEnv("SHIPPING_SERVICE_URL"),
+		"order":        requireEnv("ORDER_SERVICE_URL"),
 	}
 
 	sbClient, err := newServiceBusClient()
@@ -37,15 +43,6 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("Failed to create Service Bus receiver: %v", err)
-	}
-
-	// Internal service URLs for event-driven calls
-	services := map[string]string{
-		"inventory":    getEnv("INVENTORY_SERVICE_URL", "http://inventory-service:8082"),
-		"payment":      getEnv("PAYMENT_SERVICE_URL", "http://payment-service:8083"),
-		"notification": getEnv("NOTIFICATION_SERVICE_URL", "http://notification-service:8084"),
-		"shipping":     getEnv("SHIPPING_SERVICE_URL", "http://shipping-service:8085"),
-		"order":        getEnv("ORDER_SERVICE_URL", "http://order-service:8081"),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -236,4 +233,13 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireEnv returns the value of key, or exits if it is unset or empty.
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return v
 }

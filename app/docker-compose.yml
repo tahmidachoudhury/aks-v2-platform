@@ -1,3 +1,7 @@
+# Local development only. The passwords, secrets and Service Bus connection
+# string below are fixed values for these containers, not real credentials.
+# The services have no built-in hosts or secrets, so each one gets every
+# setting it needs here.
 services:
   postgres:
     image: postgres:16

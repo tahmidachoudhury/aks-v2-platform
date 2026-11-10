@@ -95,18 +95,45 @@ func routeAllTo(t *testing.T, backendURL string) {
 	t.Cleanup(func() { routes = orig })
 }
 
-// Pins #125: the gateway exits on startup when JWT_SECRET is unset or empty,
-// rather than signing tokens with a known fallback.
+// The settings main exits without, as key=value
+var requiredEnv = []string{
+	"JWT_SECRET=x",
+	"ORDER_SERVICE_URL=http://order-service:8081",
+	"INVENTORY_SERVICE_URL=http://inventory-service:8082",
+	"PAYMENT_SERVICE_URL=http://payment-service:8083",
+	"NOTIFICATION_SERVICE_URL=http://notification-service:8084",
+	"SHIPPING_SERVICE_URL=http://shipping-service:8085",
+	"DASHBOARD_SERVICE_URL=http://dashboard-api:8086",
+}
+
+// withoutEnv returns requiredEnv less the entry for key. An empty key keeps
+// every entry.
+func withoutEnv(key string) []string {
+	var env []string
+	for _, kv := range requiredEnv {
+		if !strings.HasPrefix(kv, key+"=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// Pins #125 and #18: the gateway exits on startup when JWT_SECRET or a service
+// URL is unset or empty, rather than falling back to a built-in value.
 func TestMainRefusesToStart(t *testing.T) {
-	tests := []struct {
+	type test struct {
 		name    string
 		env     []string
 		wantLog string
-	}{
-		{"JWT_SECRET unset", nil, "JWT_SECRET is required"},
-		{"JWT_SECRET empty", []string{"JWT_SECRET="}, "JWT_SECRET is required"},
-		// With a secret, main gets past the check and stops at the next bad setting
-		{"JWT_SECRET set", []string{"JWT_SECRET=x", "TRUSTED_PROXIES=not-a-cidr"}, "invalid TRUSTED_PROXIES"},
+	}
+	tests := []test{
+		{"JWT_SECRET empty", append(withoutEnv("JWT_SECRET"), "JWT_SECRET="), "JWT_SECRET is required"},
+		// With every setting, main gets past the checks and stops at the next bad one
+		{"all set", append(withoutEnv(""), "TRUSTED_PROXIES=not-a-cidr"), "invalid TRUSTED_PROXIES"},
+	}
+	for _, kv := range requiredEnv {
+		key, _, _ := strings.Cut(kv, "=")
+		tests = append(tests, test{key + " unset", withoutEnv(key), key + " is required"})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,7 +142,8 @@ func TestMainRefusesToStart(t *testing.T) {
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
 			for _, kv := range os.Environ() {
-				if !strings.HasPrefix(kv, "JWT_SECRET=") && !strings.HasPrefix(kv, "TRUSTED_PROXIES=") {
+				key, _, _ := strings.Cut(kv, "=")
+				if !strings.HasSuffix(key, "_SERVICE_URL") && key != "JWT_SECRET" && key != "TRUSTED_PROXIES" {
 					cmd.Env = append(cmd.Env, kv)
 				}
 			}
@@ -364,8 +392,9 @@ func TestHandleProxyUpstreamDown(t *testing.T) {
 
 // Pins #122: the dashboard route targets dashboard-api's /dashboard paths.
 func TestNewRoutes(t *testing.T) {
-	for _, v := range []string{"ORDER_SERVICE_URL", "INVENTORY_SERVICE_URL", "PAYMENT_SERVICE_URL", "NOTIFICATION_SERVICE_URL", "SHIPPING_SERVICE_URL"} {
-		t.Setenv(v, "")
+	for _, kv := range requiredEnv {
+		key, value, _ := strings.Cut(kv, "=")
+		t.Setenv(key, value)
 	}
 	got := newRoutes("http://dashboard-api:8086")
 	want := map[string]string{

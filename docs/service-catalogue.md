@@ -181,7 +181,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | `REDIS_URL`                                                                                                                                      | No       | none                      | No     | Rate limiting is off if unset, invalid or unreachable at startup. The compose value has no password |
 | `PORT`                                                                                                                                           | No       | `8080`                    | No     |                                                                                                     |
 | `TRUSTED_PROXIES`                                                                                                                                | No       | none                      | No     | Comma-separated CIDRs of proxies, such as Traefik, whose `X-Forwarded-For` the rate limit trusts. Exits on startup if an entry is invalid. Not set in compose |
-| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL`, `DASHBOARD_SERVICE_URL` | No       | `http://<service>:<port>` | No     | Proxy targets. The defaults match compose                                                           |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL`, `DASHBOARD_SERVICE_URL` | Yes      | none                      | No     | Proxy targets. Exits on startup if any is unset. Compose sets each, such as `http://order-service:8081` |
 
 **Data:** no tables. Redis holds `rate:<ip>` counters that expire after a minute.
 
@@ -394,7 +394,7 @@ Event consumer meant to drive the order flow across services. It receives from S
 | `SERVICEBUS_CONNECTION_STRING`                                                                                          | One of these two | none                      | Yes    | Local emulator only. Used in place of `SERVICEBUS_NAMESPACE` when set. Exits on startup if both are unset                                |
 | `SERVICEBUS_NAMESPACE`                                                                                                  | One of these two | none                      | No     | Fully qualified namespace, such as `sb-x.servicebus.windows.net`. Authenticates with `DefaultAzureCredential` (Workload Identity in AKS) |
 | `HEALTH_PORT`                                                                                                           | No               | `8090`                    | No     | Not set in compose                                                                                                                       |
-| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL` | No               | `http://<service>:<port>` | No     | Read into a map that no code uses yet                                                                                                    |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL`, `PAYMENT_SERVICE_URL`, `NOTIFICATION_SERVICE_URL`, `SHIPPING_SERVICE_URL` | Yes              | none                      | No     | Exits on startup if any is unset. Read into a map that no code uses yet |
 
 **Data:** none.
 
@@ -431,7 +431,7 @@ Timed background jobs that work directly on other services' tables.
 | -------------- | -------- | ------- | ------ | ---------------------------------------------------------------------------- |
 | `DATABASE_URL` | Yes      | none    | Yes    | Exits on startup if unset. Compose points it at the shared `orders` database |
 | `HEALTH_PORT`  | No       | `8091`  | No     | Not set in compose                                                           |
-| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL` | No | `http://<service>:<port>` | No | For cancelling abandoned orders. The defaults match compose |
+| `ORDER_SERVICE_URL`, `INVENTORY_SERVICE_URL` | Yes | none | No | For cancelling abandoned orders. Exits on startup if either is unset |
 | `SHUTDOWN_TIMEOUT` | No | `20s` | No | How long SIGTERM waits for a running job. Exits on startup if it is not a Go duration. Not set in compose |
 
 **Data:** creates nothing and runs no migrations. UPDATEs `products` and `reservations` (expiry). DELETEs from `order_events`. Reads `orders`, `reservations` and `payments`.
