@@ -439,6 +439,7 @@ func connectServiceBus() {
 }
 
 func publishEvent(eventType string, payload map[string]interface{}) {
+	// Only unit tests reach this: main exits without Service Bus settings
 	if sbSender == nil {
 		log.Printf("Event (no Service Bus): %s %v", eventType, payload)
 		return
