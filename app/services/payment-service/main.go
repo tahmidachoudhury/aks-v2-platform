@@ -37,10 +37,7 @@ var (
 var chargeSucceeds = func() bool { return rand.Intn(10) != 0 }
 
 func main() {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL is required")
-	}
+	dbURL := requireEnv("DATABASE_URL")
 
 	var err error
 	db, err = sql.Open("postgres", dbURL)
@@ -489,10 +486,7 @@ func generatePaymentID() string {
 }
 
 func connectServiceBus() {
-	queue := os.Getenv("SERVICEBUS_QUEUE")
-	if queue == "" {
-		log.Fatal("SERVICEBUS_QUEUE is required")
-	}
+	queue := requireEnv("SERVICEBUS_QUEUE")
 	connStr := os.Getenv("SERVICEBUS_CONNECTION_STRING")
 	namespace := os.Getenv("SERVICEBUS_NAMESPACE")
 	if connStr == "" && namespace == "" {
@@ -593,6 +587,15 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// requireEnv returns the value of key, or exits if it is unset or empty.
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("%s is required", key)
+	}
+	return v
 }
 
 func waitForDB() {
