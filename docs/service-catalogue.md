@@ -57,6 +57,12 @@ Limits:
 - Login checks no password, so anyone who knows an email in `ADMIN_EMAILS` gets an admin token. Compose sets `admin@platform.local`, the dashboard UI's auto-login. Set it nowhere shared until login checks credentials.
 - The worker calls no service yet. When it does, it must send `X-User-Role: service`.
 
+## Health
+
+Every service serves `/livez`, always 200, and `/healthz` for readiness. Readiness checks only the service's own backing stores: Postgres, and Service Bus where the service sends or receives. It never calls another service, so one service going down does not remove its callers from the Service endpoints.
+
+The Service Bus check opens a new link each time and gives up after 2 seconds. An existing link is unreliable: a sender's open link reports nothing until a send fails, and a peek on the worker's receiver kept failing after the emulator came back. The gateway reports Redis but never fails readiness on it. Each service entry below lists what its readiness checks.
+
 ## Shutdown
 
 The seven HTTP services (api-gateway, order, inventory, payment, notification, shipping and dashboard-api) handle SIGTERM in this order:
@@ -115,7 +121,7 @@ Order lifecycle and the status state machine.
 | ------------- | ------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                 |
 | **Port**      | `PORT`, default `8081`                                                          |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                 |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres and opens a Service Bus sender link, 503 if either fails. Without Service Bus configured it checks Postgres only |
 | **Called by** | api-gateway (proxies `/api/orders`), scheduler (`PUT /status`), worker (intends to `PUT /status`, stubbed) |
 
 **Endpoints**
@@ -159,7 +165,7 @@ Public entry point. Issues JWTs, rate limits and proxies to the backend services
 | ------------- | -------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `go-redis/v8`, `golang-jwt/v5`                                                            |
 | **Port**      | `PORT`, default `8080`                                                                             |
-| **Health**    | `/livez` always 200. `/healthz` returns 200 `ok` until SIGTERM. It checks neither Redis nor the upstreams |
+| **Health**    | `/livez` always 200. `/healthz` returns 200 `ok` until SIGTERM. Its `redis` field is `ok`, `degraded` (rate limiting is off) or `disabled` (no `REDIS_URL`), and Redis never fails it. A failed Redis ping at startup leaves `degraded` until restart. It does not check the upstreams |
 | **Called by** | none. Clients and the dashboard UI call it                                                         |
 
 **Endpoints**
@@ -247,7 +253,7 @@ Simulated charges and refunds, with a double-entry ledger.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                                       |
 | **Port**      | `PORT`, default `8083`                                                                                                                |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                                       |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres and opens a Service Bus sender link, 503 if either fails. Without Service Bus configured it checks Postgres only |
 | **Called by** | api-gateway (proxies `/api/payments`), worker (intends `POST /charge` and `POST /refund`, stubbed), scheduler (comment only, no code) |
 
 **Endpoints**
@@ -331,7 +337,7 @@ Shipments, tracking and carrier status webhooks.
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                         |
 | **Port**      | `PORT`, default `8085`                                                                                                  |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails                                                         |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres and opens a Service Bus sender link, 503 if either fails. Without Service Bus configured it checks Postgres only |
 | **Called by** | api-gateway (proxies `/api/shipping`, with `/api/shipping/webhook` public), worker (intends `POST /shipments`, stubbed) |
 
 **Endpoints**
@@ -377,7 +383,7 @@ Event consumer meant to drive the order flow across services. It receives from S
 | ------------- | ------------------------------------------------------------------------------------ |
 | **Language**  | Go 1.22, `azservicebus`, `azidentity`                                                |
 | **Port**      | No `PORT`. Health server on `HEALTH_PORT`, default `8090`. Compose publishes no port |
-| **Health**    | `/livez` always 200. `/healthz` always returns 200 `ok`. It does not check the queue |
+| **Health**    | `/livez` always 200. `/healthz` opens a receiver link and peeks the queue, 503 if it fails |
 | **Called by** | none                                                                                 |
 
 **Endpoints**
