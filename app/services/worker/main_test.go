@@ -142,7 +142,8 @@ func TestNewServiceBusClient(t *testing.T) {
 	}
 }
 
-// Readiness fails while the worker cannot reach its queue.
+// Readiness fails while the worker cannot reach its queue. The second probe
+// within 5 seconds reuses the result instead of opening another link.
 func TestHandleHealthServiceBusDown(t *testing.T) {
 	t.Setenv("SERVICEBUS_CONNECTION_STRING", "Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true")
 	client, err := newServiceBusClient()
@@ -150,13 +151,22 @@ func TestHandleHealthServiceBusDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close(context.Background())
+	sbCheck.at = time.Time{}
+	t.Cleanup(func() { sbCheck.at = time.Time{} })
 
-	rec := httptest.NewRecorder()
-	handleHealth(client, "order-events")(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
-	if rec.Code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["service"] != "worker" {
-		t.Errorf("got %d %v, want 503 unhealthy from worker", rec.Code, body)
+	health := handleHealth(client, "order-events")
+	for _, probe := range []string{"first", "cached"} {
+		start := time.Now()
+		rec := httptest.NewRecorder()
+		health(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		var body map[string]string
+		json.NewDecoder(rec.Body).Decode(&body)
+		if rec.Code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["service"] != "worker" {
+			t.Errorf("%s probe: got %d %v, want 503 unhealthy from worker", probe, rec.Code, body)
+		}
+		if d := time.Since(start); probe == "cached" && d > 100*time.Millisecond {
+			t.Errorf("cached probe took %s, want no new link", d)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,11 +96,20 @@ func newServiceBusClient() (*azservicebus.Client, error) {
 }
 
 // handleHealth fails readiness while the worker cannot reach its queue.
+// Receiving is its whole job, so a new pod that cannot receive must not
+// replace a working one during a rollout.
 func handleHealth(sbClient *azservicebus.Client, queue string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := "ok"
 		w.Header().Set("Content-Type", "application/json")
-		if err := checkServiceBus(r.Context(), sbClient, queue); err != nil {
+		sbCheck.Lock()
+		if time.Since(sbCheck.at) >= 5*time.Second {
+			sbCheck.err = checkServiceBus(sbClient, queue)
+			sbCheck.at = time.Now()
+		}
+		err := sbCheck.err
+		sbCheck.Unlock()
+		if err != nil {
 			status = "unhealthy"
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
@@ -107,18 +117,30 @@ func handleHealth(sbClient *azservicebus.Client, queue string) http.HandlerFunc 
 	}
 }
 
+// sbCheck holds the last checkServiceBus result, reused for 5 seconds so
+// frequent probes do not open a link each time.
+var sbCheck struct {
+	sync.Mutex
+	at  time.Time
+	err error
+}
+
 // checkServiceBus attaches a new receiver link to the queue, peeks and closes
 // it. A peek on the receive loop's own receiver kept failing after the
 // emulator came back, so it is no guide. Peeking locks nothing, so it takes
 // no message from the receive loop.
-func checkServiceBus(ctx context.Context, sbClient *azservicebus.Client, queue string) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+func checkServiceBus(sbClient *azservicebus.Client, queue string) error {
 	receiver, err := sbClient.NewReceiverForQueue(queue, nil)
 	if err != nil {
 		return err
 	}
-	defer receiver.Close(ctx)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		receiver.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	_, err = receiver.PeekMessages(ctx, 1, nil)
 	return err
 }
