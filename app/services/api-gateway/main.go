@@ -154,6 +154,8 @@ func newMux(dashboardURL string) (*http.ServeMux, error) {
 	return mux, nil
 }
 
+// handleHealth reports Redis but never fails on it: without Redis the gateway
+// still serves, only without rate limiting.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	w.Header().Set("Content-Type", "application/json")
@@ -161,7 +163,25 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "shutting down"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "api-gateway"})
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "api-gateway", "redis": redisState(r.Context())})
+}
+
+// redisState is "disabled" without REDIS_URL, "degraded" while rate limiting
+// is off and "ok" while Redis answers. redisClient is nil after a failed ping
+// at startup, which leaves rate limiting off until the gateway restarts.
+func redisState(ctx context.Context) string {
+	if os.Getenv("REDIS_URL") == "" {
+		return "disabled"
+	}
+	if redisClient == nil {
+		return "degraded"
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		return "degraded"
+	}
+	return "ok"
 }
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
