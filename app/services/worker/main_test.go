@@ -142,31 +142,59 @@ func TestNewServiceBusClient(t *testing.T) {
 	}
 }
 
-// Readiness fails while the worker cannot reach its queue. The second probe
-// within 5 seconds reuses the result instead of opening another link.
-func TestHandleHealthServiceBusDown(t *testing.T) {
+// Readiness follows the stored result and fails while the worker cannot
+// reach its queue.
+func TestHandleHealth(t *testing.T) {
+	tests := []struct {
+		name       string
+		sbUp       bool
+		want       int
+		wantStatus string
+	}{
+		{"queue reachable", true, http.StatusOK, "ok"},
+		{"queue unreachable", false, http.StatusServiceUnavailable, "unhealthy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sbUp.Store(tt.sbUp)
+			t.Cleanup(func() { sbUp.Store(false) })
+			rec := httptest.NewRecorder()
+			handleHealth(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			var body map[string]string
+			json.NewDecoder(rec.Body).Decode(&body)
+			if rec.Code != tt.want || body["status"] != tt.wantStatus || body["service"] != "worker" {
+				t.Errorf("got %d %v, want %d %q from worker", rec.Code, body, tt.want, tt.wantStatus)
+			}
+			if got := rec.Result().Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
+		})
+	}
+}
+
+// watchServiceBus stores the result of a check on each tick, and stops when
+// the ticks stop.
+func TestWatchServiceBus(t *testing.T) {
 	t.Setenv("SERVICEBUS_CONNECTION_STRING", "Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true")
 	client, err := newServiceBusClient()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close(context.Background())
-	sbCheck.at = time.Time{}
-	t.Cleanup(func() { sbCheck.at = time.Time{} })
+	sbUp.Store(true)
+	t.Cleanup(func() { sbUp.Store(false) })
 
-	health := handleHealth(client, "order-events")
-	for _, probe := range []string{"first", "cached"} {
-		start := time.Now()
-		rec := httptest.NewRecorder()
-		health(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		var body map[string]string
-		json.NewDecoder(rec.Body).Decode(&body)
-		if rec.Code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["service"] != "worker" {
-			t.Errorf("%s probe: got %d %v, want 503 unhealthy from worker", probe, rec.Code, body)
-		}
-		if d := time.Since(start); probe == "cached" && d > 100*time.Millisecond {
-			t.Errorf("cached probe took %s, want no new link", d)
-		}
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		watchServiceBus(ticks, client, "order-events")
+		close(done)
+	}()
+	ticks <- time.Now()
+	close(ticks)
+	<-done
+	if sbUp.Load() {
+		t.Error("sbUp = true after a failed check, want false")
 	}
 }
 

@@ -375,7 +375,8 @@ func TestHandleHealth(t *testing.T) {
 	}{
 		{"healthy", false, nil, false, http.StatusOK, "ok", "disabled"},
 		{"database down", false, errors.New("db down"), false, http.StatusServiceUnavailable, "unhealthy", "disabled"},
-		// Service Bus is report-only: the service still serves without it
+		// Service Bus is report-only: the service still serves without it.
+		// handleHealth reads the stored result, so this opens no link.
 		{"service bus down", false, nil, true, http.StatusOK, "ok", "degraded"},
 		// #19: readiness fails on SIGTERM so the pod leaves the endpoints
 		{"shutting down", true, nil, false, http.StatusServiceUnavailable, "shutting down", ""},
@@ -409,24 +410,27 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
-// The check result is reused for 5 seconds, so a loop on /healthz does not
-// open a link per request.
-func TestServiceBusStateCached(t *testing.T) {
+// watchServiceBus stores the result of a check on each tick, and stops when
+// the ticks stop.
+func TestWatchServiceBus(t *testing.T) {
 	unreachableServiceBus(t)
-	if got := serviceBusState(); got != "degraded" {
-		t.Fatalf("first check = %q, want degraded", got)
-	}
-	start := time.Now()
-	if got := serviceBusState(); got != "degraded" {
-		t.Errorf("cached check = %q, want degraded", got)
-	}
-	if d := time.Since(start); d > 100*time.Millisecond {
-		t.Errorf("cached check took %s, want no new link", d)
+	sbUp.Store(true)
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		watchServiceBus(ticks)
+		close(done)
+	}()
+	ticks <- time.Now()
+	close(ticks)
+	<-done
+	if sbUp.Load() {
+		t.Error("sbUp = true after a failed check, want false")
 	}
 }
 
-// unreachableServiceBus points sbClient at a port nothing listens on and
-// clears the cached check.
+// unreachableServiceBus points sbClient at a port nothing listens on, with
+// the stored check result down.
 func unreachableServiceBus(t *testing.T) {
 	t.Helper()
 	client, err := azservicebus.NewClientFromConnectionString("Endpoint=sb://127.0.0.1:1;SharedAccessKeyName=test;SharedAccessKey=test;UseDevelopmentEmulator=true;", nil)
@@ -434,11 +438,11 @@ func unreachableServiceBus(t *testing.T) {
 		t.Fatal(err)
 	}
 	sbClient, sbQueue = client, "order-events"
-	sbCheck.at = time.Time{}
+	sbUp.Store(false)
 	t.Cleanup(func() {
 		client.Close(context.Background())
 		sbClient, sbQueue = nil, ""
-		sbCheck.at = time.Time{}
+		sbUp.Store(false)
 	})
 }
 

@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -445,15 +444,23 @@ func connectServiceBus() {
 	}
 	sbQueue = queue
 	log.Printf("Publishing events to Service Bus queue %s", queue)
+
+	// The first check runs before the server starts, so /healthz never
+	// reports a state nobody has checked
+	sbUp.Store(checkServiceBus() == nil)
+	go watchServiceBus(time.Tick(5 * time.Second))
 }
 
-// sbCheck holds the last checkServiceBus result. /healthz is public through
-// the gateway, so the result is reused for 5 seconds instead of opening a
-// link on every request.
-var sbCheck struct {
-	sync.Mutex
-	at  time.Time
-	err error
+// sbUp holds the result of the last checkServiceBus, run by watchServiceBus.
+var sbUp atomic.Bool
+
+// watchServiceBus runs checkServiceBus on every tick and stores the result,
+// so /healthz never waits on Service Bus. That is one link per tick per pod,
+// whatever the request rate.
+func watchServiceBus(ticks <-chan time.Time) {
+	for range ticks {
+		sbUp.Store(checkServiceBus() == nil)
+	}
 }
 
 // serviceBusState is "disabled" without Service Bus, "degraded" while the
@@ -463,13 +470,7 @@ func serviceBusState() string {
 	if sbClient == nil {
 		return "disabled"
 	}
-	sbCheck.Lock()
-	defer sbCheck.Unlock()
-	if time.Since(sbCheck.at) >= 5*time.Second {
-		sbCheck.err = checkServiceBus()
-		sbCheck.at = time.Now()
-	}
-	if sbCheck.err != nil {
+	if !sbUp.Load() {
 		return "degraded"
 	}
 	return "ok"

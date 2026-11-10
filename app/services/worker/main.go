@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,11 +52,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// The first check runs before the health server starts, so /healthz
+	// never reports a state nobody has checked
+	sbUp.Store(checkServiceBus(sbClient, queue) == nil)
+	go watchServiceBus(time.Tick(5*time.Second), sbClient, queue)
+
 	// Health check endpoint
 	go func() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-		mux.HandleFunc("/healthz", handleHealth(sbClient, queue))
+		mux.HandleFunc("/healthz", handleHealth)
 		port := getEnv("HEALTH_PORT", "8090")
 		log.Printf("Worker health check on :%s", port)
 		http.ListenAndServe(":"+port, mux)
@@ -97,32 +102,27 @@ func newServiceBusClient() (*azservicebus.Client, error) {
 
 // handleHealth fails readiness while the worker cannot reach its queue.
 // Receiving is its whole job, so a new pod that cannot receive must not
-// replace a working one during a rollout.
-func handleHealth(sbClient *azservicebus.Client, queue string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		status := "ok"
-		w.Header().Set("Content-Type", "application/json")
-		sbCheck.Lock()
-		if time.Since(sbCheck.at) >= 5*time.Second {
-			sbCheck.err = checkServiceBus(sbClient, queue)
-			sbCheck.at = time.Now()
-		}
-		err := sbCheck.err
-		sbCheck.Unlock()
-		if err != nil {
-			status = "unhealthy"
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-		json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "worker"})
+// replace a working one during a rollout. It reads the result watchServiceBus
+// stored, so it never waits on Service Bus.
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
+	w.Header().Set("Content-Type", "application/json")
+	if !sbUp.Load() {
+		status = "unhealthy"
+		w.WriteHeader(http.StatusServiceUnavailable)
 	}
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "worker"})
 }
 
-// sbCheck holds the last checkServiceBus result, reused for 5 seconds so
-// frequent probes do not open a link each time.
-var sbCheck struct {
-	sync.Mutex
-	at  time.Time
-	err error
+// sbUp holds the result of the last checkServiceBus, run by watchServiceBus.
+var sbUp atomic.Bool
+
+// watchServiceBus runs checkServiceBus on every tick and stores the result.
+// That is one link per tick, whatever the probe rate.
+func watchServiceBus(ticks <-chan time.Time, sbClient *azservicebus.Client, queue string) {
+	for range ticks {
+		sbUp.Store(checkServiceBus(sbClient, queue) == nil)
+	}
 }
 
 // checkServiceBus attaches a new receiver link to the queue, peeks and closes

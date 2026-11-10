@@ -63,7 +63,7 @@ Every service serves `/livez`, always 200, and `/healthz` for readiness. Readine
 
 A service that can serve without a dependency reports it instead of failing on it. order-service, payment-service and shipping-service have a `servicebus` field and the gateway a `redis` field, each `ok`, `degraded` or `disabled`, left out while shutting down. The worker fails readiness on Service Bus, because receiving is its whole job and a new pod that cannot receive must not replace a working one during a rollout.
 
-The Service Bus check opens a new link and gives up after 2 seconds. Its result is reused for 5 seconds, since `/healthz` is public through the gateway. An existing link is unreliable: a sender's open link reports nothing until a send fails, and a peek on the worker's receiver kept failing after the emulator came back. Each service entry below lists what its readiness checks and reports.
+A background loop checks Service Bus once at startup, before the server listens, and then every 5 seconds. Each check opens a new link, gives up after 2 seconds, and stores the result. `/healthz` only reads that result, so it never waits on Service Bus, and a pod opens one link per 5 seconds however often `/healthz` is called. This matters because `/healthz` is public through the gateway. An existing link is unreliable: a sender's open link reports nothing until a send fails, and a peek on the worker's receiver kept failing after the emulator came back. Each service entry below lists what its readiness checks and reports.
 
 ## Shutdown
 
@@ -123,7 +123,7 @@ Order lifecycle and the status state machine.
 | ------------- | ------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                 |
 | **Port**      | `PORT`, default `8081`                                                          |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (a new sender link failed) or `disabled` (Service Bus not configured), and Service Bus never fails it. The check result is reused for 5 seconds |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (the last sender link check failed) or `disabled` (Service Bus not configured), and Service Bus never fails it |
 | **Called by** | api-gateway (proxies `/api/orders`), scheduler (`PUT /status`), worker (intends to `PUT /status`, stubbed) |
 
 **Endpoints**
@@ -255,7 +255,7 @@ Simulated charges and refunds, with a double-entry ledger.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                                       |
 | **Port**      | `PORT`, default `8083`                                                                                                                |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (a new sender link failed) or `disabled` (Service Bus not configured), and Service Bus never fails it. The check result is reused for 5 seconds |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (the last sender link check failed) or `disabled` (Service Bus not configured), and Service Bus never fails it |
 | **Called by** | api-gateway (proxies `/api/payments`), worker (intends `POST /charge` and `POST /refund`, stubbed), scheduler (comment only, no code) |
 
 **Endpoints**
@@ -339,7 +339,7 @@ Shipments, tracking and carrier status webhooks.
 | ------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | **Language**  | Go 1.22, `lib/pq`, `azservicebus`, `azidentity`                                                                         |
 | **Port**      | `PORT`, default `8085`                                                                                                  |
-| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (a new sender link failed) or `disabled` (Service Bus not configured), and Service Bus never fails it. The check result is reused for 5 seconds |
+| **Health**    | `/livez` always 200. `/healthz` pings Postgres, 503 if it fails. Its `servicebus` field is `ok`, `degraded` (the last sender link check failed) or `disabled` (Service Bus not configured), and Service Bus never fails it |
 | **Called by** | api-gateway (proxies `/api/shipping`, with `/api/shipping/webhook` public), worker (intends `POST /shipments`, stubbed) |
 
 **Endpoints**
@@ -385,7 +385,7 @@ Event consumer meant to drive the order flow across services. It receives from S
 | ------------- | ------------------------------------------------------------------------------------ |
 | **Language**  | Go 1.22, `azservicebus`, `azidentity`                                                |
 | **Port**      | No `PORT`. Health server on `HEALTH_PORT`, default `8090`. Compose publishes no port |
-| **Health**    | `/livez` always 200. `/healthz` opens a receiver link and peeks the queue, 503 if it fails. The result is reused for 5 seconds |
+| **Health**    | `/livez` always 200. `/healthz` returns 503 while the last receiver link check failed |
 | **Called by** | none                                                                                 |
 
 **Endpoints**
