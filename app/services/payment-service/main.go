@@ -145,6 +145,7 @@ func migrate() {
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
+	w.Header().Set("Content-Type", "application/json")
 	if shuttingDown.Load() {
 		status = "shutting down"
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -155,7 +156,6 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		status = "unhealthy"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
-	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": status, "service": "payment-service"})
 }
 

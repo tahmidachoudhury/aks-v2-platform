@@ -476,6 +476,9 @@ func TestHandleHealth(t *testing.T) {
 			if rec.Code != tt.want {
 				t.Errorf("status = %d, want %d", rec.Code, tt.want)
 			}
+			if got := rec.Result().Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want application/json", got)
+			}
 		})
 	}
 }
