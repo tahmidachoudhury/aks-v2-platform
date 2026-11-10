@@ -18,7 +18,7 @@ services/worker/worker
 # Go
 /services/*/vendor/
 
-# Terraform
+# OpenTofu (same file names as Terraform)
 .terraform/
 *.tfstate
 *.tfstate.backup

@@ -163,7 +163,7 @@
         <mxCell id="acr" parent="sub" style="rounded=1;whiteSpace=wrap;" value="ACR (Premium)&#xa;9 repos, admin user off" vertex="1">
           <mxGeometry height="60" width="230" x="1450" y="615" as="geometry" />
         </mxCell>
-        <mxCell id="tfstate" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Storage account&#xa;Terraform state&#xa;(blob, lease locking)" vertex="1">
+        <mxCell id="tfstate" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Storage account&#xa;OpenTofu state&#xa;(blob, lease locking)" vertex="1">
           <mxGeometry height="70" width="230" x="1450" y="750" as="geometry" />
         </mxCell>
         <mxCell id="snaps" parent="sub" style="rounded=1;whiteSpace=wrap;" value="Managed disk snapshots" vertex="1">
@@ -303,7 +303,7 @@
         <mxCell id="i0" value="azure/login via OIDC&#xa;(infra identity, no client secret)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
           <mxGeometry x="40" y="40" width="440" height="65" as="geometry" />
         </mxCell>
-        <mxCell id="i1" value="terraform fmt / validate / plan&#xa;(plan posted on PR)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
+        <mxCell id="i1" value="tofu fmt / validate / plan&#xa;(plan posted on PR)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
           <mxGeometry x="40" y="125" width="440" height="65" as="geometry" />
         </mxCell>
         <mxCell id="i2" value="apply on merge to main&#xa;(manual approval: environment gate)" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="infra">
@@ -384,7 +384,7 @@
         <mxCell id="e10" value="" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a3" target="a4">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" value="terraform apply" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="infra" target="azure">
+        <mxCell id="e11" value="tofu apply" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="infra" target="azure">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e12" value="push" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;rounded=0;" edge="1" parent="1" source="a3" target="acr">
