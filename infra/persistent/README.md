@@ -1,6 +1,6 @@
 # persistent
 
-**TL;DR:** Holds what must survive the nightly teardown: the DNS zone, Key Vault, ACR and the GitHub Actions identities. Never destroy this root.
+**TL;DR:** Holds what must survive the nightly teardown: the DNS zone, Key Vault, ACR, the GitHub Actions identities and the workload identities. Never destroy this root.
 
 ## What it holds
 
@@ -9,6 +9,7 @@
 - The Key Vault and its four app secrets (P3-13), through [`../modules/keyvault`](../modules/keyvault/README.md). Secret values never reach state.
 - The public DNS zone `azure.order-fulfilment.tahmidchoudhury.uk` (P3-15), through [`../modules/dns`](../modules/dns/README.md). Its delegation from the parent zone is a manual step described there.
 - The GitHub Actions identities `id-gh-infra`, `id-gh-infra-plan` and `id-gh-app` (P3-21), through [`../modules/github-oidc`](../modules/github-oidc/README.md). They sign in with OIDC and have no client secret. Their client IDs are in GitHub repository secrets, so they must not change. They sit in a second group, `rg-aks-v2-identity`, also with `prevent_destroy`. CI has no write role on that group, so it can't add federated credentials to its own identities.
+- The workload identities (P3-16, P3-18), through [`../modules/workload-identity`](../modules/workload-identity/README.md): `id-order-service`, `id-payment-service`, `id-shipping-service`, `id-worker`, `id-external-dns` and `id-external-secrets`, in `rg-aks-v2-persistent`. This root also gives External Secrets Key Vault Secrets User on the vault, and ExternalDNS DNS Zone Contributor on the zone and Reader on the group. Their federated credentials and Service Bus roles are in `platform`. The module README has the role matrix and says why they don't share the GitHub identities' group.
 
 State lives in the `persistent.tfstate` blob in the state account.
 
@@ -38,3 +39,5 @@ tofu apply persistent.tfplan
 Key Vault Secrets Officer goes to the operators and to `id-gh-infra`, a fixed list. It doesn't follow whoever runs the apply, so a person and CI applying in turn don't swap each other's access.
 
 Run the first apply yourself, not in CI. CI can't change its own role assignments, and the identities it signs in as are created here. After the apply, set the GitHub secrets listed in the [github-oidc README](../modules/github-oidc/README.md#github-secrets).
+
+Any change to `infra_assignable_roles` replaces CI's RBAC Administrator assignment, so apply that by hand too.

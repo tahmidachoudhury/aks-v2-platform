@@ -10,7 +10,7 @@ Each root has its own folder and its own state, so you plan and apply each one s
 | --- | --- | --- | --- |
 | [`bootstrap`](bootstrap/README.md) | Local `terraform.tfstate`, gitignored | Applied once, never destroyed | The state storage account and the cost budget |
 | [`persistent`](persistent/README.md) | `persistent.tfstate` | Never destroyed | DNS zone, Key Vault, ACR, and identities referenced from Git |
-| [`platform`](platform/README.md) | `platform.tfstate` | Destroyed every evening, applied every morning | Network, private DNS zones, AKS, Service Bus, private endpoints, Log Analytics, federated credentials |
+| [`platform`](platform/README.md) | `platform.tfstate` | Destroyed every evening, applied every morning | Network, private DNS zones, AKS, Service Bus, private endpoints, Log Analytics, federated credentials, Service Bus role assignments |
 | [`argocd`](argocd/README.md) | `argocd.tfstate` | Destroyed and applied with platform | The ArgoCD Helm release, the only in-cluster component OpenTofu manages |
 
 Each remote root names only its state blob in its `backend "azurerm"` block. The shared settings come from `infra/backend.hcl`. Generate it from the bootstrap outputs (see [`backend.hcl.example`](backend.hcl.example)):
@@ -19,7 +19,7 @@ Each remote root names only its state blob in its `backend "azurerm"` block. The
 tofu init -backend-config=../backend.hcl
 ```
 
-Reusable pieces go in [`modules/`](modules): network, aks, acr, servicebus, keyvault, dns, loganalytics and github-oidc. Each module folder has a README naming the card that fills it and the root that calls it.
+Reusable pieces go in [`modules/`](modules): network, aks, acr, servicebus, keyvault, dns, loganalytics, github-oidc and workload-identity. Each module folder has a README naming the card that fills it and the root that calls it.
 
 ## Apply order
 

@@ -59,7 +59,7 @@ output "kubeconfig_command" {
 }
 
 output "servicebus_namespace_id" {
-  description = "ID of the Service Bus namespace, the scope for the data plane roles in P3-17."
+  description = "ID of the Service Bus namespace."
   value       = module.servicebus.id
 }
 

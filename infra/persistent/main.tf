@@ -133,8 +133,66 @@ module "github_oidc" {
     "Key Vault Secrets Officer",                   # keyvault module
     "Key Vault Secrets User",                      # External Secrets, P3-18
     "Network Contributor",                         # aks module, node subnet
+    "Reader",                                      # ExternalDNS, P3-18
   ]
 
   state_storage_account_id = data.azurerm_resources.state_account.resources[0].id
   acr_id                   = module.acr.id
+}
+
+# Workload identities (P3-16, P3-18). Their client IDs go into ServiceAccount
+# annotations, so they live here and never change. Their federated
+# credentials and Service Bus roles are in platform. Role matrix and naming:
+# ../modules/workload-identity/README.md.
+#
+# They sit in the persistent group, not the identity group. CI must be able
+# to write their federated credentials once it applies platform, and they
+# hold no role CI couldn't already grant itself here.
+module "workload_identity" {
+  source = "../modules/workload-identity"
+
+  # Named as their Kubernetes ServiceAccounts: the four services that use
+  # azidentity in app/services, then the platform components. cert-manager
+  # is left out until P4-04 picks DNS-01 over HTTP-01.
+  names = [
+    "order-service",
+    "payment-service",
+    "shipping-service",
+    "worker",
+    "external-dns",
+    "external-secrets",
+  ]
+
+  resource_group_name = azurerm_resource_group.persistent.name
+  location            = azurerm_resource_group.persistent.location
+  tags                = local.tags
+}
+
+# One ClusterSecretStore (P4-06), so ESO is the only workload that reads Key
+# Vault. The services get their secrets as Kubernetes Secrets and need no
+# Key Vault role.
+resource "azurerm_role_assignment" "external_secrets_key_vault" {
+  scope                = module.keyvault.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.workload_identity.principal_ids["external-secrets"]
+  principal_type       = "ServicePrincipal"
+}
+
+# ExternalDNS changes records in the zone and nothing else.
+resource "azurerm_role_assignment" "external_dns_zone" {
+  scope                = module.dns.id
+  role_definition_name = "DNS Zone Contributor"
+  principal_id         = module.workload_identity.principal_ids["external-dns"]
+  principal_type       = "ServicePrincipal"
+}
+
+# ExternalDNS also lists the zones in the zone's group. A role on the zone
+# doesn't cover a list call on the group, so the ExternalDNS Azure guide
+# asks for Reader there. Reader sees settings, never secrets, and changes
+# nothing.
+resource "azurerm_role_assignment" "external_dns_reader" {
+  scope                = azurerm_resource_group.persistent.id
+  role_definition_name = "Reader"
+  principal_id         = module.workload_identity.principal_ids["external-dns"]
+  principal_type       = "ServicePrincipal"
 }
