@@ -32,3 +32,9 @@ variable "generated_secrets" {
     error_message = "Secret names must be kebab-case: lowercase letters and digits joined by single hyphens."
   }
 }
+
+variable "secrets_officer_object_ids" {
+  description = "Entra object IDs that get Key Vault Secrets Officer as well as whoever runs the apply."
+  type        = list(string)
+  default     = []
+}

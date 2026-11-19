@@ -33,11 +33,28 @@ resource "azurerm_key_vault" "this" {
 }
 
 # Owner on the subscription does not grant access to secret values. The
-# caller writes the secrets below, so it needs this role on the vault.
-resource "azurerm_role_assignment" "caller_secrets_officer" {
+# caller writes the secrets below, so it needs this role on the vault. Fixed
+# officers are added too, so a second operator or CI applying does not
+# remove the first one's access.
+resource "azurerm_role_assignment" "secrets_officer" {
+  for_each = toset(distinct(concat(
+    [data.azurerm_client_config.current.object_id],
+    var.secrets_officer_object_ids,
+  )))
+
   scope                = azurerm_key_vault.this.id
   role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = each.value
+}
+
+# Role assignments take a minute or two to reach the Key Vault data plane.
+# Without this wait, the first secret write returns 403.
+resource "time_sleep" "rbac_propagation" {
+  create_duration = "90s"
+
+  triggers = {
+    officers = join(",", sort([for a in azurerm_role_assignment.secrets_officer : a.principal_id]))
+  }
 }
 
 # A new random value on every run. It is ephemeral, so it is never stored.
@@ -60,7 +77,5 @@ resource "azurerm_key_vault_secret" "generated" {
   content_type     = "generated"
   tags             = var.tags
 
-  # Role assignments take a few minutes to reach the data plane. See the
-  # README if the first apply fails with a 403.
-  depends_on = [azurerm_role_assignment.caller_secrets_officer]
+  depends_on = [time_sleep.rbac_propagation]
 }

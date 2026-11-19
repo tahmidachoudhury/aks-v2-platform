@@ -47,11 +47,18 @@ az keyvault secret show --vault-name <vault> -n jwt-secret --query value -o tsv
 
 ## Rotate a secret
 
-Bump its number in `generated_secrets` in [`../../persistent/main.tf`](../../persistent/main.tf) and apply. The vault gets a new version of that secret with a fresh random value. ESO picks it up on its next refresh. For `postgres-password` and `redis-password`, the database must change its password too. See [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) for the order of steps.
+Bump its number in `generated_secrets` in [`../../persistent/main.tf`](../../persistent/main.tf) and apply. The vault gets a new version of that secret with a fresh random value straight away, and ESO picks it up on its next refresh.
+
+That is a hard cut, not a zero-downtime rotation. It is fine for `jwt-secret`, which only invalidates sessions. It breaks anything that holds the old value until it changes too:
+
+- `postgres-password` and `redis-password`: the services restart with the new value before the database role has it, and fail auth until someone runs `ALTER ROLE` or `CONFIG SET requirepass`.
+- `shipping-webhook-secret`: carriers keep sending the old value.
+
+A zero-downtime rotation, as [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) describes, needs two secrets at once (for example `postgres-password-a` and `-b` with a second DB role). This module generates one value per name, so add the second name to `generated_secrets`, move the consumers over, then remove the old one. P9-08 tests this.
 
 ## First apply and the 403
 
-A new role assignment can take a few minutes to reach the Key Vault data plane. The secrets depend on the role assignment, but Azure may still return 403 Forbidden when OpenTofu writes the first one. If it does, wait a minute and run `tofu apply` again. Only the secrets that failed are created on the retry.
+A new role assignment can take a minute or two to reach the Key Vault data plane. The module waits 90 seconds after creating it before writing secrets. If a write still returns 403 Forbidden, run `tofu apply` again. Only the secrets that failed are created on the retry.
 
 ## Inputs
 
