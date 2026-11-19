@@ -7,7 +7,7 @@
 *.tfplan
 tfplan
 *.tfvars
-!*.tfvars.example
+*.tfvars.json
 crash.log
 crash.*.log
 infra/backend.hcl

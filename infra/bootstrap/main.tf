@@ -12,10 +12,6 @@ provider "azurerm" {
   # ones this project needs by hand, once per subscription.
   resource_provider_registrations = "none"
 
-  # Shared keys are off on the state account, so the provider talks to the
-  # blob data plane with Entra ID instead.
-  storage_use_azuread = true
-
   # subscription_id comes from ARM_SUBSCRIPTION_ID.
 }
 
@@ -62,6 +58,33 @@ resource "azurerm_storage_account" "state" {
   }
 
   tags = local.tags
+
+  # This account holds every root's state. Remove this line on purpose, and
+  # only at final teardown (P12-01).
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# Versioning keeps a copy of every state write. Drop old versions once they
+# are past the soft-delete window.
+resource "azurerm_storage_management_policy" "state" {
+  storage_account_id = azurerm_storage_account.state.id
+
+  rule {
+    name    = "expire-old-state-versions"
+    enabled = true
+
+    filters {
+      blob_types = ["blockBlob"]
+    }
+
+    actions {
+      version {
+        delete_after_days_since_creation = var.state_version_retention_days
+      }
+    }
+  }
 }
 
 # storage_account_id makes the provider create the container through the

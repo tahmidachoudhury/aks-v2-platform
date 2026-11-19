@@ -37,10 +37,21 @@ variable "soft_delete_retention_days" {
   }
 }
 
+variable "state_version_retention_days" {
+  description = "Days to keep old versions of a state blob."
+  type        = number
+  default     = 30
+}
+
 variable "budget_amount" {
   description = "Monthly budget for the subscription, in the billing currency."
   type        = number
   default     = 100
+
+  validation {
+    condition     = var.budget_amount > 0
+    error_message = "budget_amount must be more than 0."
+  }
 }
 
 variable "budget_start_date" {

@@ -16,6 +16,7 @@ output "container_name" {
 output "backend_config" {
   description = "Partial backend config shared by every later root. Write it to infra/backend.hcl."
   value       = <<-EOT
+    subscription_id      = "${data.azurerm_subscription.current.subscription_id}"
     resource_group_name  = "${azurerm_resource_group.state.name}"
     storage_account_name = "${azurerm_storage_account.state.name}"
     container_name       = "${azurerm_storage_container.state.name}"

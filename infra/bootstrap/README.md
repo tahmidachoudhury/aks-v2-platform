@@ -6,7 +6,8 @@
 
 - A resource group for state in UK South.
 - A StorageV2 account, Standard LRS. HTTPS only, TLS 1.2 minimum, no public blob access, shared keys off. Blob versioning is on, and deleted blobs and containers can be restored for 14 days.
-- A private container, `tfstate`. Each root writes its own blob in it.
+- A private container, `tfstate`. Each root writes its own blob in it. Old versions of a state blob are deleted after 30 days.
+- `prevent_destroy` on the account, so no plan can delete it by accident. Remove that line on purpose at final teardown.
 - A Storage Blob Data Contributor role assignment on the account for whoever runs the apply.
 - A monthly subscription budget, `budget-aks-v2-platform`, 100 by default. It emails the addresses in `budget_contact_emails` at 50%, 80% and 100% of actual spend, and when forecast spend reaches 100%. It leaves any existing subscription budget alone.
 
@@ -57,10 +58,14 @@ EOF
 tofu init -backend-config=<repo>/infra/backend.hcl
 ```
 
-`tofu init` should report that it configured the `azurerm` backend. Then run two plans at once, in two terminals or like this:
+`tofu init` should report that it configured the `azurerm` backend. To see the lock, hold it in one terminal and try to take it from another:
 
 ```bash
-tofu plan -lock-timeout=0s & sleep 1; tofu plan -lock-timeout=0s; wait
+# Terminal 1: apply holds the lease while it waits at the "yes" prompt. Leave it there.
+tofu apply
+
+# Terminal 2, same folder:
+tofu plan -lock-timeout=0s
 ```
 
-One plan holds the blob lease. The other fails with `Error acquiring the state lock` and names the lease holder. Delete the `state-check.tfstate` blob afterwards.
+The plan fails with `Error acquiring the state lock` and names the lease holder. Answer `no` in terminal 1 to release it. Delete the `state-check.tfstate` blob afterwards.
