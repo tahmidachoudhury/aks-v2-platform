@@ -37,3 +37,20 @@ variable "dns_zone_name" {
   type        = string
   default     = "azure.order-fulfilment.tahmidchoudhury.uk"
 }
+
+variable "github_repository" {
+  description = "GitHub repository whose workflows sign in to Azure, as owner/name."
+  type        = string
+  default     = "tahmidachoudhury/aks-v2-platform"
+}
+
+variable "state_storage_account_name" {
+  description = "State storage account from bootstrap. The same value as storage_account_name in infra/backend.hcl."
+  type        = string
+}
+
+variable "state_resource_group_name" {
+  description = "Resource group of the state storage account."
+  type        = string
+  default     = "rg-aks-v2-tfstate"
+}

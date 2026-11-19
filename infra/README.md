@@ -19,7 +19,7 @@ Each remote root names only its state blob in its `backend "azurerm"` block. The
 tofu init -backend-config=../backend.hcl
 ```
 
-Reusable pieces go in [`modules/`](modules): network, aks, acr, servicebus, keyvault, dns and loganalytics. Each module folder has a README naming the card that fills it and the root that calls it.
+Reusable pieces go in [`modules/`](modules): network, aks, acr, servicebus, keyvault, dns, loganalytics and github-oidc. Each module folder has a README naming the card that fills it and the root that calls it.
 
 ## Apply order
 
