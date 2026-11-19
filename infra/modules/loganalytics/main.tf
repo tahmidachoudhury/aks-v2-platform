@@ -39,8 +39,4 @@ resource "azurerm_monitor_diagnostic_setting" "aks" {
     category = "guard"
   }
 
-  # Node Auto Provisioning decisions: why a node was or wasn't created.
-  enabled_log {
-    category = "karpenter-events"
-  }
 }

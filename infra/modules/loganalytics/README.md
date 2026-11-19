@@ -1,6 +1,6 @@
 # loganalytics
 
-**TL;DR:** One Log Analytics workspace, PerGB2018 with 30-day retention and a 0.5 GB daily cap, plus a diagnostic setting that sends three AKS control plane log categories to it: `kube-audit-admin`, `guard` and `karpenter-events`. Container Insights stays off, because New Relic is the observability tool. Expected cost is £0 to £4 a month, and the cap holds the worst case to about £13.
+**TL;DR:** One Log Analytics workspace, PerGB2018 with 30-day retention and a 0.5 GB daily cap, plus a diagnostic setting that sends two AKS control plane log categories to it: `kube-audit-admin` and `guard`. Container Insights stays off, because New Relic is the observability tool. Expected cost is £0 to £4 a month, and the cap holds the worst case to about £13.
 
 The `platform` root calls this module, so the workspace and the diagnostic setting are destroyed every evening and created every morning. Filled by P3-19 (#45).
 
@@ -32,7 +32,7 @@ This is the documented Azure behaviour. It has not been tested on this project y
 | --- | --- | --- |
 | `kube-audit-admin` | Yes | API server audit events for every request except `get` and `list`. It shows who changed what in the cluster, which is what an audit log is for. `kube-audit` logs the reads too, which are most of the volume |
 | `guard` | Yes | Entra ID sign-in and Azure RBAC decisions. Cluster access goes through Entra ID with `azure_rbac_enabled`, so this is where a denied `kubectl` call shows up |
-| `karpenter-events` | Yes | Node Auto Provisioning decisions: why a node was or wasn't created, and why one was removed. Low volume, and the first place to look when a pod stays pending |
+| `karpenter-events` | No | Not in the documented AKS category list. An unknown category fails the whole diagnostic setting. Check `az monitor diagnostic-settings categories list --resource <cluster id>` on a live cluster, then add it if it is there |
 | `kube-audit` | No | Every read as well as every write. Many times the volume of `kube-audit-admin` for little extra value |
 | `kube-apiserver` | No | API server process logs. Noisy, and the control plane is Microsoft's to run |
 | `kube-controller-manager`, `kube-scheduler`, `cloud-controller-manager` | No | Useful when debugging the control plane itself. Turn one on for a day if a problem points there |
@@ -74,7 +74,7 @@ At UK South retail prices checked on 19 November 2026:
 No measurement yet. This is an estimate to check against the `Usage` table after the first day.
 
 - `kube-audit-admin` is the big one. Most of it is lease renewals: each node's kubelet updates its lease every 10 seconds, and each controller with leader election renews every 2 seconds or so. With about 7 nodes and 10 such controllers, at about 2.5 KB an event, that is roughly 0.2 to 0.4 GB in an 8-hour day.
-- `guard` and `karpenter-events` add a few MB a day.
+- `guard` adds a few MB a day.
 
 That is roughly 4 to 9 GB over a 22-day month.
 

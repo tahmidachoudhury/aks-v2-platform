@@ -133,7 +133,7 @@ variable "log_analytics_daily_quota_gb" {
   default     = 0.5
 
   validation {
-    condition     = var.log_analytics_daily_quota_gb > 0
-    error_message = "log_analytics_daily_quota_gb must be above 0. -1, the Azure value for no cap, is not allowed here."
+    condition     = var.log_analytics_daily_quota_gb >= 0.023
+    error_message = "log_analytics_daily_quota_gb must be at least 0.023, the smallest cap Azure accepts. -1, the Azure value for no cap, is not allowed here."
   }
 }
