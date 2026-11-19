@@ -118,3 +118,22 @@ variable "servicebus_queue_name" {
   type        = string
   default     = "order-events"
 }
+
+# Log Analytics: see ../modules/loganalytics/README.md.
+
+variable "log_analytics_workspace_name" {
+  description = "Name of the Log Analytics workspace. Keep it the same every day so the morning apply recovers the soft-deleted workspace and its data."
+  type        = string
+  default     = "log-aks-v2-platform"
+}
+
+variable "log_analytics_daily_quota_gb" {
+  description = "Daily ingestion cap for the workspace, in GB. Protects the budget."
+  type        = number
+  default     = 0.5
+
+  validation {
+    condition     = var.log_analytics_daily_quota_gb > 0
+    error_message = "log_analytics_daily_quota_gb must be above 0. -1, the Azure value for no cap, is not allowed here."
+  }
+}

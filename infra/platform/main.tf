@@ -81,3 +81,14 @@ module "servicebus" {
   # morning, so the namespace is created after the cluster and reads it then.
   allowed_ip_addresses = module.aks.outbound_ip_addresses
 }
+
+module "loganalytics" {
+  source = "../modules/loganalytics"
+
+  name                = var.log_analytics_workspace_name
+  resource_group_name = azurerm_resource_group.platform.name
+  location            = azurerm_resource_group.platform.location
+  tags                = local.tags
+  daily_quota_gb      = var.log_analytics_daily_quota_gb
+  aks_cluster_id      = module.aks.id
+}

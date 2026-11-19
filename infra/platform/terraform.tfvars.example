@@ -6,4 +6,5 @@
 servicebus_namespace_name = "sb-aks-v2-platform-1234"
 
 # Optional overrides. Every other variable has a default in variables.tf.
-# servicebus_queue_name = "order-events"
+# servicebus_queue_name        = "order-events"
+# log_analytics_daily_quota_gb = 0.5
