@@ -43,7 +43,13 @@ variable "allowed_ip_ranges" {
   type        = list(string)
 
   validation {
-    condition     = length(var.allowed_ip_ranges) > 0 && alltrue([for r in var.allowed_ip_ranges : can(cidrhost(strcontains(r, "/") ? r : "${r}/32", 0))])
-    error_message = "allowed_ip_ranges needs at least one entry, each an IPv4 address or CIDR range."
+    # IPv4 only, no host bits set (Azure would store the network address and
+    # every plan would show drift), and nothing wider than a /16, so a range
+    # like 0.0.0.0/0 can't open the vault to the internet.
+    condition = length(var.allowed_ip_ranges) > 0 && alltrue([
+      for r in var.allowed_ip_ranges : can(regex("^(\\d{1,3}\\.){3}\\d{1,3}(/(1[6-9]|2\\d|3[0-2]))?$", r))
+      && try(cidrhost(strcontains(r, "/") ? r : "${r}/32", 0) == split("/", r)[0], false)
+    ])
+    error_message = "allowed_ip_ranges needs at least one entry, each a public IPv4 address or a CIDR range from /16 to /32 with no host bits set, such as 203.0.113.10 or 203.0.113.0/24."
   }
 }

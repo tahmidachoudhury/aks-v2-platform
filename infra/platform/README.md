@@ -130,7 +130,7 @@ for z in privatelink.vaultcore.azure.net privatelink.blob.core.windows.net; do
 done
 
 # From a pod: both names resolve privately, and HTTPS goes to the private IP.
-kubectl --context aks-v2-platform run pecheck --rm -it --restart=Never \
+kubectl --context aks-v2-platform run pecheck --rm -it --restart=Never --pod-running-timeout=5m \
   --image=curlimages/curl:8.11.1 --command -- sh -c "
     nslookup $KV.vault.azure.net
     nslookup $ST.blob.core.windows.net

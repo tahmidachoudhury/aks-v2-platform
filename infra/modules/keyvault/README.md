@@ -69,7 +69,7 @@ Added in P3-14 (#40). The decision and the options are in [Private endpoints](..
 | Operators applying persistent from a laptop | Public endpoint | `allowed_ip_ranges` |
 | External Secrets Operator in the cluster | The private endpoint `pe-key-vault` in the platform VNet | The endpoint. The firewall doesn't apply to it |
 | CI pull request plans | None. They run with `-refresh=false` and never touch the data plane | |
-| A CI persistent apply (P8-01) | Public endpoint | Its runner IP, added for the run and removed after. See the decision |
+| A CI persistent apply (P8-01) | Public endpoint | Its runner IP, added for the run and removed after, plus the operators' ranges from the `KEY_VAULT_ALLOWED_IP_RANGES` secret. See the decision |
 | Anything else | | Refused with 403 |
 
 Public network access stays on rather than off. The private endpoint lives in the platform VNet, which is destroyed every evening, and the operators write secrets from outside Azure. With public access off, nobody could apply persistent. `bypass` is `None`: no Azure service reads the vault on its own.
