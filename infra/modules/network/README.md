@@ -10,7 +10,7 @@ The `platform` root calls this module, so the network goes with the rest of the 
 | --- | --- | --- | --- |
 | VNet | `10.20.0.0/16` | The whole platform network | 65,536 addresses |
 | `snet-aks-nodes` | `10.20.0.0/22` | AKS node NICs. Internal load balancer frontends would also go here | 1,019 usable IPs (Azure keeps 5 per subnet) |
-| `snet-private-endpoints` | `10.20.4.0/24` | Private endpoints for ACR, Key Vault, Service Bus and blob (P3-14) | 251 usable IPs |
+| `snet-private-endpoints` | `10.20.4.0/24` | Private endpoints for ACR, Key Vault and blob (P3-14). Service Bus Standard has none | 251 usable IPs |
 | Reserved | `10.20.5.0` to `10.20.255.255` | Later subnets, such as API server VNet integration (a /28 or larger) or a jumpbox. Not created | About 64,000 addresses |
 | Pod CIDR | `10.244.0.0/16` | Azure CNI Overlay pod IPs. Outside the VNet. Not routable from it | 256 nodes at the default /24 per node, 250 pods each |
 | Service CIDR | `10.0.0.0/16` | Kubernetes ClusterIP services. Outside the VNet. P3-07 sets it | 65,536 service IPs |
@@ -34,7 +34,7 @@ If an internal load balancer is needed later, take a /24 from the reserved range
 
 ## Default outbound access
 
-Both subnets set `default_outbound_access_enabled = false`, so a VM in them gets no implicit internet access from Azure. This doesn't break P3-05. With outbound type `loadBalancer`, AKS gives the Standard Load Balancer outbound rules and a public IP, and node egress uses those. Explicit outbound methods like that one, or a NAT Gateway, still work on a private subnet.
+The node subnet sets `default_outbound_access_enabled = false`, so a VM in it gets no implicit internet access from Azure. This doesn't break P3-05. With outbound type `loadBalancer`, AKS gives the Standard Load Balancer outbound rules and a public IP, and node egress uses those. Explicit outbound methods like that one, or a NAT Gateway, still work on a private subnet.
 
 ## NSG rules
 
@@ -46,7 +46,7 @@ AKS also manages an NSG of its own in the node resource group, attached to the n
 
 | Priority | Name | Source | Destination | Ports | Why |
 | --- | --- | --- | --- | --- | --- |
-| 100 | `AllowPodCidrInbound` | Pod CIDR | Node subnet and pod CIDR | Any | Overlay pod traffic between nodes is not encapsulated, so the NSG sees pod IPs. The pod CIDR is outside the VNet, so `AllowVnetInBound` may not match it. Microsoft's Overlay docs list this rule as required |
+| 100 | `AllowPodCidrInbound` | Node subnet and pod CIDR | Node subnet and pod CIDR | Any | Overlay pod traffic between nodes is not encapsulated, so the NSG sees pod IPs. The pod CIDR is outside the VNet, so `AllowVnetInBound` does not match it. Microsoft's Overlay docs need node to pod and pod to pod allowed |
 | 110 | `AllowInternetHttpHttpsInbound` | `Internet` | Any | TCP 80, 443 | Traefik's public load balancer (P4-03). The default deny would block it. The nodes have no public IPs, so only a load balancer frontend with a rule for these ports is reachable. The destination is `*` because with floating IP the NSG sees the frontend IP, which doesn't exist until the cluster creates it |
 
 Not added, and why:
@@ -60,7 +60,7 @@ The subnet sets `private_endpoint_network_policies = "NetworkSecurityGroupEnable
 
 | Priority | Name | Source | Destination | Ports | Why |
 | --- | --- | --- | --- | --- | --- |
-| 100 | `AllowVnetServicesInbound` | `VirtualNetwork` | Endpoint subnet | TCP 443, 5671 | HTTPS for ACR, Key Vault, blob and Service Bus. 5671 is AMQP over TLS for Service Bus. Pod traffic leaving the cluster is SNATed to the node IP, so the `VirtualNetwork` tag covers pods |
+| 100 | `AllowVnetServicesInbound` | `VirtualNetwork` | Endpoint subnet | TCP 443 | HTTPS for ACR, Key Vault and blob. Service Bus Standard has no private endpoint, so no AMQP port. Pod traffic leaving the cluster is SNATed to the node IP, so the `VirtualNetwork` tag covers pods |
 | 4096 | `DenyAllInbound` | Any | Any | Any | Overrides the defaults that allow any port from the VNet and from `AzureLoadBalancer`. Private endpoints need neither |
 
 A private endpoint for a service on another port, such as SQL on 1433, needs that port added to rule 100.

@@ -27,8 +27,6 @@ resource "azurerm_subnet" "private_endpoints" {
   virtual_network_name = azurerm_virtual_network.this.name
   address_prefixes     = [var.private_endpoints_prefix]
 
-  default_outbound_access_enabled = false
-
   # Apply the subnet NSG to private endpoint traffic. Without this, Azure
   # skips NSG rules for private endpoints. No route table here, so only the
   # NSG part is enabled.
@@ -46,7 +44,8 @@ resource "azurerm_network_security_group" "aks_nodes" {
 }
 
 # Overlay pod traffic between nodes is not encapsulated, so the NSG sees pod
-# IPs. The pod CIDR is outside the VNet, so AllowVnetInBound may not cover it.
+# IPs. The pod CIDR is outside the VNet, so AllowVnetInBound does not cover
+# it. Microsoft's Overlay guidance needs node to pod and pod to pod allowed.
 resource "azurerm_network_security_rule" "aks_nodes_allow_pod_cidr" {
   name                         = "AllowPodCidrInbound"
   priority                     = 100
@@ -55,7 +54,7 @@ resource "azurerm_network_security_rule" "aks_nodes_allow_pod_cidr" {
   protocol                     = "*"
   source_port_range            = "*"
   destination_port_range       = "*"
-  source_address_prefix        = var.pod_cidr
+  source_address_prefixes      = [var.aks_nodes_prefix, var.pod_cidr]
   destination_address_prefixes = [var.aks_nodes_prefix, var.pod_cidr]
   resource_group_name          = var.resource_group_name
   network_security_group_name  = azurerm_network_security_group.aks_nodes.name
@@ -63,7 +62,9 @@ resource "azurerm_network_security_rule" "aks_nodes_allow_pod_cidr" {
 
 # Ingress through the public Standard Load Balancer (Traefik, P4-03). The
 # nodes have no public IPs, so only a load balancer frontend with a rule for
-# these ports is reachable. The destination stays "*" because the address the
+# these ports is reachable. This is a pass-through for any public
+# LoadBalancer Service on 80 or 443, not just Traefik; the AKS-managed NSG
+# on the node NICs is the per-service gate. The destination stays "*" because the address the
 # NSG sees is the frontend IP when floating IP is on, and that IP does not
 # exist until the cluster creates it.
 resource "azurerm_network_security_rule" "aks_nodes_allow_http_https" {
@@ -94,8 +95,8 @@ resource "azurerm_network_security_group" "private_endpoints" {
   tags                = var.tags
 }
 
-# HTTPS for ACR, Key Vault, blob and Service Bus. 5671 is AMQP over TLS for
-# Service Bus. Pod traffic to the VNet is SNATed to the node IP, so the
+# HTTPS for ACR, Key Vault and blob. Service Bus stays on Standard, which has
+# no private endpoint (see docs/architecture-decisions.md). Pod traffic to the VNet is SNATed to the node IP, so the
 # VirtualNetwork tag covers it.
 resource "azurerm_network_security_rule" "private_endpoints_allow_vnet" {
   name                        = "AllowVnetServicesInbound"
@@ -104,7 +105,7 @@ resource "azurerm_network_security_rule" "private_endpoints_allow_vnet" {
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
-  destination_port_ranges     = ["443", "5671"]
+  destination_port_range      = "443"
   source_address_prefix       = "VirtualNetwork"
   destination_address_prefix  = var.private_endpoints_prefix
   resource_group_name         = var.resource_group_name
