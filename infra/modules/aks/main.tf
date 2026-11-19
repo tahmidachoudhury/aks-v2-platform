@@ -44,9 +44,20 @@ resource "azurerm_kubernetes_cluster" "this" {
     network_data_plane  = "cilium"
     network_policy      = "cilium"
     load_balancer_sku   = "standard"
-    pod_cidr            = var.pod_cidr
-    service_cidr        = var.service_cidr
-    dns_service_ip      = var.dns_service_ip
+
+    # Egress through the outbound rules of the cluster's Standard Load
+    # Balancer, on one managed public IP. The node subnet has no default
+    # outbound access, so this is the only way out. No NAT Gateway: see the
+    # Egress section of README.md.
+    outbound_type = "loadBalancer"
+
+    load_balancer_profile {
+      managed_outbound_ip_count = 1
+    }
+
+    pod_cidr       = var.pod_cidr
+    service_cidr   = var.service_cidr
+    dns_service_ip = var.dns_service_ip
   }
 
   # Entra ID sign-in, authorised by Azure RBAC role assignments. No local

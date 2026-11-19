@@ -25,7 +25,7 @@ No automatic upgrade channel is set. The cluster lives for eight hours, and the 
 
 `Standard_D2s_v6` is cheaper, at £0.088 an hour against £0.1007. But `az vm list-skus` shows it as `NotAvailableForSubscription` in zone 1 of UK South, so a pool across zones 1 to 3 can't use it. The DSv4 family is blocked in the whole region for this subscription. Of the sizes with 2 or 4 vCPUs, only the Dnsv6 and Dnlsv6 families are offered in all three zones.
 
-AKS refuses system pools on sizes with fewer than 2 vCPUs or less than 4 GiB ([AKS quotas and SKUs](https://learn.microsoft.com/en-us/azure/aks/quotas-skus-regions)), so `Standard_D2nls_v6` meets the floor. The [system node pools](https://learn.microsoft.com/en-us/azure/aks/use-system-pools) page says "at least 4 vCPUs", so the two pages disagree. If AKS rejects the size at create time, use `Standard_D2ns_v6` (2 vCPUs, 8 GiB, £0.1308 an hour) or a 4 vCPU size. Either is a change to `system_node_vm_size` in platform.
+AKS refuses system pools on sizes with fewer than 2 vCPUs or less than 4 GiB ([AKS quotas and SKUs](https://learn.microsoft.com/en-us/azure/aks/quotas-skus-regions)), so `Standard_D2nls_v6` meets the floor. The [system node pools](https://learn.microsoft.com/en-us/azure/aks/use-system-pools) page says "at least 4 vCPUs", so the two pages disagree. If AKS rejects the size at create time, change `system_node_vm_size` in platform to `Standard_D2ns_v6` (2 vCPUs, 8 GiB, £0.1308 an hour) or a 4 vCPU size.
 
 The nodes carry only the critical add-ons: CoreDNS, Cilium, konnectivity, metrics-server and the CSI drivers. 4 GiB holds them.
 
@@ -55,6 +55,38 @@ Changing the VM size, OS disk or zones of the system pool replaces the whole clu
 - The pod CIDR, service CIDR and DNS service IP come from platform variables: `pod_cidr`, `service_cidr` and `dns_service_ip`. The address plan is in the [network README](../network/README.md#address-plan).
 
 The cluster joins nodes and load balancer frontends to a subnet it doesn't own, so its identity has Network Contributor on `snet-aks-nodes`. The identity is system-assigned, so the role assignment can only be made once the cluster exists. The create doesn't need it. The load balancer for a `LoadBalancer` Service and the first Node Auto Provisioning node do need it, and both come later, after ArgoCD.
+
+## Egress
+
+Decided in P3-05 (#31). Also recorded in [architecture decisions](../../../docs/architecture-decisions.md#egress).
+
+**Decision:** `outbound_type = "loadBalancer"` with one managed outbound public IP. No NAT Gateway and no firewall.
+
+Both subnets set `default_outbound_access_enabled = false`, so a node gets no implicit internet access from Azure. The outbound rules of the cluster's Standard Load Balancer are the only way out. AKS creates that load balancer, its outbound rule and the public IP in the node resource group.
+
+### Options
+
+Prices are US dollars at UK South retail rates, checked on 19 November 2026. A full month is 730 hours. The schedule is 176 hours. Internet data transfer is billed the same under all three, so it is left out.
+
+| Option | Cost, full month | Cost, on the schedule | SNAT | Notes |
+| --- | --- | --- | --- | --- |
+| Load balancer outbound rules (chosen) | About $4 extra: one public IP at $0.005 an hour. Data processed at $0.005 per GB | About $1 extra | Ports split up front per node. See below | Traefik (P4-03) needs the same Standard Load Balancer anyway. Its rule charge, $0.025 an hour for the first five rules, covers the outbound rule too |
+| NAT Gateway | About $33 for the gateway at $0.045 an hour, plus $3.65 for its public IP, plus $0.045 per GB | About $9 | 64,512 ports per public IP, handed out on demand to any VM in the subnet. Up to 16 IPs | Better SNAT behaviour under load. The brief asks us to avoid it. The load balancer still exists for Traefik |
+| User-defined routing through Azure Firewall | Basic: about $288 at $0.395 an hour, plus $0.065 per GB. Standard: about $913 at $1.25 an hour | Basic: about $70 | The firewall's public IPs do the SNAT | Filters egress by FQDN, which nothing else here can do. Needs a firewall subnet, a route table and more public IPs. Basic alone uses most of the £100 budget |
+
+### SNAT ports
+
+- One managed outbound IP gives 64,000 SNAT ports.
+- `outbound_ports_allocated` is left at its default of 0. Azure then sets the ports per node from the size of the backend pool: 1,024 per node for up to 50 nodes, 512 for 51 to 100, and fewer as the pool grows.
+- This cluster tops out at about 7 nodes: 3 system, 1 surge, 2 on-demand and 1 spot from Node Auto Provisioning. That is about 7,000 of the 64,000 ports.
+- 1,024 ports allow 1,024 concurrent connections from one node to the same destination IP and port. Few connections leave through SNAT, since the services reach Postgres and Redis inside the cluster, and most Azure services over private endpoints. Service Bus Standard has no private endpoint, so its AMQP connections do use SNAT, a handful per pod.
+- If the load balancer's SNAT metrics show exhaustion, set `outbound_ports_allocated` explicitly. Ports per node times the most nodes the cluster can reach, surge included, must stay under 64,000 per outbound IP. 8,000 ports across 8 nodes fits one IP.
+
+Idle outbound flows close after 30 minutes, the default `idle_timeout_in_minutes`.
+
+### Changing it later
+
+Node Auto Provisioning doesn't allow a change of outbound type after the cluster is created. The cluster is rebuilt every morning, so a change only takes effect at the next create.
 
 ## Identity and access
 
@@ -96,4 +128,4 @@ On the schedule of 176 hours a month (22 weekdays of 8 hours), at Azure retail p
 | Control plane, Free tier | £0 | £0 |
 | Total | | About £60 |
 
-In US dollars that is about $80: $0.134 an hour per node and $12.35 a month per disk. The Free tier has no uptime SLA.
+In US dollars that is about $80: $0.134 an hour per node and $12.35 a month per disk. The Free tier has no uptime SLA. The load balancer and its egress IP add about $5 on the schedule, as costed under [Egress](#egress).
