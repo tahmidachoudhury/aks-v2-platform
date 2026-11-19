@@ -77,16 +77,42 @@ Prices are US dollars at UK South retail rates, checked on 19 November 2026. A f
 ### SNAT ports
 
 - One managed outbound IP gives 64,000 SNAT ports.
-- `outbound_ports_allocated` is left at its default of 0. Azure then sets the ports per node from the size of the backend pool: 1,024 per node for up to 50 nodes, 512 for 51 to 100, and fewer as the pool grows.
+- `outbound_ports_allocated` is left at its default of 0. Azure then sets the ports per node from the backend pool size: 1,024 per node for up to 50 nodes, 512 for 51 to 100, and fewer as the pool grows.
 - This cluster tops out at about 7 nodes: 3 system, 1 surge, 2 on-demand and 1 spot from Node Auto Provisioning. That is about 7,000 of the 64,000 ports.
-- 1,024 ports allow 1,024 concurrent connections from one node to the same destination IP and port. Few connections leave through SNAT, since the services reach Postgres and Redis inside the cluster, and most Azure services over private endpoints. Service Bus Standard has no private endpoint, so its AMQP connections do use SNAT, a handful per pod.
+- 1,024 ports allow 1,024 concurrent connections from one node to the same destination IP and port. Few connections use SNAT, since services reach Postgres and Redis inside the cluster, and most Azure services over private endpoints. Service Bus Standard has no private endpoint, so its AMQP connections do use SNAT, a handful per pod.
 - If the load balancer's SNAT metrics show exhaustion, set `outbound_ports_allocated` explicitly. Ports per node times the most nodes the cluster can reach, surge included, must stay under 64,000 per outbound IP. 8,000 ports across 8 nodes fits one IP.
 
 Idle outbound flows close after 30 minutes, the default `idle_timeout_in_minutes`.
 
 ### Changing it later
 
-Node Auto Provisioning doesn't allow a change of outbound type after the cluster is created. The cluster is rebuilt every morning, so a change only takes effect at the next create.
+Node Auto Provisioning doesn't allow a change of outbound type after the cluster is created. The cluster is rebuilt every morning, so a change takes effect at the next create.
+
+## Node Auto Provisioning
+
+Added in P3-08 (#34). NAP is the AKS-managed Karpenter. It creates user nodes when pods are pending and removes them when they are not needed.
+
+```hcl
+node_provisioning_profile {
+  mode               = "Auto"
+  default_node_pools = "None"
+}
+```
+
+- `mode = "Auto"` turns NAP on. It is the azurerm 4.81 argument for the AKS `nodeProvisioningProfile.mode` field.
+- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. ArgoCD applies them from P7.
+
+NAP needs the following, and this cluster meets each one:
+
+- A managed identity, not a service principal. This cluster uses a system-assigned identity.
+- Azure CNI in Overlay or node subnet mode. Not kubenet, and not Calico network policy. Microsoft recommends Overlay with the Cilium data plane, which this cluster uses.
+- A Standard Load Balancer when the cluster sits in its own VNet.
+- Read and join rights on the node subnet for the cluster identity. Network Contributor on `snet-aks-nodes` covers both.
+- Linux only, IPv4 only.
+
+A NAP cluster can't be stopped, which doesn't matter because this one is destroyed instead. Its outbound type can't change after create.
+
+Proving NAP works needs a live cluster: apply the NodePools, scale a test deployment, and watch a node appear. The steps are in the [node-pools README](../../../k8s/node-pools/README.md#acceptance-test).
 
 ## Identity and access
 

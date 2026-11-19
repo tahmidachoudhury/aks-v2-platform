@@ -1,0 +1,17 @@
+# Azure settings for every node Node Auto Provisioning creates. No
+# vnetSubnetID, so nodes join the cluster's node subnet, snet-aks-nodes.
+apiVersion: karpenter.azure.com/v1beta1
+kind: AKSNodeClass
+metadata:
+  name: general
+spec:
+  imageFamily: AzureLinux
+  # 64 GB managed OS disk (a P6), as on the system pool. The allowed sizes
+  # have no temp disk, so ephemeral OS disks are not possible.
+  osDiskSizeGB: 64
+  tags:
+    project: aks-v2-platform
+    managed-by: node-auto-provisioning
+    root: platform
+    env: dev
+    owner: tahmidachoudhury

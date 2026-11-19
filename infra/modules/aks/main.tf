@@ -71,6 +71,15 @@ resource "azurerm_kubernetes_cluster" "this" {
   oidc_issuer_enabled       = true
   workload_identity_enabled = true
 
+  # Node Auto Provisioning (Karpenter) for user workloads. Needs a managed
+  # identity, a Standard Load Balancer in a BYO VNet, and Azure CNI, with
+  # Overlay and Cilium recommended. "None" skips the default NodePools: ours
+  # live in k8s/node-pools and ArgoCD applies them.
+  node_provisioning_profile {
+    mode               = "Auto"
+    default_node_pools = "None"
+  }
+
   tags = var.tags
 }
 
