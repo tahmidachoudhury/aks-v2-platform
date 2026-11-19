@@ -49,6 +49,14 @@ module "aks" {
 
   tenant_id = data.azurerm_client_config.current.tenant_id
 
-  # Whoever runs the apply can use kubectl straight away.
-  cluster_admin_object_ids = [data.azurerm_client_config.current.object_id]
+  # Whoever runs the apply can use kubectl straight away, plus any fixed
+  # admins, so a second operator or CI applying does not remove the first.
+  cluster_admin_object_ids = distinct(concat(
+    [data.azurerm_client_config.current.object_id],
+    var.extra_cluster_admin_object_ids,
+  ))
+
+  # Nodes must not boot into the subnet before its NSG and the Overlay rule
+  # are attached. The subnet ID alone doesn't make the cluster wait for them.
+  depends_on = [module.network]
 }

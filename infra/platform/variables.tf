@@ -91,3 +91,9 @@ variable "system_node_vm_size" {
   type        = string
   default     = "Standard_D2nls_v6"
 }
+
+variable "extra_cluster_admin_object_ids" {
+  description = "Entra object IDs that get AKS RBAC Cluster Admin as well as whoever runs the apply."
+  type        = list(string)
+  default     = []
+}

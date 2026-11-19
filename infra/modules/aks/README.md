@@ -46,7 +46,7 @@ UK South allows the subscription 10 standard vCPUs in total, plus 3 spot vCPUs. 
 
 An in-place upgrade of the system pool adds one 2 vCPU surge node. That fits only while Node Auto Provisioning uses 2 vCPUs or fewer. The daily rebuild is the normal upgrade path. Before an in-place upgrade, scale user workloads down until it fits, or destroy and apply the root instead.
 
-Changing the VM size, OS disk or zones of the system pool replaces the whole cluster. Rotating through a temporary pool would need 6 more vCPUs, which the quota doesn't have.
+Changing the VM size, OS disk or zones of the system pool on a live cluster rotates through a temporary pool, `systemtmp`. That needs 6 more vCPUs, which the quota doesn't have, so make the change after the evening destroy and let the next morning's apply create the cluster with the new size.
 
 ## Networking
 
@@ -100,7 +100,7 @@ node_provisioning_profile {
 ```
 
 - `mode = "Auto"` turns NAP on. It is the azurerm 4.81 argument for the AKS `nodeProvisioningProfile.mode` field.
-- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. ArgoCD applies them from P7.
+- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule. ArgoCD included. Each morning, apply them right after platform with `kubectl apply -k k8s/node-pools`. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
 
 NAP needs the following, and this cluster meets each one:
 
@@ -150,7 +150,7 @@ The acceptance test is a `csi-azuredisk-node` pod on every node, and `disk.csi.a
 Connect with the `kubeconfig_command` output. It needs `kubelogin`:
 
 ```bash
-$(tofu -chdir=infra/platform output -raw kubeconfig_command)
+eval "$(tofu -chdir=infra/platform output -raw kubeconfig_command)"
 kubectl get nodes -L topology.kubernetes.io/zone
 ```
 

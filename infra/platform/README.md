@@ -11,7 +11,7 @@
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
-After an apply, `tofu output -raw kubeconfig_command` prints the command that fetches an Entra ID kubeconfig.
+After an apply, run `eval "$(tofu output -raw kubeconfig_command)"` to fetch an Entra ID kubeconfig, then `kubectl apply -k ../../k8s/node-pools` so user workloads have somewhere to run.
 
 State lives in the `platform.tfstate` blob in the state account.
 

@@ -17,6 +17,10 @@ resource "azurerm_kubernetes_cluster" "this" {
     vnet_subnet_id = var.node_subnet_id
     os_sku         = "AzureLinux"
 
+    # azurerm 4.x changes size, disk and zones by rotating through a
+    # temporary pool rather than replacing the cluster.
+    temporary_name_for_rotation = "systemtmp"
+
     # No temp disk on v6 sizes, so no ephemeral OS disk. A 64 GB managed
     # disk bills as a P6 instead of the P10 (128 GB) AKS would pick.
     os_disk_type    = "Managed"
