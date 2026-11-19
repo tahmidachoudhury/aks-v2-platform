@@ -84,6 +84,10 @@ Prices are US dollars at UK South retail rates, checked on 19 November 2026. A f
 
 Idle outbound flows close after 30 minutes, the default `idle_timeout_in_minutes`.
 
+### The egress IP as an output
+
+The module outputs `outbound_ip_addresses`, the public IPs egress leaves from. The cluster exposes only their resource IDs, in `effective_outbound_ips`, so a `data "azurerm_public_ip"` looks up each address. Its count comes from the same local as `managed_outbound_ip_count`, because a count must be known at plan time and the IDs are not. On a new cluster the read happens during the apply, after the cluster is created. The Service Bus firewall uses this output (P3-12).
+
 ### Changing it later
 
 Node Auto Provisioning doesn't allow a change of outbound type after the cluster is created. The cluster is rebuilt every morning, so a change takes effect at the next create.
@@ -165,6 +169,7 @@ The acceptance test is three system nodes, with the zones `uksouth-1`, `uksouth-
 | `oidc_issuer_url` | OIDC issuer URL, for federated credentials |
 | `kubelet_identity_object_id` | Kubelet identity, for AcrPull on the registry (P3-11) |
 | `node_resource_group` | The resource group AKS creates for nodes, disks and the load balancer |
+| `outbound_ip_addresses` | The egress public IPs, new with each cluster. For allow-lists such as the Service Bus firewall |
 
 The platform root also outputs `kubeconfig_command`. No output holds a kubeconfig or a credential.
 

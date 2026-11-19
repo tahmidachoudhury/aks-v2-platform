@@ -22,3 +22,8 @@ output "node_resource_group" {
   description = "Resource group AKS manages for nodes, disks and the load balancer."
   value       = azurerm_kubernetes_cluster.this.node_resource_group
 }
+
+output "outbound_ip_addresses" {
+  description = "Public IP addresses the cluster's egress leaves from. They change with every new cluster."
+  value       = data.azurerm_public_ip.outbound[*].ip_address
+}
