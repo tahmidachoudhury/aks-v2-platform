@@ -186,3 +186,64 @@ module "loganalytics" {
   daily_quota_gb      = var.log_analytics_daily_quota_gb
   aks_cluster_id      = module.aks.id
 }
+
+# Workload identity federation (P3-16, P3-18) and the Service Bus roles
+# (P3-17). The identities are in persistent, so their client IDs survive the
+# night. Their federated credentials name this cluster's OIDC issuer, which
+# is new every morning, so they live here. Role matrix and naming:
+# ../modules/workload-identity/README.md.
+
+locals {
+  # The ServiceAccount each identity trusts, keyed by the name persistent
+  # gives the identity (id-<key>). The namespaces are a convention until
+  # P4-07 creates them: apps for the services, platform for the components.
+  # Every key must also be in the names list of module.workload_identity in
+  # infra/persistent/main.tf, or the identity lookup fails with "not found".
+  workload_identities = {
+    order-service    = { namespace = "apps", service_account = "order-service" }
+    payment-service  = { namespace = "apps", service_account = "payment-service" }
+    shipping-service = { namespace = "apps", service_account = "shipping-service" }
+    worker           = { namespace = "apps", service_account = "worker" }
+    external-dns     = { namespace = "platform", service_account = "external-dns" }
+    external-secrets = { namespace = "platform", service_account = "external-secrets" }
+  }
+
+  # The three publishers send and the worker receives, all on one queue.
+  servicebus_roles = {
+    order-service    = "Azure Service Bus Data Sender"
+    payment-service  = "Azure Service Bus Data Sender"
+    shipping-service = "Azure Service Bus Data Sender"
+    worker           = "Azure Service Bus Data Receiver"
+  }
+}
+
+data "azurerm_user_assigned_identity" "workload" {
+  for_each = local.workload_identities
+
+  name                = "id-${each.key}"
+  resource_group_name = var.workload_identity_resource_group_name
+}
+
+# One credential per identity, so Azure's limit on concurrent credential
+# writes to one identity never bites. Destroyed with the cluster each
+# evening, so yesterday's issuer is never left trusted.
+resource "azurerm_federated_identity_credential" "workload" {
+  for_each = local.workload_identities
+
+  name                      = module.aks.name
+  user_assigned_identity_id = data.azurerm_user_assigned_identity.workload[each.key].id
+  issuer                    = module.aks.oidc_issuer_url
+  audience                  = ["api://AzureADTokenExchange"]
+  subject                   = "system:serviceaccount:${each.value.namespace}:${each.value.service_account}"
+}
+
+# Scoped to the queue, not the namespace: it is the only entity, and a role
+# on it also covers its dead-letter queue.
+resource "azurerm_role_assignment" "servicebus" {
+  for_each = local.servicebus_roles
+
+  scope                = module.servicebus.queue_id
+  role_definition_name = each.value
+  principal_id         = data.azurerm_user_assigned_identity.workload[each.key].principal_id
+  principal_type       = "ServicePrincipal"
+}

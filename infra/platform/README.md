@@ -12,7 +12,8 @@
 - The Service Bus namespace and the `order-events` queue, through [`../modules/servicebus`](../modules/servicebus/README.md). Its firewall allows only the cluster's egress IP, so the namespace is created after the cluster.
 - The Log Analytics workspace `log-aks-v2-platform`, with a 0.5 GB daily cap and the AKS control plane diagnostic setting, through [`../modules/loganalytics`](../modules/loganalytics/README.md). No Container Insights: New Relic does that job.
 - Private endpoints for the Key Vault and the state account's blob service (P3-14), with their records in the zones above. See [Private endpoints](#private-endpoints).
-- Later: federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
+- A federated credential for each workload identity in persistent, trusting this cluster's OIDC issuer and one ServiceAccount, and the Service Bus Data Sender and Receiver roles on the queue (P3-16, P3-17, P3-18). The subjects and roles are in `local.workload_identities` and `local.servicebus_roles`. See [`../modules/workload-identity`](../modules/workload-identity/README.md).
+- Later: the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
@@ -53,6 +54,8 @@ Six variables are required:
 Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them there. Every other variable has a default, including the address ranges, and you can override it in the same file.
 
 The CI infra identity, `id-gh-infra`, also gets AKS RBAC Cluster Admin. Platform reads it by name from `rg-aks-v2-identity` in persistent, so apply persistent first. The admin list is fixed and doesn't follow whoever runs the apply, so a person and CI applying in turn don't swap each other's access.
+
+Platform also reads the workload identities by name from `rg-aks-v2-persistent`. Until persistent creates them, a plan here fails with "User Assigned Identity ... was not found".
 
 ## AcrPull for the kubelet
 

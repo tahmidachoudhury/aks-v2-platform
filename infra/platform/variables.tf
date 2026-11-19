@@ -169,6 +169,14 @@ variable "servicebus_queue_name" {
   default     = "order-events"
 }
 
+# Workload identities: see ../modules/workload-identity/README.md.
+
+variable "workload_identity_resource_group_name" {
+  description = "Resource group in persistent that holds the workload identities, id-<name>."
+  type        = string
+  default     = "rg-aks-v2-persistent"
+}
+
 # Log Analytics: see ../modules/loganalytics/README.md.
 
 variable "log_analytics_workspace_name" {

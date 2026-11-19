@@ -87,3 +87,8 @@ output "tenant_id" {
   description = "Entra ID tenant. Repository secret AZURE_TENANT_ID. An output only: never commit it."
   value       = module.github_oidc.tenant_id
 }
+
+output "workload_identity_client_ids" {
+  description = "Client ID of each workload identity, by ServiceAccount name, for the azure.workload.identity/client-id annotations. Not committed yet: see modules/workload-identity/README.md."
+  value       = module.workload_identity.client_ids
+}

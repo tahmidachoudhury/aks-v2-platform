@@ -65,7 +65,7 @@ Things to know:
 
 ## Access
 
-Local auth is off, so every client needs an Entra ID role on the namespace or the queue. The per-service Azure Service Bus Data Sender and Data Receiver role assignments are P3-17's job. They scope to the `servicebus_namespace_id` output, or to the queue. Until then, nothing can send or receive, the test below included.
+Local auth is off, so every client needs an Entra ID role on the namespace or the queue. The platform root gives the three publishers Azure Service Bus Data Sender and the worker Azure Service Bus Data Receiver. Both are scoped to the queue through the `queue_id` output (P3-17). The role matrix is in the [workload-identity README](../workload-identity/README.md#role-matrix). Your own account has no data role, so the test below sends from a pod signed in as a publisher and receives from one signed in as the worker.
 
 ## Acceptance test
 
@@ -86,7 +86,8 @@ The `az` call is a management-plane read, so it works from anywhere. It should p
 
 | Output | Value |
 | --- | --- |
-| `id` | Namespace ID, the scope for the data plane roles in P3-17 |
+| `id` | Namespace ID |
+| `queue_id` | Queue ID, the scope for the Sender and Receiver roles in P3-17 |
 | `name` | Namespace name |
 | `fqdn` | `<name>.servicebus.windows.net`, for `SERVICEBUS_NAMESPACE` |
 | `queue_name` | `order-events`, for `SERVICEBUS_QUEUE` |
