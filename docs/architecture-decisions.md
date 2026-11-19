@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway, and the container registry is ACR Basic.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -17,6 +17,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Infrastructure as code](#infrastructure-as-code) | OpenTofu, not Terraform                  | Accepted | none                                                               |
 | [Egress](#egress)                  | Load balancer outbound rules, no NAT Gateway                    | Accepted | [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31) |
 | [Container registry](#container-registry) | ACR Basic, Entra ID access only, no private endpoint | Accepted | [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36) |
+| [Disk encryption](#disk-encryption) | Platform-managed keys, no Disk Encryption Set, no encryption at host | Accepted | [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46) |
 
 ## Event bus
 
@@ -280,3 +281,36 @@ Prices checked on 19 November 2026, UK South. Storage beyond the included amount
 - 10 GiB holds many tags of nine small Go images. Add a retention or purge task if storage grows.
 
 Ticket: [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36)
+
+## Disk encryption
+
+**Status:** Accepted
+
+**Context:** Every managed disk in Azure is encrypted at rest. By default the key is platform-managed: Azure creates, stores and rotates it. The card asks whether to add a Disk Encryption Set (DES) with a customer-managed key (CMK) in Key Vault instead. The disks here are the 64 GB OS disks on each node and the Premium SSD volumes for Postgres and Redis. The cluster and its disks are rebuilt every morning, and the budget is about £100 a month.
+
+**Decision:** Keep platform-managed keys. No DES, no CMK, and no encryption at host. The data is already encrypted at rest with AES-256. A CMK adds a key, an identity, two role grants and wiring on the cluster and the StorageClass, all to hold a key for disks that live eight hours. It also adds a new way to lose data: if the key is disabled, deleted or its access is removed, the disks can't be read and the nodes can't start.
+
+**Options compared**
+
+| Option | Monthly cost | What it adds | Setup | Risk |
+| --- | --- | --- | --- | --- |
+| Platform-managed keys (chosen) | £0 | AES-256 at rest on every disk | None. The default | None beyond the default |
+| Encryption at host, platform keys | £0. No separate charge | Also encrypts the temp disk and the OS and data disk caches on the VM host. Data reaches Storage already encrypted | `host_encryption_enabled` on the system pool and `security.encryptionAtHost` on the AKSNodeClass. Needs the `Microsoft.Compute/EncryptionAtHost` feature registered on the subscription | Low. Set at node pool create only, which happens every morning anyway |
+| DES with a CMK | Pennies. The DES is free. Key operations cost $0.03 per 10,000 for RSA 2048, $0.15 for larger keys. Automatic key rotation is $1 per rotation | We choose and rotate the key, and can revoke it to make every disk unreadable | A Key Vault key, a DES with its own identity, "Key Vault Crypto Service Encryption User" on the key, "Reader" on the DES for the cluster identity, `disk_encryption_set_id` on the cluster, `diskEncryptionSetID` on the StorageClass | High. A disabled or deleted key, or a lost role grant, stops nodes and volumes |
+| DES with double encryption | As the CMK row | Two layers at rest: platform key and CMK (`EncryptionAtRestWithPlatformAndCustomerKeys`) | As the CMK row | As the CMK row |
+
+Prices checked on 19 November 2026, UK South, from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices). Sources: [server-side encryption of managed disks](https://learn.microsoft.com/en-us/azure/virtual-machines/disk-encryption), [host-based encryption on AKS](https://learn.microsoft.com/en-us/azure/aks/enable-host-encryption), [BYOK for Azure disks in AKS](https://learn.microsoft.com/en-us/azure/aks/azure-disk-customer-managed-keys), [AKSNodeClass security settings](https://learn.microsoft.com/en-us/azure/aks/node-auto-provisioning-aksnodeclass#security-settings).
+
+**Encryption at host on our sizes**
+
+`az vm list-skus` reports `EncryptionAtHostSupported = True` in UK South for every size the cluster uses: `Standard_D2nls_v6` on the system pool, and `Standard_D2s_v6`, `Standard_D4s_v6`, `Standard_D2nls_v6` and `Standard_D4nls_v6` in the Node Auto Provisioning pools. Node Auto Provisioning has supported both encryption at host and DES since February 2026. The `EncryptionAtHost` feature shows `NotRegistered` on this subscription. Registering it is a one-off, subscription-wide step, in the same spirit as `resource_provider_registrations = "none"`, so it stays manual.
+
+**Consequences / trade-offs**
+
+- Disk data is encrypted at rest with keys we never see. Anyone with Azure access to the disk, such as a snapshot, reads it through Azure RBAC, not a key we control.
+- Server-side encryption doesn't cover the temp disk or the disk cache on the VM host. Encryption at host does. The v6 sizes here have no temp disk, so only the cache is left out. The AKS page reads as if caches are covered by default, and the managed disk page says they are not, so treat the cache as uncovered.
+- Encryption at host is the cheap upgrade if a later card wants it: register the feature, then set one flag on the system pool and one on the AKSNodeClass. No key, no identity and no Key Vault dependency.
+- A production team with a compliance need to control or revoke keys should use a DES with a CMK, kept in the `persistent` root next to the vault. The vault already has purge protection, which a CMK requires.
+- A DES with a CMK has to be set when the cluster is created. Moving to it later means a new cluster, which happens every morning here.
+
+Ticket: [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46)

@@ -33,6 +33,8 @@ The nodes carry only the critical add-ons: CoreDNS, Cilium, konnectivity, metric
 
 AKS gives a 2 vCPU size a 128 GB P10 managed OS disk by default ([AKS storage concepts](https://learn.microsoft.com/en-us/azure/aks/concepts-storage)). This size supports premium storage, so the disk is Premium SSD LRS. Setting 64 GB makes it a P6. The disk holds no data that outlives the node.
 
+Disks use platform-managed keys, with no Disk Encryption Set and no encryption at host. See [Disk encryption](../../../docs/architecture-decisions.md#disk-encryption) (P3-20).
+
 ## Quota
 
 UK South allows the subscription 10 standard vCPUs in total, plus 3 spot vCPUs. The spot quota is separate.
