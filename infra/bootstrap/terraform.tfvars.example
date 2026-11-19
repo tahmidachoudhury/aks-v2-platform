@@ -1,0 +1,10 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+# Globally unique, 3 to 24 lowercase letters and digits.
+storage_account_name = "stakstfstate1234"
+
+# Optional overrides.
+# location                   = "uksouth"
+# resource_group_name        = "rg-aks-v2-tfstate"
+# container_name             = "tfstate"
+# soft_delete_retention_days = 14

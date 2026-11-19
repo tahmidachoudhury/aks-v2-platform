@@ -1,1 +1,13 @@
 .DS_Store
+
+# OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+infra/backend.hcl
