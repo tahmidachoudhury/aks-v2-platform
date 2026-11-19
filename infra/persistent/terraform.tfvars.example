@@ -1,5 +1,9 @@
 # Copy to terraform.tfvars, which is gitignored, and fill in.
 
+# Required. The subscription to deploy into. The provider uses only this
+# value, never ARM_SUBSCRIPTION_ID or the az CLI default subscription.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
 # Globally unique, 5 to 50 letters and digits. Check first:
 #   az acr check-name -n <name>
 acr_name = "acraksv2example"

@@ -1,3 +1,13 @@
+variable "subscription_id" {
+  description = "Subscription to deploy into. Set in terraform.tfvars, so the target never falls back to ARM_SUBSCRIPTION_ID or the az CLI default."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", var.subscription_id))
+    error_message = "subscription_id must be a subscription GUID in lowercase."
+  }
+}
+
 variable "location" {
   description = "Azure region for this root's resources."
   type        = string

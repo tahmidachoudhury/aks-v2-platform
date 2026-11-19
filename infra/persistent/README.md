@@ -28,7 +28,6 @@ Needs OpenTofu 1.11 or later, for the ephemeral and write-only values in the Key
 
 ```bash
 cd infra/persistent
-export ARM_SUBSCRIPTION_ID=<subscription id>
 tofu init -backend-config=../backend.hcl
 tofu plan -out=persistent.tfplan
 tofu apply persistent.tfplan
