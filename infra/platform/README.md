@@ -6,9 +6,12 @@
 
 - A resource group, `rg-aks-v2-platform`, in UK South.
 - The VNet `vnet-aks-v2-platform` with a node subnet and a private endpoint subnet, each with an NSG, through [`../modules/network`](../modules/network/README.md). The address plan, including the pod and service CIDRs for AKS, is in that README.
-- Later: private DNS zones, AKS, Service Bus, private endpoints, Log Analytics, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
+- The AKS cluster `aks-v2-platform`, through [`../modules/aks`](../modules/aks/README.md). Its node resource group is `rg-aks-v2-platform-nodes`.
+- Later: private DNS zones, Service Bus, private endpoints, Log Analytics, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
+
+After an apply, `tofu output -raw kubeconfig_command` prints the command that fetches an Entra ID kubeconfig.
 
 State lives in the `platform.tfstate` blob in the state account.
 
