@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars, which is gitignored, and fill in.
+
+# Globally unique, 5 to 50 letters and digits. Check first:
+#   az acr check-name -n <name>
+acr_name = "acraksv2example"

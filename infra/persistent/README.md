@@ -5,7 +5,8 @@
 ## What it holds
 
 - A resource group, `rg-aks-v2-persistent`, in UK South. `prevent_destroy` is set on it, so no plan can delete it by accident.
-- Later: the public DNS zone (P3-15), the Key Vault (P3-13) and the container registry (P3-10), through the modules in [`../modules`](../modules).
+- The container registry (P3-10), through [`../modules/acr`](../modules/acr/README.md). Basic SKU, Entra ID access only.
+- Later: the public DNS zone (P3-15) and the Key Vault (P3-13), through the modules in [`../modules`](../modules).
 
 State lives in the `persistent.tfstate` blob in the state account.
 
@@ -31,4 +32,4 @@ tofu plan -out=persistent.tfplan
 tofu apply persistent.tfplan
 ```
 
-No variables are required. `location`, `resource_group_name`, `environment` and `owner` have defaults. To override them, use a gitignored `terraform.tfvars`.
+`acr_name` is required, because registry names are globally unique. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set it. `location`, `resource_group_name`, `environment` and `owner` have defaults.

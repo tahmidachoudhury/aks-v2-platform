@@ -21,3 +21,13 @@ variable "owner" {
   type        = string
   default     = "tahmidachoudhury"
 }
+
+variable "acr_name" {
+  description = "Container registry name. Globally unique: 5 to 50 letters and digits. Check with az acr check-name."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9]{5,50}$", var.acr_name))
+    error_message = "acr_name must be 5 to 50 letters and digits, with no hyphens."
+  }
+}

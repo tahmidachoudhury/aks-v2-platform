@@ -23,3 +23,12 @@ resource "azurerm_resource_group" "persistent" {
     prevent_destroy = true
   }
 }
+
+module "acr" {
+  source = "../modules/acr"
+
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.persistent.name
+  location            = azurerm_resource_group.persistent.location
+  tags                = local.tags
+}
