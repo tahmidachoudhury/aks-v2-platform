@@ -80,6 +80,18 @@ resource "azurerm_kubernetes_cluster" "this" {
     default_node_pools = "None"
   }
 
+  # Azure Disk CSI and the snapshot controller back the Postgres and Redis
+  # volumes and their VolumeSnapshots. Both are on by default; set here so
+  # the intent is visible. Nothing uses Azure Files or Blob, so those
+  # drivers are off. No key_vault_secrets_provider block: secrets come from
+  # External Secrets Operator, see docs/architecture-decisions.md.
+  storage_profile {
+    disk_driver_enabled         = true
+    snapshot_controller_enabled = true
+    file_driver_enabled         = false
+    blob_driver_enabled         = false
+  }
+
   tags = var.tags
 }
 

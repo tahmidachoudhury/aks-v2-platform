@@ -1,6 +1,6 @@
 # aks
 
-**TL;DR:** One AKS cluster on Kubernetes 1.37, Free tier, with three `Standard_D2nls_v6` system nodes, one in each zone. It uses Azure CNI Overlay with Cilium, Entra ID sign-in with Azure RBAC, no local accounts, and the OIDC issuer with Workload Identity. The system nodes cost about £60 a month on the 9am to 5pm weekday schedule.
+**TL;DR:** One AKS cluster on Kubernetes 1.37, Free tier, with three `Standard_D2nls_v6` system nodes, one in each zone. It uses Azure CNI Overlay with Cilium, Entra ID sign-in with Azure RBAC, no local accounts, and the OIDC issuer with Workload Identity. Node Auto Provisioning adds user nodes, and egress leaves through the load balancer's outbound rules. The system nodes cost about £60 a month on the 9am to 5pm weekday schedule.
 
 The `platform` root calls this module, so the cluster is destroyed every evening and created every morning. Filled by P3-07 (#33). AKS creates its own node resource group, `rg-aks-v2-platform-nodes`. This module doesn't manage that group, and it goes when the cluster goes.
 
@@ -8,7 +8,7 @@ The `platform` root calls this module, so the cluster is destroyed every evening
 
 `kubernetes_version` holds a minor version, `1.37`. AKS picks the latest patch of that minor at create time, so each morning's cluster gets the newest patch with no code change. 1.37 has been GA on AKS since the 2026-10-25 release. 1.36 is the default for new clusters, not the latest.
 
-No automatic upgrade channel is set. The cluster lives for eight hours, and the next cluster is built on the newest patch and node image anyway.
+No automatic upgrade channel is set. The cluster lives for eight hours, and the next cluster uses the newest patch and node image anyway.
 
 ## System node pool
 
@@ -112,7 +112,32 @@ NAP needs the following, and this cluster meets each one:
 
 A NAP cluster can't be stopped, which doesn't matter because this one is destroyed instead. Its outbound type can't change after create.
 
-Proving NAP works needs a live cluster: apply the NodePools, scale a test deployment, and watch a node appear. The steps are in the [node-pools README](../../../k8s/node-pools/README.md#acceptance-test).
+To prove NAP works, use a live cluster: apply the NodePools, scale a test deployment, and watch a node appear. The steps are in the [node-pools README](../../../k8s/node-pools/README.md#acceptance-test).
+
+## Add-ons
+
+Added in P3-09 (#35). The `storage_profile` block sets each CSI driver on or off explicitly, so the plan shows the intent.
+
+| Add-on | Setting | Why |
+| --- | --- | --- |
+| Azure Disk CSI driver | `disk_driver_enabled = true` | Backs the Premium SSD volumes for Postgres and Redis. On by default in AKS. Set here so it shows |
+| Snapshot controller | `snapshot_controller_enabled = true` | Serves VolumeSnapshots, for the Postgres backup and restore test. On by default |
+| Azure Files CSI driver | `file_driver_enabled = false` | Nothing here uses Azure Files. Off saves a DaemonSet pod on every node |
+| Azure Blob CSI driver | `blob_driver_enabled = false` | Nothing here mounts Blob storage. Off by default |
+| Key Vault secrets provider | Not enabled | P0-10 chose External Secrets Operator, not the Secrets Store CSI Driver. See [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) |
+
+The StorageClass and VolumeSnapshotClass are Kubernetes manifests for a later card.
+
+To check the add-ons on a live cluster:
+
+```bash
+kubectl get csidrivers
+kubectl get pods -n kube-system -l app=csi-azuredisk-node -o wide
+kubectl get crd volumesnapshots.snapshot.storage.k8s.io volumesnapshotclasses.snapshot.storage.k8s.io
+kubectl get pods -n kube-system | grep -i snapshot
+```
+
+The acceptance test is a `csi-azuredisk-node` pod on every node, and `disk.csi.azure.com` in the CSI driver list. There should be no `file.csi.azure.com`, and no `secrets-store` pods. AKS may run the snapshot controller in the managed control plane, so the last command may show nothing. The VolumeSnapshot CRDs show that it is installed.
 
 ## Identity and access
 
