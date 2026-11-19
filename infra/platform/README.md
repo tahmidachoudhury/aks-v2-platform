@@ -40,8 +40,9 @@ In the evening, after `argocd` is destroyed:
 tofu destroy
 ```
 
-Three variables are required:
+Four variables are required:
 
+- `subscription_id` is the subscription to deploy into. The provider uses only this value.
 - `servicebus_namespace_name` must be globally unique.
 - `operator_object_ids` lists the people who apply by hand, who get AKS RBAC Cluster Admin. Find your ID with `az ad signed-in-user show --query id -o tsv`.
 - `acr_name` is the registry in persistent. Copy it from `infra/persistent/terraform.tfvars`.
@@ -64,7 +65,7 @@ A new assignment can take a few minutes to reach the registry. A pull straight a
 
 ### Acceptance test
 
-The registry holds no images until CI pushes them, so import a small public image first. With `ACR` set to the registry name and `SUB` to the subscription:
+The registry holds no images until CI pushes them, so import a small public image first. Run this from the repo root, with `ACR` set to the registry name and `SUB` to the subscription:
 
 ```bash
 # The kubelet identity holds AcrPull on the registry and nothing else.
