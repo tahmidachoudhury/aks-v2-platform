@@ -155,5 +155,11 @@ resource "azurerm_private_dns_zone_virtual_network_link" "this" {
   private_dns_zone_name = azurerm_private_dns_zone.this[each.key].name
   virtual_network_id    = azurerm_virtual_network.this.id
   registration_enabled  = false
-  tags                  = var.tags
+
+  # Fall back to public DNS when a name has no record here. Without this, a
+  # storage account or vault with a private endpoint in some other VNet
+  # resolves to NXDOMAIN from the cluster.
+  resolution_policy = "NxDomainRedirect"
+
+  tags = var.tags
 }
