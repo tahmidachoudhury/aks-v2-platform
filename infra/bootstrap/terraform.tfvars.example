@@ -1,5 +1,9 @@
 # Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
 
+# Required. The subscription to deploy into. The provider uses only this
+# value, never ARM_SUBSCRIPTION_ID or the az CLI default subscription.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
 # Globally unique, 3 to 24 lowercase letters and digits.
 storage_account_name = "stakstfstate1234"
 

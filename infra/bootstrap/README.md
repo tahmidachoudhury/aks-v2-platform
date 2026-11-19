@@ -28,7 +28,6 @@ The state account can't hold the state of the root that creates it. This root ke
 ```bash
 cd infra/bootstrap
 cp terraform.tfvars.example terraform.tfvars   # set storage_account_name and budget_contact_emails
-export ARM_SUBSCRIPTION_ID=<subscription id>
 tofu init
 tofu plan -out=bootstrap.tfplan
 tofu apply bootstrap.tfplan
@@ -44,7 +43,7 @@ tofu output -raw backend_config > ../backend.hcl
 
 ## Check the acceptance criteria
 
-Use a throwaway root with only a backend block, in a shell that still has `ARM_SUBSCRIPTION_ID` set:
+Use a throwaway root with only a backend block. The backend config carries the subscription, so it needs no provider block:
 
 ```bash
 mkdir -p /tmp/state-check && cd /tmp/state-check

@@ -20,6 +20,5 @@ Needs `infra/backend.hcl`, generated from the bootstrap outputs. See [`../bootst
 
 ```bash
 cd infra/argocd
-export ARM_SUBSCRIPTION_ID=<subscription id>
 tofu init -backend-config=../backend.hcl
 ```

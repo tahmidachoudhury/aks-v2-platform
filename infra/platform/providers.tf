@@ -5,5 +5,5 @@ provider "azurerm" {
   # ones this project needs by hand, once per subscription.
   resource_provider_registrations = "none"
 
-  # subscription_id comes from ARM_SUBSCRIPTION_ID.
+  subscription_id = var.subscription_id
 }

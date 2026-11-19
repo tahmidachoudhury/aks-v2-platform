@@ -1,5 +1,9 @@
 # Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
 
+# Required. The subscription to deploy into. The provider uses only this
+# value, never ARM_SUBSCRIPTION_ID or the az CLI default subscription.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
 # Globally unique, 6 to 50 letters, digits and hyphens. Keep it the same
 # every day: the manifests hold the FQDN <name>.servicebus.windows.net.
 # Check it is free with: az servicebus namespace exists --name <name>

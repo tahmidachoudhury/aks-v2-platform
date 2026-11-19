@@ -28,7 +28,6 @@ You need `infra/backend.hcl`, generated from the bootstrap outputs. See [`../boo
 
 ```bash
 cd infra/platform
-export ARM_SUBSCRIPTION_ID=<subscription id>
 tofu init -backend-config=../backend.hcl
 tofu plan -out=platform.tfplan
 tofu apply platform.tfplan
