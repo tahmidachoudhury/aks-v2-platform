@@ -1,6 +1,6 @@
 # bootstrap
 
-**TL;DR:** Creates the storage account that holds remote state for every other root. Apply it once, by hand, before anything else.
+**TL;DR:** Creates the storage account that holds remote state for every other root, plus the project's cost budget. Apply it once, by hand, before anything else.
 
 ## What it creates
 
@@ -8,24 +8,25 @@
 - A StorageV2 account, Standard LRS. HTTPS only, TLS 1.2 minimum, no public blob access, shared keys off. Blob versioning is on, and deleted blobs and containers can be restored for 14 days.
 - A private container, `tfstate`. Each root writes its own blob in it.
 - A Storage Blob Data Contributor role assignment on the account for whoever runs the apply.
+- A monthly subscription budget, `budget-aks-v2-platform`, 100 by default. It emails the addresses in `budget_contact_emails` at 50%, 80% and 100% of actual spend, and when forecast spend reaches 100%. It leaves any existing subscription budget alone.
 
-Shared keys are off, so everything reaches the blobs with Entra ID. Owner on the subscription doesn't grant blob data access, so the root grants the role to the caller. The later roots' backend sets `use_azuread_auth = true`.
+Shared keys are off, so everything uses Entra ID to reach the blobs. Owner on the subscription doesn't grant blob data access, so the root grants the role to the caller. The later roots' backend sets `use_azuread_auth = true`.
 
 ## Why its own state is local
 
-The state account can't hold the state of the root that creates it. This root keeps a local `terraform.tfstate`, which is gitignored. If the file is lost, import the resources again or recreate them. You can move it into the new account later with `tofu init -migrate-state`, but nothing needs that.
+The state account can't hold the state of the root that creates it. This root keeps a local `terraform.tfstate`, which is gitignored. If you lose the file, import the resources again or recreate them. Moving it into the new account with `tofu init -migrate-state` is possible later, but not needed.
 
 ## Before you apply
 
 - Sign in with `az login` as a user who can create role assignments (Owner or User Access Administrator on the subscription).
-- Register `Microsoft.Storage` once by hand if the subscription doesn't have it. The provider never registers resource providers.
+- If the subscription doesn't have `Microsoft.Storage` and `Microsoft.Consumption`, register them once by hand. The provider never registers resource providers.
 - Pick a storage account name. It must be globally unique, 3 to 24 lowercase letters and digits.
 
 ## Apply
 
 ```bash
 cd infra/bootstrap
-cp terraform.tfvars.example terraform.tfvars   # set storage_account_name
+cp terraform.tfvars.example terraform.tfvars   # set storage_account_name and budget_contact_emails
 export ARM_SUBSCRIPTION_ID=<subscription id>
 tofu init
 tofu plan -out=bootstrap.tfplan
