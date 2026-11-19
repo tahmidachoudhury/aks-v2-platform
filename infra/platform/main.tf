@@ -10,6 +10,12 @@ data "azurerm_user_assigned_identity" "github_infra" {
   resource_group_name = var.identity_resource_group_name
 }
 
+# The registry from persistent, read by name the same way.
+data "azurerm_container_registry" "acr" {
+  name                = var.acr_name
+  resource_group_name = var.persistent_resource_group_name
+}
+
 locals {
   tags = {
     project    = "aks-v2-platform"
@@ -73,6 +79,21 @@ module "aks" {
   # Nodes must not boot into the subnet before its NSG and the Overlay rule
   # are attached. The subnet ID alone doesn't make the cluster wait for them.
   depends_on = [module.network]
+}
+
+# The kubelet pulls images as its own identity, so pods need no
+# imagePullSecret. AKS creates that identity with the cluster and deletes it
+# with the cluster, so the grant lives here and goes with it every evening.
+# In persistent it would outlive its principal and pile up as an orphaned
+# assignment, one a day. AcrPull only: no push, no delete.
+resource "azurerm_role_assignment" "kubelet_acr_pull" {
+  scope                = data.azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = module.aks.kubelet_identity_object_id
+
+  # Set explicitly so CI's ABAC condition, which only lets it grant roles to
+  # service principals, can see the type (see modules/github-oidc).
+  principal_type = "ServicePrincipal"
 }
 
 module "servicebus" {

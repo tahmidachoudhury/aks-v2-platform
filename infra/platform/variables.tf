@@ -119,6 +119,19 @@ variable "github_infra_identity_name" {
   default     = "id-gh-infra"
 }
 
+# Persistent resources, read by name. See ../README.md.
+
+variable "persistent_resource_group_name" {
+  description = "Resource group in persistent that holds the registry and the Key Vault."
+  type        = string
+  default     = "rg-aks-v2-persistent"
+}
+
+variable "acr_name" {
+  description = "Container registry in persistent, the same value as acr_name there. The kubelet gets AcrPull on it. Set in terraform.tfvars."
+  type        = string
+}
+
 # Service Bus: see ../modules/servicebus/README.md.
 
 variable "servicebus_namespace_name" {
