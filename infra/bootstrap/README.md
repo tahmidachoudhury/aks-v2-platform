@@ -54,6 +54,9 @@ terraform {
     key = "state-check.tfstate"
   }
 }
+
+# Something to apply, so apply stops at its prompt and holds the lease.
+resource "terraform_data" "hold" {}
 EOF
 tofu init -backend-config=<repo>/infra/backend.hcl
 ```
