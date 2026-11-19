@@ -36,6 +36,8 @@ Morning:
 
 ```bash
 tofu -chdir=infra/platform apply
+eval "$(tofu -chdir=infra/platform output -raw kubeconfig_command)"
+kubectl apply -k k8s/node-pools   # until ArgoCD owns them (P7)
 tofu -chdir=infra/argocd apply
 ```
 

@@ -49,7 +49,51 @@ variable "private_endpoints_prefix" {
 }
 
 variable "pod_cidr" {
-  description = "Azure CNI Overlay pod CIDR. Must not overlap the VNet or the service CIDR. P3-07 passes it to AKS."
+  description = "Azure CNI Overlay pod CIDR. Must not overlap the VNet or the service CIDR."
   type        = string
   default     = "10.244.0.0/16"
+}
+
+variable "service_cidr" {
+  description = "Kubernetes service CIDR. Must not overlap the VNet or the pod CIDR."
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "dns_service_ip" {
+  description = "ClusterIP of CoreDNS. Must sit inside service_cidr."
+  type        = string
+  default     = "10.0.0.10"
+}
+
+# AKS: see ../modules/aks/README.md.
+
+variable "cluster_name" {
+  description = "Name of the AKS cluster."
+  type        = string
+  default     = "aks-v2-platform"
+}
+
+variable "node_resource_group_name" {
+  description = "Resource group AKS creates for nodes, disks and the load balancer. Goes when the cluster goes."
+  type        = string
+  default     = "rg-aks-v2-platform-nodes"
+}
+
+variable "kubernetes_version" {
+  description = "Kubernetes minor version. AKS picks its latest patch at create time, so each morning's cluster gets the newest patch."
+  type        = string
+  default     = "1.37"
+}
+
+variable "system_node_vm_size" {
+  description = "System pool VM size. Must be offered to this subscription in zones 1, 2 and 3 of the region."
+  type        = string
+  default     = "Standard_D2nls_v6"
+}
+
+variable "extra_cluster_admin_object_ids" {
+  description = "Entra object IDs that get AKS RBAC Cluster Admin as well as whoever runs the apply."
+  type        = list(string)
+  default     = []
 }

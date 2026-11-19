@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -15,6 +15,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Observability](#observability)    | New Relic                                                       | Accepted | [#10](https://github.com/tahmidachoudhury/aks-v2-platform/issues/10) |
 | [Secrets delivery](#secrets-delivery) | External Secrets Operator (ESO)                              | Accepted | [#11](https://github.com/tahmidachoudhury/aks-v2-platform/issues/11) |
 | [Infrastructure as code](#infrastructure-as-code) | OpenTofu, not Terraform                  | Accepted | none                                                               |
+| [Egress](#egress)                  | Load balancer outbound rules, no NAT Gateway                    | Accepted | [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31) |
 
 ## Event bus
 
@@ -223,3 +224,30 @@ Checked on 10 November 2026. Sources: [OpenTofu](https://en.wikipedia.org/wiki/O
 - The two tools have drifted apart since 1.6. Where their docs disagree, follow the OpenTofu docs.
 - OpenTofu can encrypt state and plan files on the client, which Terraform cannot. Consider it for the state account (P3-01).
 - This departs from the brief, which names Terraform. We keep the brief in [README.md](README.md) as written.
+
+## Egress
+
+**Status:** Accepted
+
+**Context:** The cluster's pods and nodes need outbound internet access for images, Service Bus and Let's Encrypt. The brief says to avoid a NAT Gateway if we can. Both platform subnets set `default_outbound_access_enabled = false`, so without an explicit outbound method nothing gets out.
+
+**Decision:** `outbound_type = "loadBalancer"` with one managed outbound public IP. AKS adds an outbound rule to the cluster's Standard Load Balancer, and that is the only egress path. Traefik needs the same load balancer for ingress, so egress adds one public IP and nothing else. The SNAT detail is in the [aks module README](../infra/modules/aks/README.md#egress).
+
+**Options compared**
+
+| Option | Monthly cost | SNAT ports | For | Against |
+| --- | --- | --- | --- | --- |
+| Load balancer outbound rules (chosen) | About $4 extra for one public IP. The rule shares the load balancer Traefik needs ($18.25 for the first five rules). $0.005 per GB processed | 64,000 per public IP, split up front. 1,024 per node by default up to 50 nodes | Cheapest. No extra resource to manage | Fixed ports per node. A busy node can run out while others sit idle |
+| NAT Gateway | About $33 plus $3.65 for its public IP, plus $0.045 per GB | 64,512 per public IP, given out on demand across the subnet. Up to 16 IPs | Best SNAT behaviour. No per-node split | About eight times the cost of the extra IP. The brief asks us to avoid it |
+| User-defined routing through Azure Firewall | Basic about $288, Standard about $913, plus $0.065 or $0.016 per GB | Done by the firewall's public IPs | Filters egress by FQDN and logs every flow | Far over budget. Needs a firewall subnet, a route table and more public IPs |
+
+Prices checked on 19 November 2026, UK South. Sources: the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices), [AKS outbound types](https://learn.microsoft.com/en-us/azure/aks/egress-outboundtype), [Standard Load Balancer on AKS](https://learn.microsoft.com/en-us/azure/aks/load-balancer-standard), [load balancer SNAT](https://learn.microsoft.com/en-us/azure/load-balancer/load-balancer-outbound-connections), [NAT Gateway pricing](https://azure.microsoft.com/en-gb/pricing/details/azure-nat-gateway/).
+
+**Consequences / trade-offs**
+
+- No FQDN filtering on egress. A compromised pod can reach any internet address. A production team should route egress through a firewall.
+- The outbound IP is stable for the life of the cluster but changes every morning, since the cluster is rebuilt. Anything that allow-lists our egress IP, such as the Service Bus IP firewall, must read it from the cluster each day.
+- If SNAT ports run out, set `outbound_ports_allocated` or add a second outbound IP before reaching for a NAT Gateway.
+- Node Auto Provisioning doesn't allow the outbound type to change after create. Changing it means a new cluster, which happens every morning anyway.
+
+Ticket: [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31)

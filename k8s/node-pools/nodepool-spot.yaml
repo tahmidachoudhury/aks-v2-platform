@@ -1,0 +1,55 @@
+# Spot nodes for eviction-tolerant workloads. Azure can evict them at any
+# time with 30 seconds' notice. Pods must tolerate the taint below to land
+# here. 3 vCPUs is the subscription's whole spot quota in UK South, so one
+# 2 vCPU node at a time.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot
+spec:
+  # Higher than general, so a pod that tolerates spot goes to spot first.
+  weight: 50
+  limits:
+    cpu: "3"
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    budgets:
+      - nodes: "1"
+  template:
+    metadata:
+      labels:
+        kubernetes.azure.com/ebpf-dataplane: cilium
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: general
+      expireAfter: Never
+      taints:
+        # The taint AKS puts on its own spot node pools.
+        - key: kubernetes.azure.com/scalesetpriority
+          value: spot
+          effect: NoSchedule
+      startupTaints:
+        - key: node.cilium.io/agent-not-ready
+          value: "true"
+          effect: NoExecute
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.azure.com/sku-name
+          operator: In
+          values:
+            - Standard_D2s_v6
+            - Standard_D2nls_v6
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["uksouth-1", "uksouth-2", "uksouth-3"]

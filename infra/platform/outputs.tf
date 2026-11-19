@@ -22,3 +22,33 @@ output "subnet_ids" {
   description = "Subnet IDs by function."
   value       = module.network.subnet_ids
 }
+
+output "aks_cluster_name" {
+  description = "Name of the AKS cluster."
+  value       = module.aks.name
+}
+
+output "aks_cluster_id" {
+  description = "ID of the AKS cluster."
+  value       = module.aks.id
+}
+
+output "oidc_issuer_url" {
+  description = "Cluster OIDC issuer URL, for workload identity federated credentials."
+  value       = module.aks.oidc_issuer_url
+}
+
+output "kubelet_identity_object_id" {
+  description = "Object ID of the kubelet identity, for the AcrPull grant (P3-11)."
+  value       = module.aks.kubelet_identity_object_id
+}
+
+output "aks_node_resource_group" {
+  description = "Resource group AKS manages for nodes, disks and the load balancer."
+  value       = module.aks.node_resource_group
+}
+
+output "kubeconfig_command" {
+  description = "Fetches a kubeconfig that signs in with Entra ID through kubelogin. Holds no secret."
+  value       = "az aks get-credentials --resource-group ${azurerm_resource_group.platform.name} --name ${module.aks.name} --overwrite-existing && kubelogin convert-kubeconfig -l azurecli"
+}

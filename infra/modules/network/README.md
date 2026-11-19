@@ -13,10 +13,10 @@ The `platform` root calls this module, so the network goes with the rest of the 
 | `snet-private-endpoints` | `10.20.4.0/24` | Private endpoints for ACR, Key Vault and blob (P3-14). Service Bus Standard has none | 251 usable IPs |
 | Reserved | `10.20.5.0` to `10.20.255.255` | Later subnets, such as API server VNet integration (a /28 or larger) or a jumpbox. Not created | About 64,000 addresses |
 | Pod CIDR | `10.244.0.0/16` | Azure CNI Overlay pod IPs. Outside the VNet. Not routable from it | 256 nodes at the default /24 per node, 250 pods each |
-| Service CIDR | `10.0.0.0/16` | Kubernetes ClusterIP services. Outside the VNet. P3-07 sets it | 65,536 service IPs |
-| DNS service IP | `10.0.0.10` | CoreDNS ClusterIP, inside the service CIDR. P3-07 sets it | One address |
+| Service CIDR | `10.0.0.0/16` | Kubernetes ClusterIP services. Outside the VNet. Platform variable `service_cidr`, passed to AKS | 65,536 service IPs |
+| DNS service IP | `10.0.0.10` | CoreDNS ClusterIP, inside the service CIDR. Platform variable `dns_service_ip`, passed to AKS | One address |
 
-The VNet, pod CIDR and service CIDR must not overlap. They don't. The pod and service CIDRs are the AKS defaults.
+The VNet, pod CIDR and service CIDR must not overlap. They don't. The pod and service CIDRs are the AKS defaults. Each range has one home: the platform root's variables. This module and the [aks module](../aks/README.md) read them from there.
 
 ### Why the node subnet is a /22
 
