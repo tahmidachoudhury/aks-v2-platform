@@ -22,3 +22,18 @@ output "acr_login_server" {
   description = "Registry host for image references."
   value       = module.acr.login_server
 }
+
+output "key_vault_id" {
+  description = "ID of the Key Vault."
+  value       = module.keyvault.id
+}
+
+output "key_vault_name" {
+  description = "Name of the Key Vault."
+  value       = module.keyvault.name
+}
+
+output "key_vault_uri" {
+  description = "Data plane URI of the Key Vault."
+  value       = module.keyvault.vault_uri
+}

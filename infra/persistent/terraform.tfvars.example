@@ -3,3 +3,8 @@
 # Globally unique, 5 to 50 letters and digits. Check first:
 #   az acr check-name -n <name>
 acr_name = "acraksv2example"
+
+# Globally unique, 3 to 24 letters, digits and hyphens. Check first:
+#   az keyvault check-name -n <name>
+# A deleted vault keeps its name for 7 days.
+key_vault_name = "kv-aksv2-example"
