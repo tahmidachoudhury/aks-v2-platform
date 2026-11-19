@@ -92,10 +92,21 @@ variable "system_node_vm_size" {
   default     = "Standard_D2nls_v6"
 }
 
-variable "extra_cluster_admin_object_ids" {
-  description = "Entra object IDs that get AKS RBAC Cluster Admin as well as whoever runs the apply."
+variable "operator_object_ids" {
+  description = "Entra object IDs of the people who run applies by hand. They get AKS RBAC Cluster Admin. Set in terraform.tfvars, never committed."
   type        = list(string)
-  default     = []
+}
+
+variable "identity_resource_group_name" {
+  description = "Resource group in persistent that holds the GitHub Actions identities."
+  type        = string
+  default     = "rg-aks-v2-identity"
+}
+
+variable "github_infra_identity_name" {
+  description = "Name of the GitHub Actions infra identity in persistent. It gets AKS RBAC Cluster Admin so CI applies keep working."
+  type        = string
+  default     = "id-gh-infra"
 }
 
 # Service Bus: see ../modules/servicebus/README.md.

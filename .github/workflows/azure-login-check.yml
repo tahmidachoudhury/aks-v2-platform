@@ -1,0 +1,32 @@
+# Proves the infra identity can sign in to Azure with OIDC and no stored
+# credential (P3-21). Run it by hand. The job uses the infra environment,
+# because that identity trusts environment subjects only, so it waits for
+# the environment's reviewers. The OpenTofu steps belong to P8-01.
+#
+# Actions logs are public on this repo. The IDs come from secrets so the log
+# masks them, and the steps print a count, never names or IDs.
+name: azure-login-check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  login:
+    name: azure login (infra identity)
+    runs-on: ubuntu-latest
+    environment: infra
+    timeout-minutes: 5
+    steps:
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_INFRA }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check the session works
+        run: |
+          echo "Signed in. Resource groups visible: $(az group list --query 'length(@)' -o tsv)"

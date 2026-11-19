@@ -40,4 +40,6 @@ In the evening, after `argocd` is destroyed:
 tofu destroy
 ```
 
-One variable is required: `servicebus_namespace_name`, which must be globally unique. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set it there. Every other variable has a default, including the address ranges, and can be overridden in the same file.
+Two variables are required. `servicebus_namespace_name` must be globally unique. `operator_object_ids` lists the people who apply by hand, who get AKS RBAC Cluster Admin. Find your ID with `az ad signed-in-user show --query id -o tsv`. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them there. Every other variable has a default, including the address ranges, and can be overridden in the same file.
+
+The CI infra identity, `id-gh-infra`, gets AKS RBAC Cluster Admin too. Platform reads it by name from `rg-aks-v2-identity` in persistent, so apply persistent first. The admin list is fixed and doesn't follow whoever runs the apply, so a person and CI applying in turn don't swap each other's access.

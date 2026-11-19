@@ -106,7 +106,7 @@ node_provisioning_profile {
 ```
 
 - `mode = "Auto"` turns NAP on. It is the azurerm 4.81 argument for the AKS `nodeProvisioningProfile.mode` field.
-- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule. ArgoCD included. Each morning, apply them right after platform with `kubectl apply -k k8s/node-pools`. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
+- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule, ArgoCD included. Each morning, apply them right after platform with `kubectl apply -k k8s/node-pools`. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
 
 NAP needs the following, and this cluster meets each one:
 
@@ -150,7 +150,7 @@ The acceptance test is a `csi-azuredisk-node` pod on every node, and `disk.csi.a
 - Control plane identity: system-assigned. Nothing here needs a user-assigned one.
 - Sign-in: Entra ID, with `azure_rbac_enabled = true`. Kubernetes authorisation comes from Azure role assignments.
 - `local_account_disabled = true`. There is no admin kubeconfig with a client certificate.
-- Whoever runs the apply gets "Azure Kubernetes Service RBAC Cluster Admin" on the cluster. Once a GitHub Actions identity applies the root, grant your own user too.
+- Each object ID in `cluster_admin_object_ids` gets "Azure Kubernetes Service RBAC Cluster Admin" on the cluster. Platform passes a fixed list: the operators and the CI infra identity, `id-gh-infra`. It doesn't follow whoever runs the apply, so a person and CI applying in turn don't swap each other's access.
 - `oidc_issuer_enabled` and `workload_identity_enabled` are on. Federated credentials use the issuer URL, which changes with each new cluster, so they stay in platform.
 
 Connect with the `kubeconfig_command` output. It needs `kubelogin`:

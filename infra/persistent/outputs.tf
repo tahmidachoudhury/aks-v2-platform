@@ -52,3 +52,38 @@ output "dns_zone_name_servers" {
   description = "Azure name servers for the zone. Add them as NS records in the parent zone."
   value       = module.dns.name_servers
 }
+
+output "github_infra_client_id" {
+  description = "Client ID of id-gh-infra. Repository secret AZURE_CLIENT_ID_INFRA."
+  value       = module.github_oidc.infra_client_id
+}
+
+output "github_infra_principal_id" {
+  description = "Principal ID of id-gh-infra."
+  value       = module.github_oidc.infra_principal_id
+}
+
+output "github_infra_plan_client_id" {
+  description = "Client ID of id-gh-infra-plan. Repository secret AZURE_CLIENT_ID_INFRA_PLAN."
+  value       = module.github_oidc.infra_plan_client_id
+}
+
+output "github_infra_plan_principal_id" {
+  description = "Principal ID of id-gh-infra-plan."
+  value       = module.github_oidc.infra_plan_principal_id
+}
+
+output "github_app_client_id" {
+  description = "Client ID of id-gh-app. Repository secret AZURE_CLIENT_ID_APP."
+  value       = module.github_oidc.app_client_id
+}
+
+output "github_app_principal_id" {
+  description = "Principal ID of id-gh-app."
+  value       = module.github_oidc.app_principal_id
+}
+
+output "tenant_id" {
+  description = "Entra ID tenant. Repository secret AZURE_TENANT_ID. An output only: never commit it."
+  value       = module.github_oidc.tenant_id
+}

@@ -8,3 +8,7 @@ servicebus_namespace_name = "sb-aks-v2-platform-1234"
 # Optional overrides. Every other variable has a default in variables.tf.
 # servicebus_queue_name        = "order-events"
 # log_analytics_daily_quota_gb = 0.5
+
+# Required. Object IDs of the people who apply by hand, for AKS RBAC Cluster
+# Admin. Find yours with: az ad signed-in-user show --query id -o tsv
+operator_object_ids = ["00000000-0000-0000-0000-000000000000"]

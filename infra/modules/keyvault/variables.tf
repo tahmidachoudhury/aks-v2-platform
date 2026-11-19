@@ -33,8 +33,7 @@ variable "generated_secrets" {
   }
 }
 
-variable "secrets_officer_object_ids" {
-  description = "Entra object IDs that get Key Vault Secrets Officer as well as whoever runs the apply."
-  type        = list(string)
-  default     = []
+variable "secrets_officers" {
+  description = "Principals that get Key Vault Secrets Officer: every person and CI identity that applies. A map of static key to object ID, because a CI identity's ID is unknown until it is created."
+  type        = map(string)
 }
