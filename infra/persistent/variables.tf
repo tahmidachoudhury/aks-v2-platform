@@ -41,3 +41,9 @@ variable "key_vault_name" {
     error_message = "key_vault_name must be 3 to 24 letters, digits and hyphens, start with a letter, end with a letter or digit, and have no double hyphens."
   }
 }
+
+variable "dns_zone_name" {
+  description = "Public DNS zone, delegated from the parent zone by hand. See modules/dns/README.md."
+  type        = string
+  default     = "azure.order-fulfilment.tahmidchoudhury.uk"
+}

@@ -50,3 +50,11 @@ module "keyvault" {
     redis-password          = 1
   }
 }
+
+module "dns" {
+  source = "../modules/dns"
+
+  name                = var.dns_zone_name
+  resource_group_name = azurerm_resource_group.persistent.name
+  tags                = local.tags
+}

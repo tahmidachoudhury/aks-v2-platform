@@ -7,7 +7,7 @@
 - A resource group, `rg-aks-v2-persistent`, in UK South. `prevent_destroy` is set on it, so no plan can delete it by accident.
 - The container registry (P3-10), through [`../modules/acr`](../modules/acr/README.md). Basic SKU, Entra ID access only.
 - The Key Vault and its four app secrets (P3-13), through [`../modules/keyvault`](../modules/keyvault/README.md). Secret values never reach state.
-- Later: the public DNS zone (P3-15), through the module in [`../modules`](../modules).
+- The public DNS zone `azure.order-fulfilment.tahmidchoudhury.uk` (P3-15), through [`../modules/dns`](../modules/dns/README.md). Its delegation from the parent zone is a manual step described there.
 
 State lives in the `persistent.tfstate` blob in the state account.
 
@@ -33,4 +33,4 @@ tofu plan -out=persistent.tfplan
 tofu apply persistent.tfplan
 ```
 
-`acr_name` and `key_vault_name` are required, because both names are globally unique. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them. `location`, `resource_group_name`, `environment` and `owner` have defaults.
+`acr_name` and `key_vault_name` are required, because both names are globally unique. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them. `location`, `resource_group_name`, `environment`, `owner` and `dns_zone_name` have defaults.
