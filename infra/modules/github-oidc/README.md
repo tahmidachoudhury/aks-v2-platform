@@ -18,7 +18,7 @@ All three trust the issuer `https://token.actions.githubusercontent.com` with au
 | `id-gh-infra-plan` | `repo:<repo>:pull_request` | Reader on the subscription. Storage Blob Data Reader on the state account |
 | `id-gh-app` | `repo:<repo>:ref:refs/heads/main` | AcrPush on the registry |
 
-`<repo>` is `tahmidachoudhury/aks-v2-platform`, from the persistent root's `github_repository` variable.
+`<repo>` comes from the persistent root's `github_repository` variable: `tahmidachoudhury@127567208/aks-v2-platform@1382383802`. The repo has immutable OIDC subjects on, so GitHub puts the owner and repository IDs into the subject. A deleted and recreated repo with the same name gets a new ID, so it can't sign in as these identities. Check the current form with `gh api repos/<owner>/<name>/actions/oidc/customization/sub`, which returns it as `sub_claim_prefix`.
 
 A job that names a GitHub environment gets the environment subject, not the branch one. `id-gh-infra` trusts the `infra` environment only. Every plan or apply job that signs in as it must name that environment, so it waits for the reviewers P8-07 sets up. No branch push or manual run can skip them.
 
@@ -91,7 +91,7 @@ A user-assigned identity takes up to 20 federated credentials.
 
 | Name | Notes |
 | --- | --- |
-| `github_repository` | `owner/name` |
+| `github_repository` | As in the OIDC subject: `owner@owner_id/name@repo_id` with immutable subjects, otherwise `owner/name` |
 | `resource_group_name` | Where the identities live. Keep it out of `infra_resource_group_ids` |
 | `location` | |
 | `tags` | |

@@ -49,9 +49,9 @@ variable "dns_zone_name" {
 }
 
 variable "github_repository" {
-  description = "GitHub repository whose workflows sign in to Azure, as owner/name."
+  description = "GitHub repository whose workflows sign in to Azure, written as it appears in the OIDC subject. The repo uses immutable subjects, so that is owner@owner_id/name@repo_id."
   type        = string
-  default     = "tahmidachoudhury/aks-v2-platform"
+  default     = "tahmidachoudhury@127567208/aks-v2-platform@1382383802"
 }
 
 variable "state_storage_account_name" {
