@@ -16,3 +16,16 @@ resource "azurerm_resource_group" "platform" {
   location = var.location
   tags     = local.tags
 }
+
+module "network" {
+  source = "../modules/network"
+
+  name                     = var.vnet_name
+  resource_group_name      = azurerm_resource_group.platform.name
+  location                 = azurerm_resource_group.platform.location
+  tags                     = local.tags
+  address_space            = var.vnet_address_space
+  aks_nodes_prefix         = var.aks_nodes_prefix
+  private_endpoints_prefix = var.private_endpoints_prefix
+  pod_cidr                 = var.pod_cidr
+}
