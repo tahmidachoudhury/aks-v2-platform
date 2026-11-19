@@ -13,6 +13,12 @@ servicebus_namespace_name = "sb-aks-v2-platform-1234"
 # infra/persistent/terraform.tfvars. The kubelet gets AcrPull on it.
 acr_name = "acraksv20000"
 
+# Required. The private endpoint targets: key_vault_name from
+# infra/persistent/terraform.tfvars and storage_account_name from
+# infra/backend.hcl.
+key_vault_name             = "kv-aksv2-example"
+state_storage_account_name = "stakstfstate1234"
+
 # Optional overrides. Every other variable has a default in variables.tf.
 # servicebus_queue_name        = "order-events"
 # log_analytics_daily_quota_gb = 0.5

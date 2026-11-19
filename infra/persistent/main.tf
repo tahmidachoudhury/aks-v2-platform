@@ -41,6 +41,10 @@ module "keyvault" {
   location            = azurerm_resource_group.persistent.location
   tags                = local.tags
 
+  # The vault firewall lets in only these public addresses. The cluster uses
+  # the private endpoint in platform instead. See the module README.
+  allowed_ip_ranges = var.key_vault_allowed_ip_ranges
+
   # Every secret the services read, from app/services and the service
   # catalogue. Bump a number to rotate that secret. See the module README.
   generated_secrets = {

@@ -16,6 +16,27 @@ data "azurerm_container_registry" "acr" {
   resource_group_name = var.persistent_resource_group_name
 }
 
+# The private endpoint targets (P3-14). The vault is in persistent. The state
+# account is in bootstrap, looked up with azurerm_resources as persistent
+# does, so its account keys never land in this root's state.
+data "azurerm_key_vault" "this" {
+  name                = var.key_vault_name
+  resource_group_name = var.persistent_resource_group_name
+}
+
+data "azurerm_resources" "state_account" {
+  name                = var.state_storage_account_name
+  resource_group_name = var.state_resource_group_name
+  type                = "Microsoft.Storage/storageAccounts"
+
+  lifecycle {
+    postcondition {
+      condition     = length(self.resources) == 1
+      error_message = "No storage account named ${var.state_storage_account_name} in ${var.state_resource_group_name}. Set state_storage_account_name to storage_account_name from infra/backend.hcl."
+    }
+  }
+}
+
 locals {
   tags = {
     project    = "aks-v2-platform"
@@ -49,6 +70,51 @@ module "network" {
   private_dns_zones = {
     key_vault = "privatelink.vaultcore.azure.net"
     blob      = "privatelink.blob.core.windows.net"
+  }
+}
+
+# Private endpoints for Key Vault and the state account's blob service, keyed
+# like the DNS zones above. Each takes an IP in snet-private-endpoints and
+# writes its A record into its zone, so names resolve privately inside the
+# VNet. They go with the VNet every evening, which leaves both resources on
+# their public path overnight. What that path allows is in the README.
+locals {
+  private_endpoints = {
+    key_vault = {
+      name        = "pe-key-vault"
+      resource_id = data.azurerm_key_vault.this.id
+      subresource = "vault"
+    }
+    blob = {
+      name        = "pe-state-blob"
+      resource_id = data.azurerm_resources.state_account.resources[0].id
+      subresource = "blob"
+    }
+  }
+}
+
+resource "azurerm_private_endpoint" "this" {
+  for_each = local.private_endpoints
+
+  name                = each.value.name
+  resource_group_name = azurerm_resource_group.platform.name
+  location            = azurerm_resource_group.platform.location
+  subnet_id           = module.network.subnet_ids.private_endpoints
+  tags                = local.tags
+
+  # Approved on create, which needs the approval permission on the target:
+  # the operators have it on both. CI does not on the state account, see the
+  # README.
+  private_service_connection {
+    name                           = each.value.name
+    private_connection_resource_id = each.value.resource_id
+    subresource_names              = [each.value.subresource]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "default"
+    private_dns_zone_ids = [module.network.private_dns_zone_ids[each.key]]
   }
 }
 

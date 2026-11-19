@@ -132,6 +132,22 @@ variable "acr_name" {
   type        = string
 }
 
+variable "key_vault_name" {
+  description = "Key Vault in persistent, the same value as key_vault_name there. Gets a private endpoint. Set in terraform.tfvars."
+  type        = string
+}
+
+variable "state_storage_account_name" {
+  description = "State storage account from bootstrap, the same value as storage_account_name in infra/backend.hcl. Its blob service gets a private endpoint."
+  type        = string
+}
+
+variable "state_resource_group_name" {
+  description = "Resource group of the state storage account."
+  type        = string
+  default     = "rg-aks-v2-tfstate"
+}
+
 # Service Bus: see ../modules/servicebus/README.md.
 
 variable "servicebus_namespace_name" {

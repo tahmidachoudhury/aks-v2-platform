@@ -37,3 +37,13 @@ variable "secrets_officers" {
   description = "Principals that get Key Vault Secrets Officer: every person and CI identity that applies. A map of static key to object ID, because a CI identity's ID is unknown until it is created."
   type        = map(string)
 }
+
+variable "allowed_ip_ranges" {
+  description = "Public IPv4 addresses or CIDR ranges allowed through the vault firewall: everyone who applies from outside the VNet. At least one, or no one outside the VNet can write the secrets."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.allowed_ip_ranges) > 0 && alltrue([for r in var.allowed_ip_ranges : can(cidrhost(strcontains(r, "/") ? r : "${r}/32", 0))])
+    error_message = "allowed_ip_ranges needs at least one entry, each an IPv4 address or CIDR range."
+  }
+}

@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys. Key Vault and state storage get private endpoints. The vault is firewalled to the operators' IPs, and state stays public behind Entra ID.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -18,6 +18,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Egress](#egress)                  | Load balancer outbound rules, no NAT Gateway                    | Accepted | [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31) |
 | [Container registry](#container-registry) | ACR Basic, Entra ID access only, no private endpoint | Accepted | [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36) |
 | [Disk encryption](#disk-encryption) | Platform-managed keys, no Disk Encryption Set, no encryption at host | Accepted | [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46) |
+| [Private endpoints](#private-endpoints) | Endpoints for Key Vault and state blob in platform. Vault firewalled to operator IPs, state public with Entra ID only | Accepted | [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40) |
 
 ## Event bus
 
@@ -43,7 +44,7 @@ Prices checked on 9 November 2026, UK South. Sources: [Service Bus pricing](http
 - Service Bus gives the dead-letter behaviour the brief asks for with one OpenTofu setting. With Kafka we build it.
 - Service Bus private endpoints need the Premium tier ([Private Link docs](https://learn.microsoft.com/en-us/azure/service-bus-messaging/private-link-service)). The brief asks for a private endpoint, and Premium costs about $677 a month.
 - Standard can restrict access with IP firewall rules set through OpenTofu, but has no private endpoint. Event Hubs Standard supports Private Link ([Event Hubs quotas](https://learn.microsoft.com/en-us/azure/event-hubs/event-hubs-quotas)).
-- Known gap: Service Bus has no private endpoint in this build. P3-14 drops Service Bus and keeps private endpoints for ACR, Key Vault and state storage. A production team should pay for Premium and add the private endpoint.
+- Known gap: Service Bus has no private endpoint in this build. P3-14 drops Service Bus and keeps private endpoints for Key Vault and state storage (see [Private endpoints](#private-endpoints)). A production team should pay for Premium and add the private endpoint.
 - Standard caps messages at 256 KB. Our event payloads are small JSON, so this does not matter.
 - The code has three publishers, not the four the brief mentions. scheduler only has a comment about a cancellation event.
 
@@ -314,3 +315,47 @@ Prices checked on 19 November 2026, UK South, from the [Azure Retail Prices API]
 - A DES with a CMK has to be set when the cluster is created. Moving to it later means a new cluster, which happens every morning here.
 
 Ticket: [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46)
+
+## Private endpoints
+
+**Status:** Accepted
+
+**Context:** The brief asks for private endpoints for ACR, Key Vault, Service Bus and the state storage account, with public access disabled or restricted on each. ACR Basic and Service Bus Standard have no private endpoints (see [Container registry](#container-registry) and [Event bus](#event-bus)), which leaves Key Vault and state. A private endpoint lives in a VNet, and the only VNet is the platform one, destroyed every evening. Three clients reach these two resources from outside it:
+
+- The operators apply from a laptop. Every root reads and writes state, and a persistent apply writes Key Vault secrets through the data plane.
+- CI runs on GitHub-hosted runners, as `id-gh-infra` and `id-gh-infra-plan`. Both read state, and the apply identity writes it. GitHub publishes about 5,600 IPv4 ranges for Actions runners (checked on 19 November 2026 from `api.github.com/meta`), and a job can come from any of them.
+- The cluster, through External Secrets Operator, reads Key Vault. Nothing in the cluster uses state.
+
+**Decision:** Both endpoints go in the platform root, in `snet-private-endpoints`, keyed like the zones, with their A records in the private DNS zones from P3-06. They are created each morning and destroyed each evening with the VNet. Each resource is then restricted as far as its outside clients allow:
+
+- Key Vault: public network access stays on, the firewall denies by default, and only the operators' public IPs get through. They are set in the persistent root's gitignored `terraform.tfvars`, never in Git. No trusted-service bypass. The cluster uses the endpoint, which the firewall doesn't apply to.
+- State account: public network access stays on with no IP firewall. Shared keys have been off since bootstrap, so every request needs an Entra ID token and a Storage Blob Data role. The endpoint gives in-VNet clients a private path, and nothing more.
+
+**Options compared**
+
+| Option | Key Vault | State | Why not |
+| --- | --- | --- | --- |
+| Disable public access on both | Endpoint only | Endpoint only | The laptop can no longer write secrets. Every root loses its state, including the evening destroy and the morning apply that recreate the endpoint. Nothing could ever rebuild it |
+| Firewall both to the operators' IPs | Operators and endpoint | Operators and endpoint | CI can no longer read state. 5,600 runner ranges won't fit: a storage account takes 400 IP rules |
+| Vault firewalled, state open with Entra ID only (chosen) | Operators and endpoint | Any address, with a token and a role | |
+| Endpoints only, both left open | Any address, with a token and a role | As chosen | Restricting the vault costs nothing and only CI's future apply needs a way in |
+| A persistent VNet with self-hosted runners | Endpoint only | Endpoint only | Needs a VNet that survives the night, a runner VM or a paid GitHub plan for Azure private networking, and a jumpbox or VPN for the laptop. This is the production answer, but too much for this build |
+
+**CI access path**
+
+- Pull request plans run as `id-gh-infra-plan` with `-refresh=false`, so they never touch the vault's data plane. They read state over the public endpoint with Storage Blob Data Reader. Nothing changes for them.
+- Apply jobs run as `id-gh-infra` and read and write state the same way, with Storage Blob Data Contributor.
+- A persistent apply in CI (P8-01) refreshes and writes vault secrets, so the vault firewall blocks it. That job must let its own runner IP in for the run: add the IP with `az keyvault network-rule add`, pass it to OpenTofu alongside the operators' in `key_vault_allowed_ip_ranges` so the apply keeps it, and remove it in an `always()` step at the end. `id-gh-infra` holds Contributor on `rg-aks-v2-persistent`, which covers the firewall. Until P8-01, apply persistent by hand.
+- CI can't apply platform yet (see the [github-oidc README](../infra/modules/github-oidc/README.md#known-gap-the-platform-resource-group)). When it can, it also needs approval rights for private endpoint connections on the state account, which sits in `rg-aks-v2-tfstate`, outside its Contributor scope.
+
+**Consequences / trade-offs**
+
+- Still public: the state account to anyone with an Entra ID token and a blob data role, the vault to the operators' IPs, ACR to anyone with a token and AcrPull or AcrPush, and Service Bus to the cluster's egress IP.
+- Overnight, with no endpoints, the vault is reachable only from the operators' IPs. Nothing in Azure reads it overnight, since the cluster is gone.
+- An operator whose home IP changes gets a 403 from the vault. `tofu plan` in persistent fails on the secrets until the new IP is added, by hand first with `az keyvault network-rule add`, then in `terraform.tfvars`.
+- Apply platform before persistent when introducing this. The endpoint must exist before the firewall closes, or External Secrets Operator loses the vault until the next platform apply.
+- Two endpoints at $0.01 an hour each cost about $3.50 a month on the 176-hour schedule, plus $0.01 per GB in each direction.
+
+Prices checked on 19 November 2026 from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices). Sources: [Key Vault network security](https://learn.microsoft.com/en-us/azure/key-vault/general/network-security), [storage account network rules](https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security), [private endpoint DNS](https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns).
+
+Ticket: [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40)

@@ -18,9 +18,19 @@ resource "azurerm_key_vault" "this" {
   soft_delete_retention_days = 7
   purge_protection_enabled   = true
 
-  # Open for now. P3-14 adds the private endpoint and the laptop and CI path,
-  # then closes this.
+  # Restricted, not disabled (P3-14). The cluster reaches the vault through
+  # the private endpoint in platform, which bypasses this firewall. That
+  # endpoint goes every evening with the VNet, and the operators write
+  # secrets from outside Azure, so the public endpoint stays up for the
+  # listed addresses only. No trusted-service bypass: nothing here needs it.
+  # See README.md.
   public_network_access_enabled = true
+
+  network_acls {
+    default_action = "Deny"
+    bypass         = "None"
+    ip_rules       = var.allowed_ip_ranges
+  }
 
   tags = var.tags
 
