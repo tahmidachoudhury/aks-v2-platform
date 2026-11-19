@@ -10,7 +10,7 @@ The `platform` root calls this module, so the network goes with the rest of the 
 | --- | --- | --- | --- |
 | VNet | `10.20.0.0/16` | The whole platform network | 65,536 addresses |
 | `snet-aks-nodes` | `10.20.0.0/22` | AKS node NICs. Internal load balancer frontends would also go here | 1,019 usable IPs (Azure keeps 5 per subnet) |
-| `snet-private-endpoints` | `10.20.4.0/24` | Private endpoints for ACR, Key Vault and blob (P3-14). Service Bus Standard has none | 251 usable IPs |
+| `snet-private-endpoints` | `10.20.4.0/24` | Private endpoints for Key Vault and blob (P3-14). ACR Basic and Service Bus Standard have none | 251 usable IPs |
 | Reserved | `10.20.5.0` to `10.20.255.255` | Later subnets, such as API server VNet integration (a /28 or larger) or a jumpbox. Not created | About 64,000 addresses |
 | Pod CIDR | `10.244.0.0/16` | Azure CNI Overlay pod IPs. Outside the VNet. Not routable from it | 256 nodes at the default /24 per node, 250 pods each |
 | Service CIDR | `10.0.0.0/16` | Kubernetes ClusterIP services. Outside the VNet. Platform variable `service_cidr`, passed to AKS | 65,536 service IPs |
@@ -60,7 +60,7 @@ The subnet sets `private_endpoint_network_policies = "NetworkSecurityGroupEnable
 
 | Priority | Name | Source | Destination | Ports | Why |
 | --- | --- | --- | --- | --- | --- |
-| 100 | `AllowVnetServicesInbound` | `VirtualNetwork` | Endpoint subnet | TCP 443 | HTTPS for ACR, Key Vault and blob. Service Bus Standard has no private endpoint, so no AMQP port. Pod traffic leaving the cluster is SNATed to the node IP, so the `VirtualNetwork` tag covers pods |
+| 100 | `AllowVnetServicesInbound` | `VirtualNetwork` | Endpoint subnet | TCP 443 | HTTPS for Key Vault and blob. Service Bus Standard has no private endpoint, so no AMQP port. Pod traffic leaving the cluster is SNATed to the node IP, so the `VirtualNetwork` tag covers pods |
 | 4096 | `DenyAllInbound` | Any | Any | Any | Overrides the defaults that allow any port from the VNet and from `AzureLoadBalancer`. Private endpoints need neither |
 
 A private endpoint for a service on another port, such as SQL on 1433, needs that port added to rule 100.
@@ -95,7 +95,7 @@ If either moves to Premium, add its zone to `private_dns_zones` in platform: `pr
 
 ### Acceptance test
 
-The zones are empty until P3-14 adds the private endpoints, so the test needs P3-14. Then, from a pod in the cluster:
+The zones are empty until P3-14 adds the private endpoints, so the test needs P3-14. The full test is in the [platform README](../../platform/README.md#acceptance-test-1). The short version, from a pod in the cluster:
 
 ```bash
 kubectl run dnscheck --rm -it --image=busybox:1.37 --restart=Never -- \

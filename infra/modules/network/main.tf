@@ -95,8 +95,8 @@ resource "azurerm_network_security_group" "private_endpoints" {
   tags                = var.tags
 }
 
-# HTTPS for ACR, Key Vault and blob. Service Bus stays on Standard, which has
-# no private endpoint (see docs/architecture-decisions.md). Pod traffic to the VNet is SNATed to the node IP, so the
+# HTTPS for Key Vault and blob. ACR Basic and Service Bus Standard have no
+# private endpoint (see docs/architecture-decisions.md). Pod traffic to the VNet is SNATed to the node IP, so the
 # VirtualNetwork tag covers it.
 resource "azurerm_network_security_rule" "private_endpoints_allow_vnet" {
   name                        = "AllowVnetServicesInbound"

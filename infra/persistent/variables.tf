@@ -42,6 +42,11 @@ variable "key_vault_name" {
   type        = string
 }
 
+variable "key_vault_allowed_ip_ranges" {
+  description = "Public IPs or CIDR ranges allowed through the Key Vault firewall: the operators' own addresses. Set in terraform.tfvars, never committed."
+  type        = list(string)
+}
+
 variable "dns_zone_name" {
   description = "Public DNS zone, delegated from the parent zone by hand. See modules/dns/README.md."
   type        = string

@@ -11,7 +11,8 @@
 - AcrPull for the kubelet identity on the registry in persistent (P3-11), so pods pull images with no imagePullSecret. See [AcrPull for the kubelet](#acrpull-for-the-kubelet).
 - The Service Bus namespace and the `order-events` queue, through [`../modules/servicebus`](../modules/servicebus/README.md). Its firewall allows only the cluster's egress IP, so the namespace is created after the cluster.
 - The Log Analytics workspace `log-aks-v2-platform`, with a 0.5 GB daily cap and the AKS control plane diagnostic setting, through [`../modules/loganalytics`](../modules/loganalytics/README.md). No Container Insights: New Relic does that job.
-- Later: private endpoints, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
+- Private endpoints for the Key Vault and the state account's blob service (P3-14), with their records in the zones above. See [Private endpoints](#private-endpoints).
+- Later: federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
@@ -40,12 +41,14 @@ In the evening, after `argocd` is destroyed:
 tofu destroy
 ```
 
-Four variables are required:
+Six variables are required:
 
 - `subscription_id` is the subscription to deploy into. The provider uses only this value.
 - `servicebus_namespace_name` must be globally unique.
 - `operator_object_ids` lists the people who apply by hand, who get AKS RBAC Cluster Admin. Find your ID with `az ad signed-in-user show --query id -o tsv`.
 - `acr_name` is the registry in persistent. Copy it from `infra/persistent/terraform.tfvars`.
+- `key_vault_name` is the vault in persistent. Copy it from the same file.
+- `state_storage_account_name` is the state account. Copy `storage_account_name` from `infra/backend.hcl`.
 
 Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them there. Every other variable has a default, including the address ranges, and you can override it in the same file.
 
@@ -93,3 +96,59 @@ az acr repository delete --subscription "$SUB" -n "$ACR" --repository acrpull-ch
 The role list shows one row, AcrPull, scoped to the registry. Both `imagePullSecrets` lines print empty. The events end with `Successfully pulled image` and `Started`. The system pool is tainted, so Node Auto Provisioning adds a node for the pod first, which takes a minute or two.
 
 `az aks check-acr -g rg-aks-v2-platform -n aks-v2-platform --acr "$ACR.azurecr.io"` runs a similar check from a pod of its own.
+
+## Private endpoints
+
+Added in P3-14 (#40). Two private endpoints in `snet-private-endpoints`: `pe-key-vault` (subresource `vault`) for the Key Vault in persistent, and `pe-state-blob` for the blob service of the bootstrap state account. Each writes its A record into the matching private DNS zone, so inside the VNet both resolve to an address in `10.20.4.0/24`. Outside the VNet nothing changes.
+
+The endpoints live in this root because they need the VNet, and they go with it every evening. Overnight both resources are reachable only on their public path:
+
+- Key Vault: the persistent root firewalls it to the operators' public IPs. The cluster doesn't need that path while its endpoint exists, since endpoint traffic isn't subject to the firewall.
+- State account: public, with no IP firewall. Shared keys are off, so every request needs an Entra ID token and a Storage Blob Data role. CI runs on GitHub-hosted runners with no fixed IPs, and every root reads state over this path, including this root's destroy and morning apply.
+
+The trade-off, the options and the CI access path are in [Private endpoints](../../docs/architecture-decisions.md#private-endpoints). ACR and Service Bus have no private endpoints: see [Container registry](../../docs/architecture-decisions.md#container-registry) and [Event bus](../../docs/architecture-decisions.md#event-bus).
+
+The vault is read with `data "azurerm_key_vault"`. The state account is read with `azurerm_resources`, as persistent does, so its account keys never reach this root's state.
+
+Both endpoints are approved on create, which needs the private endpoint approval permission on each target. The operators are Owner on the subscription. `id-gh-infra` has Contributor on `rg-aks-v2-persistent`, which covers the vault, but nothing on `rg-aks-v2-tfstate`. When CI starts applying this root, it needs that permission on the state account too.
+
+When first introduced, apply this root before persistent. The persistent apply closes the vault firewall, and External Secrets Operator needs the endpoint in place first.
+
+### Acceptance test
+
+This also covers P3-06 (#32), since the zones only hold records once the endpoints exist. Set `KV` to the vault name, `ST` to the state account and `SUB` to the subscription.
+
+```bash
+# Both endpoints approved.
+az network private-endpoint list --subscription "$SUB" -g rg-aks-v2-platform \
+  --query "[].{name:name, status:privateLinkServiceConnections[0].privateLinkServiceConnectionState.status}" -o table
+
+# Each zone holds an A record in the endpoint subnet (P3-06).
+for z in privatelink.vaultcore.azure.net privatelink.blob.core.windows.net; do
+  az network private-dns record-set a list --subscription "$SUB" -g rg-aks-v2-platform -z "$z" \
+    --query "[].{zone:'$z', name:name, ip:aRecords[0].ipv4Address}" -o table
+done
+
+# From a pod: both names resolve privately, and HTTPS goes to the private IP.
+kubectl --context aks-v2-platform run pecheck --rm -it --restart=Never --pod-running-timeout=5m \
+  --image=curlimages/curl:8.11.1 --command -- sh -c "
+    nslookup $KV.vault.azure.net
+    nslookup $ST.blob.core.windows.net
+    curl -sS -o /dev/null -w '%{remote_ip} %{http_code}\n' https://$KV.vault.azure.net/
+    curl -sS -o /dev/null -w '%{remote_ip} %{http_code}\n' https://$ST.blob.core.windows.net/"
+
+# Public access on each resource.
+az keyvault show --subscription "$SUB" -n "$KV" \
+  --query "{public:properties.publicNetworkAccess, default:properties.networkAcls.defaultAction, bypass:properties.networkAcls.bypass}"
+az storage account show --subscription "$SUB" -n "$ST" \
+  --query "{public:publicNetworkAccess, sharedKey:allowSharedKeyAccess}"
+```
+
+What to expect:
+
+- Both endpoints show `Approved`, and each zone has one A record in `10.20.4.0/24`.
+- Each `nslookup` returns a `privatelink` CNAME and an address in `10.20.4.0/24`. From a laptop the same lookups return public addresses.
+- Each `curl` prints that private address. Ignore the status code, since the request has no token. A timeout means the endpoint subnet's NSG is blocking 443.
+- The vault shows `Enabled`, `Deny` and `None`. The state account shows `Enabled` and `false`.
+
+To see the vault refuse an address outside the list, run `az keyvault secret list --vault-name <vault>` from Azure Cloud Shell or any network not in `key_vault_allowed_ip_ranges`. It fails with `ForbiddenByFirewall`. The same command from the laptop succeeds.

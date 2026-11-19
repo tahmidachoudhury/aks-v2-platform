@@ -13,6 +13,11 @@ acr_name = "acraksv2example"
 # A deleted vault keeps its name for 7 days.
 key_vault_name = "kv-aksv2-example"
 
+# Required. Public IPs allowed through the Key Vault firewall: the address
+# you apply from. Anything else outside the VNet is refused. Find yours with
+#   curl -s https://api.ipify.org
+key_vault_allowed_ip_ranges = ["203.0.113.10/32"]
+
 # The state account from bootstrap. Copy storage_account_name from
 # infra/backend.hcl.
 state_storage_account_name = "stakstfstate1234"
