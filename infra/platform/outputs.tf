@@ -82,3 +82,13 @@ output "egress_ip_addresses" {
   description = "Public IPs the cluster's egress leaves from. New every morning."
   value       = module.aks.outbound_ip_addresses
 }
+
+output "log_analytics_workspace_id" {
+  description = "Resource ID of the Log Analytics workspace."
+  value       = module.loganalytics.id
+}
+
+output "log_analytics_workspace_guid" {
+  description = "Workspace GUID, for az monitor log-analytics query --workspace."
+  value       = module.loganalytics.workspace_id
+}

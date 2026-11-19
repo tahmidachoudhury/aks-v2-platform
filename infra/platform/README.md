@@ -9,7 +9,8 @@
 - Private DNS zones for Key Vault and blob, linked to the VNet, also through the network module. ACR and Service Bus get none, since they have no private endpoints. The [network README](../modules/network/README.md#private-dns-zones) says why.
 - The AKS cluster `aks-v2-platform`, through [`../modules/aks`](../modules/aks/README.md). Its node resource group is `rg-aks-v2-platform-nodes`.
 - The Service Bus namespace and the `order-events` queue, through [`../modules/servicebus`](../modules/servicebus/README.md). Its firewall allows only the cluster's egress IP, so the namespace is created after the cluster.
-- Later: private endpoints, Log Analytics, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
+- The Log Analytics workspace `log-aks-v2-platform`, with a 0.5 GB daily cap and the AKS control plane diagnostic setting, through [`../modules/loganalytics`](../modules/loganalytics/README.md). No Container Insights: New Relic does that job.
+- Later: private endpoints, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
