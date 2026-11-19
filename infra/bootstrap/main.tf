@@ -1,5 +1,12 @@
 provider "azurerm" {
-  features {}
+  features {
+    # Manage the state account through the management plane only. Without
+    # this, the provider reads blob data-plane settings before the role
+    # assignment below exists, and the first apply can fail with a 403.
+    storage {
+      data_plane_available = false
+    }
+  }
 
   # Never register resource providers from a plan or apply. Register the
   # ones this project needs by hand, once per subscription.
