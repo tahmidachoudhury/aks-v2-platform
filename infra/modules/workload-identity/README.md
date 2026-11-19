@@ -36,7 +36,7 @@ Every credential uses the cluster's issuer, `module.aks.oidc_issuer_url`, and th
 
 Nothing in the repo fixed these names yet, so this is a convention:
 
-- A service's ServiceAccount takes the name of its folder in `app/services/`, as its manifests will (see [`k8s/README.md`](../../../k8s/README.md)).
+- A service's ServiceAccount takes the name of its folder in `app/services/`. [`k8s/README.md`](../../../k8s/README.md) states the same rule for the manifests.
 - The services run in `apps` and the components in `platform`, the namespaces P4-07 (#54) lists.
 - ExternalDNS and External Secrets keep their Helm charts' default ServiceAccount names, `external-dns` and `external-secrets`.
 

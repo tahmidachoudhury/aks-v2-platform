@@ -197,6 +197,8 @@ locals {
   # The ServiceAccount each identity trusts, keyed by the name persistent
   # gives the identity (id-<key>). The namespaces are a convention until
   # P4-07 creates them: apps for the services, platform for the components.
+  # Every key must also be in the names list of module.workload_identity in
+  # infra/persistent/main.tf, or the identity lookup fails with "not found".
   workload_identities = {
     order-service    = { namespace = "apps", service_account = "order-service" }
     payment-service  = { namespace = "apps", service_account = "payment-service" }

@@ -68,6 +68,7 @@ What it still allows:
 
 - CI can grant any listed role to any service principal in the tenant, itself included. For example, it can give itself Key Vault Secrets User and read the app secrets, or DNS Zone Contributor on the zone. The list holds data roles that real workloads need, so this is the price of letting CI wire them.
 - This only applies within `rg-aks-v2-persistent`, the one group in `infra_resource_group_ids`.
+- The workload identities (`infra/modules/workload-identity`) sit in `rg-aks-v2-persistent`, so CI's Contributor role can add federated credentials to them. A reviewed apply could add one to `id-external-secrets` that trusts `pull_request`, and every pull request job could then read the app secrets, even though `id-gh-infra-plan` has no Key Vault role. That's no more than the first point already allows, but it's a second route. They sit there because CI has to write their credentials every morning once it applies platform.
 
 Add a role to `infra_assignable_roles` before a root assigns it, or the CI apply fails with a 403. Add a person to `operator_object_ids` before CI grants them anything.
 

@@ -127,8 +127,8 @@ module "github_oidc" {
   infra_assignable_roles = [
     "AcrPull",                                     # kubelet, P3-11
     "Azure Kubernetes Service RBAC Cluster Admin", # aks module
-    "Azure Service Bus Data Receiver",             # worker, P3-16
-    "Azure Service Bus Data Sender",               # publishers, P3-16
+    "Azure Service Bus Data Receiver",             # worker, P3-17
+    "Azure Service Bus Data Sender",               # publishers, P3-17
     "DNS Zone Contributor",                        # ExternalDNS, P3-18
     "Key Vault Secrets Officer",                   # keyvault module
     "Key Vault Secrets User",                      # External Secrets, P3-18
@@ -153,7 +153,9 @@ module "workload_identity" {
 
   # Named as their Kubernetes ServiceAccounts: the four services that use
   # azidentity in app/services, then the platform components. cert-manager
-  # is left out until P4-04 picks DNS-01 over HTTP-01.
+  # is left out until P4-04 picks DNS-01 over HTTP-01. Keep this list in
+  # step with local.workload_identities in infra/platform/main.tf: a name
+  # here without an entry there gets no federated credential.
   names = [
     "order-service",
     "payment-service",
