@@ -37,3 +37,9 @@ variable "pod_cidr" {
   description = "Azure CNI Overlay pod CIDR. Outside the VNet. The node NSG allows traffic from it."
   type        = string
 }
+
+variable "private_dns_zones" {
+  description = "Private DNS zones to create and link to the VNet, keyed by a short name such as key_vault. Values are zone names such as privatelink.vaultcore.azure.net."
+  type        = map(string)
+  default     = {}
+}

@@ -23,6 +23,11 @@ output "subnet_ids" {
   value       = module.network.subnet_ids
 }
 
+output "private_dns_zone_ids" {
+  description = "Private DNS zone IDs by short name (key_vault, blob), for the private endpoints in P3-14."
+  value       = module.network.private_dns_zone_ids
+}
+
 output "aks_cluster_name" {
   description = "Name of the AKS cluster."
   value       = module.aks.name

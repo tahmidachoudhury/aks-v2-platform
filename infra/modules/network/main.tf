@@ -132,3 +132,28 @@ resource "azurerm_subnet_network_security_group_association" "private_endpoints"
   subnet_id                 = azurerm_subnet.private_endpoints.id
   network_security_group_id = azurerm_network_security_group.private_endpoints.id
 }
+
+# Private DNS zones for private endpoints (P3-14). A private endpoint gets a
+# private IP in snet-private-endpoints. The zone maps the service's public
+# name to that IP for anything resolving through Azure DNS from this VNet.
+# The caller picks the zones: see README.md for which ones and why.
+resource "azurerm_private_dns_zone" "this" {
+  for_each = var.private_dns_zones
+
+  name                = each.value
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+}
+
+# Registration stays off: these zones hold only the A records the private
+# endpoints write, not records for VMs in the VNet.
+resource "azurerm_private_dns_zone_virtual_network_link" "this" {
+  for_each = var.private_dns_zones
+
+  name                  = "${var.name}-link"
+  resource_group_name   = var.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.this[each.key].name
+  virtual_network_id    = azurerm_virtual_network.this.id
+  registration_enabled  = false
+  tags                  = var.tags
+}
