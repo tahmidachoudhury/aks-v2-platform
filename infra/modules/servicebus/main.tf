@@ -15,10 +15,9 @@ resource "azurerm_servicebus_namespace" "this" {
   public_network_access_enabled = true
 
   network_rule_set {
-    default_action                = "Deny"
-    public_network_access_enabled = true
-    ip_rules                      = var.allowed_ip_addresses
-    trusted_services_allowed      = false
+    default_action           = "Deny"
+    ip_rules                 = var.allowed_ip_addresses
+    trusted_services_allowed = false
   }
 
   tags = var.tags
