@@ -127,16 +127,21 @@ Error: error loading state: ... dial tcp: lookup <account>.blob.core.windows.net
 
 It only happens while the cluster is up, so it shows first on the evening destroy. GitHub-hosted runners use public DNS and aren't affected. Nothing in the cluster reads state, so it doesn't matter there either.
 
-The fix is on the machine that runs `tofu`. Send lookups for that one name to a public resolver, and leave the rest of the network's DNS alone. On macOS, a file in `/etc/resolver` named after the host does this:
+The fix is on the machine that runs `tofu`. Send lookups for the account's two names to a public resolver, and leave the rest of the network's DNS alone. On macOS, a file in `/etc/resolver` named after each host does this. It takes both, because macOS resolves the CNAME target as a new query and picks its resolver by that name:
 
 ```bash
 ST=<state account name>   # storage_account_name in infra/backend.hcl
 sudo mkdir -p /etc/resolver
-echo "nameserver 1.1.1.1" | sudo tee "/etc/resolver/$ST.blob.core.windows.net"
-dig +short "$ST.blob.core.windows.net"   # ends in a public IP
+for h in "$ST.blob.core.windows.net" "$ST.privatelink.blob.core.windows.net"; do
+  echo "nameserver 1.1.1.1" | sudo tee "/etc/resolver/$h"
+done
+sudo killall -HUP mDNSResponder
+dscacheutil -q host -a name "$ST.blob.core.windows.net"   # a public IP
 ```
 
-Keep the file. It is harmless when the endpoint doesn't exist, so the morning apply and evening destroy both work. On Linux with systemd-resolved, use a drop-in that routes the name to a public resolver instead.
+Check with `dscacheutil`, not `dig`. `dig` reads `/etc/resolv.conf` and ignores `/etc/resolver`.
+
+Keep the files. They are harmless when the endpoint doesn't exist, so the morning apply and evening destroy both work. On Linux with systemd-resolved, use a drop-in that routes the name to a public resolver instead.
 
 ### Acceptance test
 
