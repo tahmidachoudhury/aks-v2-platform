@@ -117,6 +117,27 @@ Both endpoints are approved on create, which needs the private endpoint approval
 
 When first introduced, apply this root before persistent. The persistent apply closes the vault firewall, and External Secrets Operator needs the endpoint in place first.
 
+### State account DNS
+
+While `pe-state-blob` exists, the state account's public name is a CNAME to `<account>.privatelink.blob.core.windows.net`. A public resolver follows that on to the public IP. A DNS server that hosts its own `privatelink.blob.core.windows.net` zone answers from that zone instead. Without a record for our account, it returns NXDOMAIN, and every root fails to load state:
+
+```
+Error: error loading state: ... dial tcp: lookup <account>.blob.core.windows.net: no such host
+```
+
+It only happens while the cluster is up, so it shows first on the evening destroy. GitHub-hosted runners use public DNS and aren't affected. Nothing in the cluster reads state, so it doesn't matter there either.
+
+The fix is on the machine that runs `tofu`. Send lookups for that one name to a public resolver, and leave the rest of the network's DNS alone. On macOS, a file in `/etc/resolver` named after the host does this:
+
+```bash
+ST=<state account name>   # storage_account_name in infra/backend.hcl
+sudo mkdir -p /etc/resolver
+echo "nameserver 1.1.1.1" | sudo tee "/etc/resolver/$ST.blob.core.windows.net"
+dig +short "$ST.blob.core.windows.net"   # ends in a public IP
+```
+
+Keep the file. It is harmless when the endpoint doesn't exist, so the morning apply and evening destroy both work. On Linux with systemd-resolved, use a drop-in that routes the name to a public resolver instead.
+
 ### Acceptance test
 
 This also covers P3-06 (#32), since the zones only hold records once the endpoints exist. Set `KV` to the vault name, `ST` to the state account and `SUB` to the subscription.
