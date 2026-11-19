@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+# Globally unique, 6 to 50 letters, digits and hyphens. Keep it the same
+# every day: the manifests hold the FQDN <name>.servicebus.windows.net.
+# Check it is free with: az servicebus namespace exists --name <name>
+servicebus_namespace_name = "sb-aks-v2-platform-1234"
+
+# Optional overrides. Every other variable has a default in variables.tf.
+# servicebus_queue_name = "order-events"

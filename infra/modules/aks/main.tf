@@ -1,5 +1,11 @@
 # Design and the reason for each setting: see README.md.
 
+locals {
+  # One managed outbound IP. Also the count of egress IPs looked up below,
+  # which must be known at plan time while the IP IDs are not.
+  managed_outbound_ip_count = 1
+}
+
 resource "azurerm_kubernetes_cluster" "this" {
   name                = var.name
   resource_group_name = var.resource_group_name
@@ -56,7 +62,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     outbound_type = "loadBalancer"
 
     load_balancer_profile {
-      managed_outbound_ip_count = 1
+      managed_outbound_ip_count = local.managed_outbound_ip_count
     }
 
     pod_cidr       = var.pod_cidr
@@ -115,4 +121,21 @@ resource "azurerm_role_assignment" "cluster_admin" {
   scope                = azurerm_kubernetes_cluster.this.id
   role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
   principal_id         = each.value
+}
+
+# The egress IP addresses, for allow-lists such as the Service Bus firewall.
+# The cluster exposes only the IP resource IDs, and they are unknown until the
+# cluster exists, so these reads wait for it during the apply.
+locals {
+  outbound_ips = [
+    for id in azurerm_kubernetes_cluster.this.network_profile[0].load_balancer_profile[0].effective_outbound_ips :
+    provider::azurerm::parse_resource_id(id)
+  ]
+}
+
+data "azurerm_public_ip" "outbound" {
+  count = local.managed_outbound_ip_count
+
+  name                = local.outbound_ips[count.index].resource_name
+  resource_group_name = local.outbound_ips[count.index].resource_group_name
 }

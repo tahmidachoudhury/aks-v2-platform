@@ -97,3 +97,24 @@ variable "extra_cluster_admin_object_ids" {
   type        = list(string)
   default     = []
 }
+
+# Service Bus: see ../modules/servicebus/README.md.
+
+variable "servicebus_namespace_name" {
+  description = "Service Bus namespace name. Globally unique, and kept the same every day so the FQDN in the manifests holds. Check with az servicebus namespace exists."
+  type        = string
+
+  validation {
+    condition = (
+      can(regex("^[a-zA-Z][a-zA-Z0-9-]{4,48}[a-zA-Z0-9]$", var.servicebus_namespace_name))
+      && !can(regex("(-sb|-mgmt)$", var.servicebus_namespace_name))
+    )
+    error_message = "servicebus_namespace_name must be 6 to 50 letters, digits and hyphens, start with a letter, end with a letter or digit, and not end in -sb or -mgmt."
+  }
+}
+
+variable "servicebus_queue_name" {
+  description = "Queue every service sends to and the worker receives from. Matches SERVICEBUS_QUEUE in the app."
+  type        = string
+  default     = "order-events"
+}

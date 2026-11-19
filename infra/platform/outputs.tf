@@ -57,3 +57,28 @@ output "kubeconfig_command" {
   description = "Fetches a kubeconfig that signs in with Entra ID through kubelogin. Holds no secret."
   value       = "az aks get-credentials --resource-group ${azurerm_resource_group.platform.name} --name ${module.aks.name} --overwrite-existing && kubelogin convert-kubeconfig -l azurecli"
 }
+
+output "servicebus_namespace_id" {
+  description = "ID of the Service Bus namespace, the scope for the data plane roles in P3-17."
+  value       = module.servicebus.id
+}
+
+output "servicebus_namespace_name" {
+  description = "Name of the Service Bus namespace."
+  value       = module.servicebus.name
+}
+
+output "servicebus_fqdn" {
+  description = "Fully qualified Service Bus namespace, for SERVICEBUS_NAMESPACE in the manifests."
+  value       = module.servicebus.fqdn
+}
+
+output "servicebus_queue_name" {
+  description = "Service Bus queue name, for SERVICEBUS_QUEUE in the manifests."
+  value       = module.servicebus.queue_name
+}
+
+output "egress_ip_addresses" {
+  description = "Public IPs the cluster's egress leaves from. New every morning."
+  value       = module.aks.outbound_ip_addresses
+}

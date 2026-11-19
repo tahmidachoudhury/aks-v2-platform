@@ -67,3 +67,17 @@ module "aks" {
   # are attached. The subnet ID alone doesn't make the cluster wait for them.
   depends_on = [module.network]
 }
+
+module "servicebus" {
+  source = "../modules/servicebus"
+
+  name                = var.servicebus_namespace_name
+  resource_group_name = azurerm_resource_group.platform.name
+  location            = azurerm_resource_group.platform.location
+  tags                = local.tags
+  queue_name          = var.servicebus_queue_name
+
+  # Only the cluster's egress IP gets through the firewall. It changes every
+  # morning, so the namespace is created after the cluster and reads it then.
+  allowed_ip_addresses = module.aks.outbound_ip_addresses
+}
