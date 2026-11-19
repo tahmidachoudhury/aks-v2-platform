@@ -54,8 +54,8 @@ output "aks_node_resource_group" {
 }
 
 output "kubeconfig_command" {
-  description = "Fetches a kubeconfig that signs in with Entra ID through kubelogin. Holds no secret."
-  value       = "az aks get-credentials --resource-group ${azurerm_resource_group.platform.name} --name ${module.aks.name} --overwrite-existing && kubelogin convert-kubeconfig -l azurecli"
+  description = "Fetches a kubeconfig that signs in with Entra ID through kubelogin. Names the subscription, so it works whatever the az CLI default is. Holds no secret."
+  value       = "az aks get-credentials --subscription ${var.subscription_id} --resource-group ${azurerm_resource_group.platform.name} --name ${module.aks.name} --overwrite-existing && kubelogin convert-kubeconfig -l azurecli"
 }
 
 output "servicebus_namespace_id" {
