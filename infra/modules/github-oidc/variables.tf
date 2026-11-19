@@ -38,12 +38,17 @@ variable "state_storage_account_id" {
   type        = string
 }
 
-variable "key_vault_id" {
-  description = "ID of the Key Vault. The plan identity reads secrets in it."
-  type        = string
-}
-
 variable "acr_id" {
   description = "ID of the container registry. The app identity pushes to it."
   type        = string
+}
+
+variable "operator_object_ids" {
+  description = "Entra object IDs of the people who apply by hand. The only users the infra identity may assign roles to."
+  type        = list(string)
+
+  validation {
+    condition     = length(var.operator_object_ids) > 0
+    error_message = "operator_object_ids needs at least one object ID."
+  }
 }

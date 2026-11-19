@@ -54,3 +54,14 @@ variable "state_resource_group_name" {
   type        = string
   default     = "rg-aks-v2-tfstate"
 }
+
+variable "identity_resource_group_name" {
+  description = "Resource group for the GitHub Actions identities. CI has no write role on it."
+  type        = string
+  default     = "rg-aks-v2-identity"
+}
+
+variable "operator_object_ids" {
+  description = "Entra object IDs of the people who run applies by hand. They get Key Vault Secrets Officer. Set in terraform.tfvars, never committed."
+  type        = list(string)
+}

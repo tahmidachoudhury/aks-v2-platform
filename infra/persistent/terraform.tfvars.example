@@ -12,3 +12,7 @@ key_vault_name = "kv-aksv2-example"
 # The state account from bootstrap. Copy storage_account_name from
 # infra/backend.hcl.
 state_storage_account_name = "stakstfstate1234"
+
+# Required. Object IDs of the people who apply by hand, for Key Vault Secrets
+# Officer. Find yours with: az ad signed-in-user show --query id -o tsv
+operator_object_ids = ["00000000-0000-0000-0000-000000000000"]

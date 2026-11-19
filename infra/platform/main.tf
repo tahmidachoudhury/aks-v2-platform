@@ -3,6 +3,13 @@
 # Management can group and filter by them.
 data "azurerm_client_config" "current" {}
 
+# The CI infra identity from persistent, read by name like the other
+# persistent resources. See ../README.md.
+data "azurerm_user_assigned_identity" "github_infra" {
+  name                = var.github_infra_identity_name
+  resource_group_name = var.identity_resource_group_name
+}
+
 locals {
   tags = {
     project    = "aks-v2-platform"
@@ -56,11 +63,11 @@ module "aks" {
 
   tenant_id = data.azurerm_client_config.current.tenant_id
 
-  # Whoever runs the apply can use kubectl straight away, plus any fixed
-  # admins, so a second operator or CI applying does not remove the first.
+  # A fixed list, not whoever runs the apply, so a person and CI applying
+  # in turn don't swap each other's access.
   cluster_admin_object_ids = distinct(concat(
-    [data.azurerm_client_config.current.object_id],
-    var.extra_cluster_admin_object_ids,
+    var.operator_object_ids,
+    [data.azurerm_user_assigned_identity.github_infra.principal_id],
   ))
 
   # Nodes must not boot into the subnet before its NSG and the Overlay rule

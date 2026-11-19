@@ -1,5 +1,5 @@
 output "infra_client_id" {
-  description = "Client ID of id-gh-infra. Set as the AZURE_CLIENT_ID_INFRA repository variable."
+  description = "Client ID of id-gh-infra. Set as the AZURE_CLIENT_ID_INFRA repository secret."
   value       = azurerm_user_assigned_identity.infra.client_id
 }
 
@@ -9,7 +9,7 @@ output "infra_principal_id" {
 }
 
 output "infra_plan_client_id" {
-  description = "Client ID of id-gh-infra-plan. Set as the AZURE_CLIENT_ID_INFRA_PLAN repository variable."
+  description = "Client ID of id-gh-infra-plan. Set as the AZURE_CLIENT_ID_INFRA_PLAN repository secret."
   value       = azurerm_user_assigned_identity.infra_plan.client_id
 }
 
@@ -19,7 +19,7 @@ output "infra_plan_principal_id" {
 }
 
 output "app_client_id" {
-  description = "Client ID of id-gh-app. Set as the AZURE_CLIENT_ID_APP repository variable."
+  description = "Client ID of id-gh-app. Set as the AZURE_CLIENT_ID_APP repository secret."
   value       = azurerm_user_assigned_identity.app.client_id
 }
 
@@ -29,6 +29,6 @@ output "app_principal_id" {
 }
 
 output "tenant_id" {
-  description = "Entra ID tenant. Set as the AZURE_TENANT_ID repository variable."
+  description = "Entra ID tenant. Set as the AZURE_TENANT_ID repository secret."
   value       = data.azurerm_client_config.current.tenant_id
 }

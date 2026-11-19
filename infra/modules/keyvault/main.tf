@@ -32,15 +32,12 @@ resource "azurerm_key_vault" "this" {
   }
 }
 
-# Owner on the subscription does not grant access to secret values. The
-# caller writes the secrets below, so it needs this role on the vault. Fixed
-# officers are added too, so a second operator or CI applying does not
-# remove the first one's access.
+# Owner on the subscription does not grant access to secret values. Whoever
+# applies writes the secrets below, so every principal that applies needs
+# this role. The list is fixed, not the caller, so the assignments stay the
+# same whether a person or CI runs the apply.
 resource "azurerm_role_assignment" "secrets_officer" {
-  for_each = toset(distinct(concat(
-    [data.azurerm_client_config.current.object_id],
-    var.secrets_officer_object_ids,
-  )))
+  for_each = var.secrets_officers
 
   scope                = azurerm_key_vault.this.id
   role_definition_name = "Key Vault Secrets Officer"

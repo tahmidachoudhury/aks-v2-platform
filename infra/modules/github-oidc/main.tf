@@ -12,11 +12,19 @@ locals {
   subject  = "repo:${var.github_repository}"
 }
 
+# The identities sit in their own group, outside every scope CI can write
+# to, so CI can't add a federated credential to them. A recreated identity
+# gets a new client ID and breaks the GitHub variables, hence prevent_destroy.
+
 resource "azurerm_user_assigned_identity" "infra" {
   name                = "id-gh-infra"
   resource_group_name = var.resource_group_name
   location            = var.location
   tags                = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_user_assigned_identity" "infra_plan" {
@@ -24,6 +32,10 @@ resource "azurerm_user_assigned_identity" "infra_plan" {
   resource_group_name = var.resource_group_name
   location            = var.location
   tags                = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "azurerm_user_assigned_identity" "app" {
@@ -31,21 +43,18 @@ resource "azurerm_user_assigned_identity" "app" {
   resource_group_name = var.resource_group_name
   location            = var.location
   tags                = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# Federated credentials. Azure rejects concurrent credential writes on one
-# identity, so the infra identity's credentials are chained with depends_on.
+# Federated credentials.
 
-resource "azurerm_federated_identity_credential" "infra_main" {
-  name                      = "github-main"
-  user_assigned_identity_id = azurerm_user_assigned_identity.infra.id
-  issuer                    = local.issuer
-  audience                  = local.audience
-  subject                   = "${local.subject}:ref:refs/heads/main"
-}
-
-# A job that names a GitHub environment gets an environment subject, not a
-# branch one. These are the apply jobs, behind the environment's reviewers.
+# Environment subjects only, so every job that signs in as the infra
+# identity waits for the environment's reviewers. Azure rejects concurrent
+# credential writes on one identity: see README.md before adding a second
+# environment.
 resource "azurerm_federated_identity_credential" "infra_environment" {
   for_each = toset(var.infra_environments)
 
@@ -54,8 +63,6 @@ resource "azurerm_federated_identity_credential" "infra_environment" {
   issuer                    = local.issuer
   audience                  = local.audience
   subject                   = "${local.subject}:environment:${each.value}"
-
-  depends_on = [azurerm_federated_identity_credential.infra_main]
 }
 
 resource "azurerm_federated_identity_credential" "infra_plan_pull_request" {
@@ -94,17 +101,35 @@ data "azurerm_role_definition" "assignable" {
   scope = local.subscription_scope
 }
 
-# role_definition_id is the full resource ID. GuidEquals wants the bare
-# GUID, its last segment.
 locals {
+  # role_definition_id is the full resource ID. GuidEquals wants the bare
+  # GUID, its last segment.
   assignable_role_guids = join(", ", sort([
     for r in data.azurerm_role_definition.assignable : basename(r.role_definition_id)
   ]))
+
+  operator_guids = join(", ", sort(var.operator_object_ids))
+
+  # Who an assignment may name: any service principal (managed identities,
+  # the cluster and kubelet identities), or one of the operators by object
+  # ID. No other user or group. Request is the assignment being written,
+  # Resource the one being deleted.
+  principal_rule = {
+    for side in ["Request", "Resource"] : side => trimspace(<<-EOT
+      (
+       @${side}[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {'ServicePrincipal'}
+       OR
+       @${side}[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAnyValues:GuidEquals {${local.operator_guids}}
+      )
+    EOT
+    )
+  }
 }
 
-# Role Based Access Control Administrator, limited by an ABAC condition to
-# writing and deleting assignments of the listed roles only. Without the
-# condition it could grant Owner to anyone, itself included.
+# Role Based Access Control Administrator, limited by an ABAC condition.
+# It may only write or delete assignments of the listed roles, to service
+# principals or the operators. Without the condition it could grant Owner
+# to anyone, itself included.
 resource "azurerm_role_assignment" "infra_rbac_admin" {
   for_each = var.infra_resource_group_ids
 
@@ -122,6 +147,8 @@ resource "azurerm_role_assignment" "infra_rbac_admin" {
      OR
      (
       @Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${local.assignable_role_guids}}
+      AND
+      ${local.principal_rule["Request"]}
      )
     )
     AND
@@ -132,6 +159,8 @@ resource "azurerm_role_assignment" "infra_rbac_admin" {
      OR
      (
       @Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${local.assignable_role_guids}}
+      AND
+      ${local.principal_rule["Resource"]}
      )
     )
   EOT
@@ -155,8 +184,9 @@ resource "azurerm_role_assignment" "infra_reader" {
   principal_type       = "ServicePrincipal"
 }
 
-# Plan identity: reads only. Pull request plans run as this identity with
-# -lock=false, since a lease needs write access to the state blob.
+# Plan identity: reads resource settings and state, nothing else. No Key
+# Vault data role, so a pull request can't read app secrets. Its plans run
+# with -lock=false and -refresh=false: see README.md.
 
 resource "azurerm_role_assignment" "infra_plan_reader" {
   scope                = local.subscription_scope
@@ -168,15 +198,6 @@ resource "azurerm_role_assignment" "infra_plan_reader" {
 resource "azurerm_role_assignment" "infra_plan_state" {
   scope                = var.state_storage_account_id
   role_definition_name = "Storage Blob Data Reader"
-  principal_id         = azurerm_user_assigned_identity.infra_plan.principal_id
-  principal_type       = "ServicePrincipal"
-}
-
-# Refreshing a Key Vault secret reads it, value included, so a plan of the
-# persistent root needs this. See README.md.
-resource "azurerm_role_assignment" "infra_plan_secrets" {
-  scope                = var.key_vault_id
-  role_definition_name = "Key Vault Secrets User"
   principal_id         = azurerm_user_assigned_identity.infra_plan.principal_id
   principal_type       = "ServicePrincipal"
 }

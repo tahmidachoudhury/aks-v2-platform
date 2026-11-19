@@ -7,7 +7,7 @@
 - An `azurerm_key_vault`, standard SKU, with RBAC authorisation instead of access policies.
 - Soft delete for 7 days, the minimum, with purge protection on. A deleted vault cannot be purged early, so after the final teardown the name stays reserved for 7 days. The root is never destroyed day to day, so this costs nothing in normal use.
 - Public network access stays on for now. P3-14 adds the private endpoint and the laptop and CI path, then closes it. There are no network ACLs, so the operator is never locked out.
-- A Key Vault Secrets Officer role assignment for the caller, so OpenTofu can write secrets under RBAC.
+- A Key Vault Secrets Officer role assignment for each principal in `secrets_officers`, so OpenTofu can write secrets under RBAC. The list is fixed: the operators and the CI infra identity. It doesn't follow whoever runs the apply, so a person and CI applying in turn don't swap each other's access.
 - One secret per value, listed below.
 
 `prevent_destroy` is set on the vault. Purge protection already stops a hard delete; this also stops a plan from replacing it.
@@ -69,6 +69,7 @@ A new role assignment can take a minute or two to reach the Key Vault data plane
 | `location` | |
 | `tags` | Set on the vault and every secret |
 | `generated_secrets` | Map of kebab-case secret name to version number |
+| `secrets_officers` | Map of static key to object ID. Every person and CI identity that applies. The keys are static because a new CI identity's ID is unknown at plan time |
 
 ## Outputs
 
