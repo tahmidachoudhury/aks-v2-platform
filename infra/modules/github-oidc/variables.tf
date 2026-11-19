@@ -1,5 +1,5 @@
 variable "github_repository" {
-  description = "GitHub repository as owner/name. Forms the start of every federated credential subject."
+  description = "GitHub repository as it appears in the OIDC subject: owner/name, or owner@owner_id/name@repo_id with immutable subjects. Forms the start of every federated credential subject."
   type        = string
 }
 
