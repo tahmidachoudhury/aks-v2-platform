@@ -48,7 +48,7 @@ tofu -chdir=infra/argocd destroy
 tofu -chdir=infra/platform destroy
 ```
 
-Destroy argocd first, so its Helm release is removed while the cluster still exists. Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
+Destroy argocd first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
 
 ## What goes in persistent
 
