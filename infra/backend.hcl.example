@@ -1,0 +1,20 @@
+# Partial azurerm backend config shared by every root except bootstrap.
+# It names the subscription, so init never follows whatever the az CLI
+# default happens to be.
+# Generate the real file from the bootstrap outputs:
+#   tofu -chdir=infra/bootstrap output -raw backend_config > infra/backend.hcl
+# Then, in a root:
+#   tofu init -backend-config=../backend.hcl
+#
+# Each root names its own state blob in its backend block, for example:
+#   terraform {
+#     backend "azurerm" {
+#       key = "platform.tfstate"
+#     }
+#   }
+
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+resource_group_name  = "rg-aks-v2-tfstate"
+storage_account_name = "stakstfstate1234"
+container_name       = "tfstate"
+use_azuread_auth     = true
