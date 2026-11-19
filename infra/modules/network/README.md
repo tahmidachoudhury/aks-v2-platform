@@ -1,8 +1,8 @@
 # network
 
-**TL;DR:** The platform VNet, a node subnet and a private endpoint subnet, each with its own NSG. Neither subnet has default outbound access, and no node gets a public IP. The address plan is below. All of it is free.
+**TL;DR:** The platform VNet, a node subnet and a private endpoint subnet, each with its own NSG, plus the private DNS zones for Key Vault and blob, linked to the VNet. Neither subnet has default outbound access, and no node gets a public IP. The address plan is below. The network is free and the two zones cost under £1 a month.
 
-The `platform` root calls this module, so the network goes with the rest of the daily stack every evening. Filled by P3-04 (#30).
+The `platform` root calls this module, so the network goes with the rest of the daily stack every evening. Filled by P3-04 (#30). The private DNS zones came in P3-06 (#32).
 
 ## Address plan
 
@@ -65,14 +65,56 @@ The subnet sets `private_endpoint_network_policies = "NetworkSecurityGroupEnable
 
 A private endpoint for a service on another port, such as SQL on 1433, needs that port added to rule 100.
 
+## Private DNS zones
+
+Added in P3-06 (#32). A private endpoint takes a private IP in `snet-private-endpoints`. The service's public name, such as `<vault>.vault.azure.net`, is a CNAME to a `privatelink` name. A private DNS zone linked to the VNet answers that name with the private IP. Anything that resolves through Azure DNS from the VNet gets the private IP. That covers nodes and pods, since CoreDNS forwards to Azure DNS. Anything outside gets the public IP.
+
+The platform root passes the zones in `private_dns_zones`:
+
+| Key | Zone | For |
+| --- | --- | --- |
+| `key_vault` | `privatelink.vaultcore.azure.net` | Key Vault (P3-13), endpoint in P3-14 |
+| `blob` | `privatelink.blob.core.windows.net` | The state storage account, endpoint in P3-14 |
+
+Each zone gets one VNet link with registration off. Registration would write A records for VMs in the VNet, and these zones only hold the records the private endpoints write. The zones and links are destroyed and created with the rest of the daily stack. So are the endpoints, so no record outlives its endpoint.
+
+### Zones not created
+
+The card also lists ACR and Service Bus. Neither gets a zone, because neither has a private endpoint in this build, and a zone with no records does nothing:
+
+- ACR is Basic, and private endpoints need Premium. Premium costs about $51 a month. See [Container registry](../../../docs/architecture-decisions.md#container-registry).
+- Service Bus is Standard, and private endpoints need Premium, about $677 a month. Standard uses an IP firewall instead. See [Event bus](../../../docs/architecture-decisions.md#event-bus).
+
+If either moves to Premium, add its zone to `private_dns_zones` in platform: `privatelink.azurecr.io` for ACR, and `privatelink.servicebus.windows.net` for Service Bus.
+
+### Why here and not in the dns module
+
+- The [dns module](../dns/README.md) holds the public zone, which lives in `persistent` and must never be recreated. Private zones are rebuilt every day. One module serving two roots with opposite lifecycles would invite a destroy in the wrong place.
+- A private zone does nothing without its VNet link, and the link needs the VNet. Keeping them in the module that owns the VNet means no VNet ID passes between modules, and the zones go when the VNet goes.
+- It is two resources over a map. A module of its own would add a folder and a module call for no reuse.
+
+### Acceptance test
+
+The zones are empty until P3-14 adds the private endpoints, so the test needs P3-14. Then, from a pod in the cluster:
+
+```bash
+kubectl run dnscheck --rm -it --image=busybox:1.37 --restart=Never -- \
+  nslookup <vault-name>.vault.azure.net
+```
+
+The answer should be a `privatelink.vaultcore.azure.net` CNAME and an address in `10.20.4.0/24`. The same lookup from a laptop returns a public IP.
+
 ## Outputs
 
 | Output | Value |
 | --- | --- |
 | `vnet_id` | ID of the VNet |
-| `vnet_name` | Name of the VNet, for the private DNS zone links in P3-06 |
+| `vnet_name` | Name of the VNet |
 | `subnet_ids` | Map with `aks_nodes` and `private_endpoints` |
+| `private_dns_zone_ids` | Zone IDs keyed like `private_dns_zones`: `key_vault` and `blob`. P3-14 passes them to each endpoint's DNS zone group |
 
 ## Cost
 
 A VNet, its subnets and NSGs are free. Charges start with what goes in them: nodes, load balancer rules, public IPs, private endpoints and data transfer.
+
+A private DNS zone is £0.38 a month at the retail price checked on 19 November 2026, so the two zones come to at most £0.76. VNet links are free. Queries are £0.30 per million, which this cluster won't get near.

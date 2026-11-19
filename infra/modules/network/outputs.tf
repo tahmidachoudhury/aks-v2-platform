@@ -15,3 +15,8 @@ output "subnet_ids" {
     private_endpoints = azurerm_subnet.private_endpoints.id
   }
 }
+
+output "private_dns_zone_ids" {
+  description = "Private DNS zone IDs, keyed like var.private_dns_zones, for private endpoint DNS zone groups."
+  value       = { for k, z in azurerm_private_dns_zone.this : k => z.id }
+}

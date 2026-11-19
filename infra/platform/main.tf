@@ -30,6 +30,13 @@ module "network" {
   aks_nodes_prefix         = var.aks_nodes_prefix
   private_endpoints_prefix = var.private_endpoints_prefix
   pod_cidr                 = var.pod_cidr
+
+  # Only zones that will hold records. ACR Basic and Service Bus Standard
+  # have no private endpoints, so they get no zone: see the network README.
+  private_dns_zones = {
+    key_vault = "privatelink.vaultcore.azure.net"
+    blob      = "privatelink.blob.core.windows.net"
+  }
 }
 
 module "aks" {

@@ -6,8 +6,9 @@
 
 - A resource group, `rg-aks-v2-platform`, in UK South.
 - The VNet `vnet-aks-v2-platform` with a node subnet and a private endpoint subnet, each with an NSG, through [`../modules/network`](../modules/network/README.md). The address plan, including the pod and service CIDRs for AKS, is in that README.
+- Private DNS zones for Key Vault and blob, linked to the VNet, also through the network module. ACR and Service Bus get none, since they have no private endpoints. The [network README](../modules/network/README.md#private-dns-zones) says why.
 - The AKS cluster `aks-v2-platform`, through [`../modules/aks`](../modules/aks/README.md). Its node resource group is `rg-aks-v2-platform-nodes`.
-- Later: private DNS zones, Service Bus, private endpoints, Log Analytics, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
+- Later: Service Bus, private endpoints, Log Analytics, federated credentials and the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
