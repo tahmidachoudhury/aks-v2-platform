@@ -21,3 +21,19 @@ variable "owner" {
   type        = string
   default     = "tahmidachoudhury"
 }
+
+variable "acr_name" {
+  description = "Container registry name. Globally unique: 5 to 50 letters and digits. Check with az acr check-name."
+  type        = string
+}
+
+variable "key_vault_name" {
+  description = "Key Vault name. Globally unique: 3 to 24 letters, digits and hyphens. Check with az keyvault check-name."
+  type        = string
+}
+
+variable "dns_zone_name" {
+  description = "Public DNS zone, delegated from the parent zone by hand. See modules/dns/README.md."
+  type        = string
+  default     = "azure.order-fulfilment.tahmidchoudhury.uk"
+}

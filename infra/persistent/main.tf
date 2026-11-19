@@ -23,3 +23,38 @@ resource "azurerm_resource_group" "persistent" {
     prevent_destroy = true
   }
 }
+
+module "acr" {
+  source = "../modules/acr"
+
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.persistent.name
+  location            = azurerm_resource_group.persistent.location
+  tags                = local.tags
+}
+
+module "keyvault" {
+  source = "../modules/keyvault"
+
+  name                = var.key_vault_name
+  resource_group_name = azurerm_resource_group.persistent.name
+  location            = azurerm_resource_group.persistent.location
+  tags                = local.tags
+
+  # Every secret the services read, from app/services and the service
+  # catalogue. Bump a number to rotate that secret. See the module README.
+  generated_secrets = {
+    postgres-password       = 1
+    jwt-secret              = 1
+    shipping-webhook-secret = 1
+    redis-password          = 1
+  }
+}
+
+module "dns" {
+  source = "../modules/dns"
+
+  name                = var.dns_zone_name
+  resource_group_name = azurerm_resource_group.persistent.name
+  tags                = local.tags
+}

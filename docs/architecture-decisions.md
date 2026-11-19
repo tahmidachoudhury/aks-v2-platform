@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway, and the container registry is ACR Basic.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -16,6 +16,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Secrets delivery](#secrets-delivery) | External Secrets Operator (ESO)                              | Accepted | [#11](https://github.com/tahmidachoudhury/aks-v2-platform/issues/11) |
 | [Infrastructure as code](#infrastructure-as-code) | OpenTofu, not Terraform                  | Accepted | none                                                               |
 | [Egress](#egress)                  | Load balancer outbound rules, no NAT Gateway                    | Accepted | [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31) |
+| [Container registry](#container-registry) | ACR Basic, Entra ID access only, no private endpoint | Accepted | [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36) |
 
 ## Event bus
 
@@ -251,3 +252,31 @@ Prices checked on 19 November 2026, UK South. Sources: the [Azure Retail Prices 
 - Node Auto Provisioning doesn't allow the outbound type to change after create. Changing it means a new cluster, which happens every morning anyway.
 
 Ticket: [#31](https://github.com/tahmidachoudhury/aks-v2-platform/issues/31)
+
+## Container registry
+
+**Status:** Accepted
+
+**Context:** Nine services need images in a registry that survives the nightly destroy, so the registry lives in the `persistent` root. The card asked for Premium with a private endpoint. The brief asks for private endpoints for ACR, Key Vault, Service Bus and the state storage account. The budget is about £100 a month.
+
+**Decision:** Azure Container Registry Basic, with no private endpoint. The admin user and anonymous pull are off, so every pull and push needs an Entra ID token. Premium is the only tier with private endpoints and costs about $50 a month whether used or not, half the budget for one network path.
+
+**Options compared**
+
+| Option | Monthly cost | Private endpoint | Network rules | Included storage |
+| --- | --- | --- | --- | --- |
+| Basic (chosen) | About $5 | No | No | 10 GiB |
+| Standard | About $20 | No | No | 100 GiB |
+| Premium | About $51 | Yes | IP rules and private endpoint | 500 GiB |
+
+Prices checked on 19 November 2026, UK South. Storage beyond the included amount is $0.10 per GB a month on every tier. Sources: [ACR pricing](https://azure.microsoft.com/en-gb/pricing/details/container-registry/), [ACR service tiers](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-skus), and the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices).
+
+**Consequences / trade-offs**
+
+- Known gap: ACR has no private endpoint in this build. Image pulls from AKS cross the public endpoint, authenticated with Entra ID: AcrPull for the kubelet identity (P3-11) and AcrPush for CI (P3-21). A production team should pay for Premium and add the private endpoint.
+- P3-14 keeps private endpoints for Key Vault and state storage. ACR joins Service Bus as a service with no private endpoint.
+- Basic has no IP firewall either, so Entra ID is the only control. No admin user means no shared password to leak.
+- Standard costs four times Basic and adds storage and throughput we do not need. It still has no private endpoint.
+- 10 GiB holds many tags of nine small Go images. Add a retention or purge task if storage grows.
+
+Ticket: [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36)

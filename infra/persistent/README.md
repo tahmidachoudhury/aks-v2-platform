@@ -5,7 +5,9 @@
 ## What it holds
 
 - A resource group, `rg-aks-v2-persistent`, in UK South. `prevent_destroy` is set on it, so no plan can delete it by accident.
-- Later: the public DNS zone (P3-15), the Key Vault (P3-13) and the container registry (P3-10), through the modules in [`../modules`](../modules).
+- The container registry (P3-10), through [`../modules/acr`](../modules/acr/README.md). Basic SKU, Entra ID access only.
+- The Key Vault and its four app secrets (P3-13), through [`../modules/keyvault`](../modules/keyvault/README.md). Secret values never reach state.
+- The public DNS zone `azure.order-fulfilment.tahmidchoudhury.uk` (P3-15), through [`../modules/dns`](../modules/dns/README.md). Its delegation from the parent zone is a manual step described there.
 
 State lives in the `persistent.tfstate` blob in the state account.
 
@@ -21,7 +23,7 @@ Apply once, after `bootstrap`, and again when this root changes. Never run `tofu
 
 ## Init, plan and apply
 
-Needs `infra/backend.hcl`, generated from the bootstrap outputs. See [`../bootstrap`](../bootstrap/README.md).
+Needs OpenTofu 1.11 or later, for the ephemeral and write-only values in the Key Vault module. Needs `infra/backend.hcl`, generated from the bootstrap outputs. See [`../bootstrap`](../bootstrap/README.md).
 
 ```bash
 cd infra/persistent
@@ -31,4 +33,4 @@ tofu plan -out=persistent.tfplan
 tofu apply persistent.tfplan
 ```
 
-No variables are required. `location`, `resource_group_name`, `environment` and `owner` have defaults. To override them, use a gitignored `terraform.tfvars`.
+`acr_name` and `key_vault_name` are required, because both names are globally unique. Copy [`terraform.tfvars.example`](terraform.tfvars.example) to `terraform.tfvars`, which is gitignored, and set them. `location`, `resource_group_name`, `environment`, `owner` and `dns_zone_name` have defaults.
