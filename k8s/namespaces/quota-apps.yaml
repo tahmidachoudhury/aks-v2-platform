@@ -1,6 +1,8 @@
-# The nine services. Sized for every HPA and KEDA maximum (26 pods) plus a
-# rolling update's surge. Stateless, and only Traefik is exposed, so no PVCs
-# and no LoadBalancer Services.
+# The nine services. CPU is held to what the general NodePool can supply,
+# so P6 must keep pod CPU requests within the budget in README.md. Memory
+# limits cover every HPA and KEDA maximum (26 pods) plus a 25% rolling
+# surge (9 more) at the default limit. Stateless, and only Traefik is
+# exposed, so no PVCs and no LoadBalancer Services.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -8,9 +10,9 @@ metadata:
   namespace: apps
 spec:
   hard:
-    requests.cpu: "2"
+    requests.cpu: 1250m
     requests.memory: 4Gi
-    limits.memory: 8Gi
+    limits.memory: 10Gi
     pods: "40"
     persistentvolumeclaims: "0"
     services.loadbalancers: "0"
@@ -27,7 +29,7 @@ spec:
   limits:
     - type: Container
       defaultRequest:
-        cpu: 50m
+        cpu: 40m
         memory: 64Mi
       default:
         memory: 256Mi

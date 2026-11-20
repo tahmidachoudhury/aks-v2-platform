@@ -1,6 +1,6 @@
 # namespaces
 
-**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 4 CPUs and 8 GiB in total. That fits the roughly 5 CPUs Node Auto Provisioning can give user workloads and leaves about 1 CPU for ArgoCD and the rest. Apply by hand each morning after the node pools and before any Helm install (`kubectl apply -k k8s/namespaces`). ArgoCD takes this over in P7.
+**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD and KEDA, because most of these pods must not run on spot. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. Apply by hand each morning after the node pools and before any Helm install (`kubectl apply -k k8s/namespaces`). ArgoCD takes this over in P7.
 
 Filled by P4-07 (#54).
 
@@ -67,28 +67,42 @@ Pods that break `restricted` fail with `violates PodSecurity "restricted:latest"
 
 User workloads run on Node Auto Provisioning nodes, since the system pool is tainted `CriticalAddonsOnly`. See [node-pools](../node-pools/README.md#sizes-and-limits).
 
-| NodePool | vCPUs | CPU for pods |
-| --- | --- | --- |
-| `general` | 4 | About 3.4 to 3.7. A 2 vCPU node gives 1,900m allocatable, and the AKS DaemonSets request about 180m of it |
-| `spot` | 2, one node | About 1.7, and only for pods that tolerate spot |
-| Total | 6 | About 5 |
+Only the `general` NodePool counts here. `spot` takes only pods that tolerate eviction, which means the worker at most. Postgres, Redis, the scheduler, api-gateway and every `platform` component must stay off it. Spot's one 2 vCPU node, about 1,700m for pods, is extra room for the worker and isn't counted.
 
-Memory depends on the size Karpenter picks. `Standard_D2s_v6` and `Standard_D4s_v6` have 8 GiB per 2 vCPUs and are the cheapest, so Karpenter usually picks them. Three such 2 vCPU nodes give about 16 GiB for pods, twice the quotas' 8 GiB of requests. The `nls` sizes have half that memory. If they're all Karpenter can get, as in zone 1, memory runs out before CPU.
+| `general` NodePool | CPU |
+| --- | --- |
+| `limits.cpu` | 4 vCPUs |
+| For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, 3,680m on one 4 vCPU node |
+| Kept for ArgoCD and KEDA (P7), outside these namespaces | About 1,000m |
+| Left for `apps`, `data` and `platform` | About 2,440m to 2,680m |
+
+The quotas total 2,500m. If all three namespaces use their full CPU quota, nothing runs on spot and the pool is two 2 vCPU nodes, demand is about 60m more than the nodes hold. The quota admits the last pod or two, but they stay `Pending`. On one 4 vCPU node it fits. A worker on spot takes its requests off `general`. If ArgoCD and KEDA request more than 1 CPU, the shortfall grows by the difference.
+
+Memory depends on the size Karpenter picks. `Standard_D2s_v6` and `Standard_D4s_v6` have 8 GiB per 2 vCPUs and are the cheapest, so Karpenter usually picks them. Then `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. The `nls` sizes have half that memory. If they're all Karpenter can get, as in zone 1, pods go `Pending` on memory before CPU.
 
 ### Sizes
 
 | Namespace | `requests.cpu` | `requests.memory` | `limits.memory` | Pods | PVCs | Storage | LoadBalancers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `apps` | 2 | 4Gi | 8Gi | 40 | 0 | n/a | 0 |
-| `data` | 1 | 2Gi | 4Gi | 10 | 4 | 64Gi | 0 |
-| `platform` | 1 | 2Gi | 4Gi | 20 | 0 | n/a | 1 |
-| Total | 4 | 8Gi | 16Gi | | | | |
+| `apps` | 1250m | 4Gi | 10Gi | 40 | 0 | n/a | 0 |
+| `data` | 750m | 2Gi | 6Gi | 10 | 4 | 64Gi | 0 |
+| `platform` | 500m | 2Gi | 4Gi | 20 | 0 | n/a | 1 |
+| Total | 2500m | 8Gi | 20Gi | | | | |
 
-- `apps`: the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) maximums add up to 26 pods, and a rolling update adds 25%. At the default request of 50m and 64Mi each, that is under 2 CPUs and 4 GiB.
-- `data`: Postgres and Redis, plus a second Postgres for the snapshot restore drill. Storage covers the 20Gi Postgres PVC, the 10Gi Redis PVC and a 20Gi restore.
-- `platform`: about ten pods across four components, each needing tens of millicores.
-- The 4 requested CPUs leave about 1 CPU for other namespaces, such as ArgoCD and KEDA.
-- `limits.memory` is twice `requests.memory`, so pods can burst. Requests decide where pods fit. Limits only cap them.
+### CPU budget
+
+The binding limit is the `general` pool's CPU. The quotas only split it between the namespaces. Raising a quota without adding capacity only moves where pods go `Pending`.
+
+- `apps`: P6 sets each service pod's CPU request at 40m or less. The [Autoscaling](../../docs/architecture-decisions.md#autoscaling) maximums add up to 26 pods, and 26 x 40m is 1,040m. That leaves 210m for one service's rolling update at a time and cert-manager's HTTP-01 solver pod (10m). The LimitRange default request is 40m to match. HPAs scale at 70% of the request, so at 40m a pod scales out at 28m.
+- If P6 needs larger requests, it lowers the HPA maximums so the sum of `maxReplicas` x request stays at or under about 1,050m. At 60m, for example, 17 pods fit, not 26. The quota refuses pods past its limit and the HPA reports `FailedCreate`, so maximums above the budget never take effect.
+- `data`: Postgres requests up to 250m and Redis up to 100m. The restore drill's second Postgres then fits: 600m of 750m.
+- `platform`: the charts request about 220m: Traefik 2 x 50m, cert-manager 3 x 10m, External Secrets 3 x 10m and ExternalDNS 10m. cert-manager's startupapicheck Job adds 50m while it runs.
+
+### Memory and other limits
+
+- `apps` `limits.memory` is 10Gi. The 26 pods at the HPA maximums plus a 25% rolling surge (9 more), at the 256Mi default limit, come to 8,960Mi.
+- `data` `limits.memory` is 6Gi, so two Postgres containers and Redis all fit at the 2Gi per-container maximum during the restore drill.
+- Memory requests decide where pods fit. Limits sit above them so pods can burst.
 - There is no `limits.cpu`. A CPU quota forces a CPU limit on every container, and a CPU limit throttles a pod even when the node is idle.
 - Only `data` has PVCs, since only Postgres and Redis keep state. Only Traefik has a LoadBalancer Service, since a second one would add a public IP.
 
@@ -98,7 +112,7 @@ A quota on `requests.memory` and `limits.memory` rejects any pod that leaves eit
 
 | Namespace | Default CPU request | Default memory request | Default memory limit | Max memory limit |
 | --- | --- | --- | --- | --- |
-| `apps` | 50m | 64Mi | 256Mi | 1Gi |
+| `apps` | 40m | 64Mi | 256Mi | 1Gi |
 | `data` | 100m | 128Mi | 512Mi | 2Gi |
 | `platform` | 50m | 64Mi | 256Mi | 1Gi |
 
@@ -142,7 +156,7 @@ kubectl run ok-test -n apps --image=registry.k8s.io/pause:3.10 --dry-run=server 
   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65535,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"ok-test","image":"registry.k8s.io/pause:3.10","securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
 ```
 
-Expect `{"limits":{"memory":"256Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}`.
+Expect `{"limits":{"memory":"256Mi"},"requests":{"cpu":"40m","memory":"64Mi"}}`.
 
 The quota blocks a PVC in `apps`:
 

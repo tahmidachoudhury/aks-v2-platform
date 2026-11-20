@@ -1,5 +1,6 @@
 # Postgres and Redis, one replica each, with room for a second Postgres
-# restored from a snapshot. Storage covers the 20Gi and 10Gi PVCs plus a
+# restored from a snapshot. Memory limits fit all three containers at the
+# 2Gi per-container maximum. Storage covers the 20Gi and 10Gi PVCs plus a
 # 20Gi restore.
 apiVersion: v1
 kind: ResourceQuota
@@ -8,9 +9,9 @@ metadata:
   namespace: data
 spec:
   hard:
-    requests.cpu: "1"
+    requests.cpu: 750m
     requests.memory: 2Gi
-    limits.memory: 4Gi
+    limits.memory: 6Gi
     pods: "10"
     persistentvolumeclaims: "4"
     requests.storage: 64Gi
