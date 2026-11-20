@@ -161,7 +161,7 @@ kubectl delete pod storage-test
 kubectl delete pvc storage-test
 ```
 
-The full restore drill, a new PVC from the snapshot with the Postgres data intact, belongs to the Postgres card in P5.
+The full restore drill, a new PVC from the snapshot with the Postgres data intact, is `make restore-drill` in [backup](../backup/README.md#restore-drill-p5-06).
 
 ## Validate
 

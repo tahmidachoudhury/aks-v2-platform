@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys. Key Vault and state storage get private endpoints. The vault is firewalled to the operators' IPs, and state stays public behind Entra ID. TLS certificates come from Let's Encrypt through cert-manager's HTTP-01 solver, so cert-manager needs no Azure identity.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys. Key Vault and state storage get private endpoints. The vault is firewalled to the operators' IPs, and state stays public behind Entra ID. TLS certificates come from Let's Encrypt through cert-manager's HTTP-01 solver, so cert-manager needs no Azure identity. An hourly CronJob snapshots the Postgres disk, and the snapshots last only until the evening destroy.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -20,6 +20,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Disk encryption](#disk-encryption) | Platform-managed keys, no Disk Encryption Set, no encryption at host | Accepted | [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46) |
 | [Private endpoints](#private-endpoints) | Endpoints for Key Vault and state blob in platform. Vault firewalled to operator IPs, state public with Entra ID only | Accepted | [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40) |
 | [TLS certificates](#tls-certificates) | cert-manager with Let's Encrypt, HTTP-01 through Traefik, no Azure identity | Accepted | [#51](https://github.com/tahmidachoudhury/aks-v2-platform/issues/51) |
+| [Volume snapshots](#volume-snapshots) | Hourly CronJob, newest six kept, snapshots last the day | Accepted | [#61](https://github.com/tahmidachoudhury/aks-v2-platform/issues/61) |
 | [Database migrations](#database-migrations) | golang-migrate in a Job, an ArgoCD PreSync hook from P7, expand/contract, forward only | Accepted | [#58](https://github.com/tahmidachoudhury/aks-v2-platform/issues/58) |
 
 ## Event bus
@@ -390,6 +391,41 @@ Ticket: [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40)
 Checked on 20 November 2026. Sources: [Let's Encrypt challenge types](https://letsencrypt.org/docs/challenge-types/), [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/), [cert-manager HTTP-01](https://cert-manager.io/docs/configuration/acme/http01/), [cert-manager Azure DNS](https://cert-manager.io/docs/configuration/acme/dns01/azuredns/).
 
 Ticket: [#51](https://github.com/tahmidachoudhury/aks-v2-platform/issues/51)
+
+## Volume snapshots
+
+**Status:** Accepted
+
+**Context:** P5-07 asks for scheduled disk snapshots with retention, and the brief grades a snapshot taken and restored. Postgres holds the only durable state. Every evening `make down` destroys the platform root: the cluster, the node resource group and every disk and snapshot in it. The Azure Disk CSI driver stores a snapshot in its source disk's resource group unless the VolumeSnapshotClass sets `resourceGroup`. For a disk the cluster provisioned, that is the node resource group. The budget is £100 a month, and the nodes take about £60 of it.
+
+**Decision:** An in-cluster CronJob snapshots the Postgres PVC every hour and keeps the newest six. The snapshots stay in the node resource group and go with the cluster each evening. They are same-day recovery points against a bad migration or a mistake during the day, and `make restore-drill` proves the restore. They are not a backup that outlives the cluster. The detail is in [k8s/backup](../k8s/backup/README.md).
+
+**Options compared**
+
+| Option | Monthly cost | Survives the destroy | Setup | Pruning |
+| --- | --- | --- | --- | --- |
+| CronJob, snapshots in the node resource group (chosen) | Pennies. Incremental snapshots at $0.053 per GB a month on changed blocks, deleted each evening | No | A ServiceAccount, a Role and a CronJob in `data` | The CronJob, by count |
+| CronJob, snapshots in a persistent resource group | Pennies, but they build up. Each morning's disk is new, so its first snapshot holds every used block | Yes | A second VolumeSnapshotClass with `resourceGroup`, and a role for the cluster identity on that group in OpenTofu. A restore on a new cluster needs a hand-made VolumeSnapshotContent pointing at the Azure snapshot | The CronJob sees only the current cluster's snapshots. Older days need pruning outside the cluster, with `az` or a script, or they pile up |
+| Azure Backup for AKS, vault in persistent | $12 (about £9) per protected namespace a month, plus snapshot and vault storage | Yes | A Backup vault and policy in persistent, a storage account for the extension, and the Backup extension and trusted access on every morning's cluster | The backup policy |
+| Velero with the Azure plugin | Blob storage, pennies at this size | Yes for manifests. Volume data needs its data mover, which copies it to blob storage | A Helm install, a storage account and a workload identity, all applied each morning | The schedule's TTL |
+
+Prices checked on 20 November 2026, UK South, from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices). Sources: [Azure Disk CSI VolumeSnapshotClass parameters](https://github.com/kubernetes-sigs/azuredisk-csi-driver/blob/master/docs/driver-parameters.md), [incremental snapshots](https://learn.microsoft.com/en-us/azure/virtual-machines/disks-incremental-snapshots), [Azure Backup for AKS](https://learn.microsoft.com/en-us/azure/backup/azure-kubernetes-service-backup-overview), [Velero Azure plugin](https://github.com/vmware-tanzu/velero-plugin-for-microsoft-azure).
+
+**Why same-day is enough here**
+
+- The brief grades a snapshot taken and restored, and the card asks for snapshots on a schedule with old ones pruned. A same-day schedule meets both, and shows both working within a day.
+- Snapshots that outlive the cluster are only worth their setup if the data is meant to outlive the cluster. That is a separate decision, below.
+- Azure Backup for AKS would take about 9% of the budget, plus an extension to install and trust on every morning's cluster.
+
+**Consequences / trade-offs**
+
+- A restore can go back at most to that morning. Nothing survives the evening destroy.
+- P5-01 ([#55](https://github.com/tahmidachoudhury/aks-v2-platform/issues/55)) decided that the Postgres data does not survive the destroy: Postgres starts empty each morning, so there is nothing to carry across days, and same-day snapshots match it. If that changes and its disk moves outside the node resource group, the driver puts the snapshots in that disk's group, so they survive the destroy too, but as orphans. The VolumeSnapshots go with the cluster, so `deletionPolicy: Delete` never fires and the CronJob never sees them to prune. In that case, set `resourceGroup` on the VolumeSnapshotClass and prune old days outside the cluster, as in the second option, or move to Azure Backup for AKS.
+- Snapshots are crash-consistent. Postgres keeps its WAL on the same disk, so a restore is a crash recovery. The CronJob has no `pods/exec` rights, so it can't run `CHECKPOINT` first, and doesn't need to.
+- Redis is not snapshotted. It holds only api-gateway's rate-limit counters.
+- A production team would use Azure Backup for AKS with a vault-tier copy, or Flexible Server's point-in-time restore (see [Postgres](#postgres)).
+
+Ticket: [#61](https://github.com/tahmidachoudhury/aks-v2-platform/issues/61)
 
 ## Database migrations
 
