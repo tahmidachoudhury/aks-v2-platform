@@ -54,7 +54,7 @@ Destroy argocd first, so its Helm release is removed while the cluster still exi
 
 ## What goes in persistent
 
-A resource goes in `persistent` when recreating it every day would break something. A DNS zone would get new name servers. A Key Vault name stays reserved after a delete. A registry would lose its images.
+A resource goes in `persistent` when recreating it every day would break something. A DNS zone would get new name servers. A Key Vault name stays reserved after a delete. A registry would lose its images. A released ingress IP could go to someone else while our DNS records still point at it.
 
 Any managed identity whose client ID goes on a ServiceAccount also belongs in `persistent`: ExternalDNS, External Secrets, and the per-service workload identities from P3-16 and P3-18. A recreated identity gets a new client ID, and every install that set the old one breaks. The IDs are injected at install time, not committed: see [Client IDs](modules/workload-identity/README.md#client-ids). Federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so they stay in `platform`.
 

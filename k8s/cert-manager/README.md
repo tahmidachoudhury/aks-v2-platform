@@ -8,6 +8,7 @@ You need the NodePools, the `platform` namespace from [`../namespaces`](../names
 
 ```bash
 helm upgrade --install cert-manager cert-manager \
+  --kube-context aks-v2-platform \
   --repo https://charts.jetstack.io --version v1.21.3 \
   --namespace platform -f k8s/cert-manager/values.yaml --wait
 kubectl --context aks-v2-platform apply -k k8s/cert-manager
@@ -64,7 +65,8 @@ This tests P4-03, P4-04 and P4-05 together: an Ingress gets an A record from Ext
 ```bash
 CTX=aks-v2-platform
 HOST=test.azure.order-fulfilment.tahmidchoudhury.uk
-IP=$(tofu -chdir=infra/platform output -raw ingress_ip_address)
+IP=$(tofu -chdir=infra/persistent output -raw ingress_ip_address)
+NS=$(tofu -chdir=infra/persistent output -json dns_zone_name_servers | jq -er '.[0]')
 
 # Issuers ready: both show READY True.
 kubectl --context $CTX get clusterissuers
@@ -77,7 +79,7 @@ kubectl --context $CTX create ingress whoami --class=traefik \
   --annotation cert-manager.io/cluster-issuer=letsencrypt-staging
 
 # P4-05: the A record appears and points at Traefik's IP.
-dig +short "$HOST" @ns1-04.azure-dns.com; echo "expected $IP"
+dig +short "$HOST" "@$NS"; echo "expected $IP"
 
 # P4-04, staging: READY turns True within a few minutes.
 kubectl --context $CTX get certificate whoami-tls -w
@@ -110,7 +112,7 @@ This test uses one of the test host's five production certificates for the week.
 ## Validate
 
 ```bash
-helm template cert-manager cert-manager --repo https://charts.jetstack.io --version v1.21.3 \
+helm template cert-manager cert-manager --kube-context aks-v2-platform --repo https://charts.jetstack.io --version v1.21.3 \
   -n platform -f k8s/cert-manager/values.yaml | kubeconform -strict -ignore-missing-schemas -summary
 kustomize build k8s/cert-manager | kubeconform -strict -summary \
   -schema-location default \

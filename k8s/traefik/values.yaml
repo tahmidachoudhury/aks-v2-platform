@@ -36,8 +36,8 @@ ingressRoute:
 
 service:
   annotations:
-    # The static IP from the platform root (P4-03). Names must match
-    # ingress_public_ip_name and ingress_resource_group_name there.
+    # The static IP from the persistent root (P4-03). Fixed names, the same
+    # as in infra/persistent/main.tf and infra/platform/main.tf.
     service.beta.kubernetes.io/azure-pip-name: pip-aks-v2-ingress
     service.beta.kubernetes.io/azure-load-balancer-resource-group: rg-aks-v2-ingress
     # With externalTrafficPolicy Local, the load balancer probes HTTP

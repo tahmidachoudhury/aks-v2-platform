@@ -71,6 +71,40 @@ module "dns" {
   tags                = local.tags
 }
 
+# Traefik's public IP (P4-03). It outlives the nightly destroy because the A
+# records ExternalDNS writes stay in the public zone overnight. A released IP
+# could go to another Azure customer, who could then serve our names and pass
+# an HTTP-01 challenge for them. Keeping the IP means the records always point
+# at an address we hold. Its own group keeps the cluster's Network Contributor
+# role, granted daily in platform, off everything else. The names are fixed:
+# platform and k8s/traefik/values.yaml use the same ones. See
+# ../platform/README.md#ingress-public-ip.
+resource "azurerm_resource_group" "ingress" {
+  name     = "rg-aks-v2-ingress"
+  location = var.location
+  tags     = local.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "azurerm_public_ip" "ingress" {
+  name                = "pip-aks-v2-ingress"
+  resource_group_name = azurerm_resource_group.ingress.name
+  location            = azurerm_resource_group.ingress.location
+  sku                 = "Standard"
+  allocation_method   = "Static"
+  zones               = ["1", "2", "3"]
+  tags                = local.tags
+
+  # The AKS cloud provider may tag an IP it puts on its load balancer.
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [tags]
+  }
+}
+
 # The GitHub Actions identities get their own group. CI has no write role
 # on it, so it can't add federated credentials to its own identities.
 resource "azurerm_resource_group" "identity" {
@@ -117,9 +151,13 @@ module "github_oidc" {
 
   # The identity group is left out on purpose: see above. So is platform's
   # group, which that root destroys every evening, taking any role
-  # assignment on it too. See the module README.
+  # assignment on it too. See the module README. The ingress group holds only
+  # Traefik's IP: CI needs Contributor to refresh it on a persistent apply,
+  # and RBAC Administrator to grant the cluster Network Contributor there on
+  # a platform apply.
   infra_resource_group_ids = {
     persistent = azurerm_resource_group.persistent.id
+    ingress    = azurerm_resource_group.ingress.id
   }
 
   # Every role the roots assign, now or in a planned card. Add a role here

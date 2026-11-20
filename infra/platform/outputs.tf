@@ -83,11 +83,6 @@ output "egress_ip_addresses" {
   value       = module.aks.outbound_ip_addresses
 }
 
-output "ingress_ip_address" {
-  description = "Traefik's public IP, where ExternalDNS points the A records. New every morning."
-  value       = azurerm_public_ip.ingress.ip_address
-}
-
 output "log_analytics_workspace_id" {
   description = "Resource ID of the Log Analytics workspace."
   value       = module.loganalytics.id

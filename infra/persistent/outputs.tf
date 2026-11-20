@@ -38,6 +38,11 @@ output "key_vault_uri" {
   value       = module.keyvault.vault_uri
 }
 
+output "ingress_ip_address" {
+  description = "Traefik's public IP, where ExternalDNS points the A records. Fixed for the life of the project."
+  value       = azurerm_public_ip.ingress.ip_address
+}
+
 output "dns_zone_id" {
   description = "ID of the public DNS zone."
   value       = module.dns.id
