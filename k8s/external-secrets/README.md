@@ -58,7 +58,7 @@ The webhook runs two replicas with a PodDisruptionBudget of `minAvailable: 1`. I
 | Cert-controller | 1 | 10m | 32Mi | 128Mi |
 | **Total** | **4 pods** | **40m** | **160Mi** | **640Mi** |
 
-This fits the `platform` quota from P4-07 (1 CPU and 2Gi of requests, 4Gi of memory limits, 20 pods) with room for other components. Every container sets its own requests and memory limit, so the LimitRange defaults never apply, and no limit comes near the LimitRange's 1Gi maximum. There are no CPU limits, so a burst of reconciles uses idle CPU instead of being throttled.
+This fits the `platform` quota from P4-07 (500m CPU and 2Gi of requests, 4Gi of memory limits, 20 pods) with room for other components. Every container sets its own requests and memory limit, so the LimitRange defaults never apply, and no limit comes near the LimitRange's 1Gi maximum. There are no CPU limits, so a burst of reconciles uses idle CPU instead of being throttled.
 
 ## Install each morning
 
