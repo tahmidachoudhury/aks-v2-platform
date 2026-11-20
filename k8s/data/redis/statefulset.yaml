@@ -45,6 +45,14 @@ spec:
           # The config arrives on stdin ("-"), so the password never appears
           # in the process's arguments. exec keeps redis-server as PID 1, so
           # it gets SIGTERM and fsyncs the AOF before it exits.
+          #
+          # AOF only: save "" turns RDB snapshots off, so there is one fork
+          # (the AOF rewrite), not two. maxmemory leaves about 96Mi of the
+          # 256Mi limit for that fork's copy-on-write pages and Redis's own
+          # overhead. Every key is an api-gateway rate:<ip> counter with a
+          # one-minute TTL, so evicting any of them only resets one client's
+          # window. allkeys-lru, not volatile-*, because INCR and EXPIRE are
+          # separate calls and a counter whose EXPIRE failed has no TTL.
           command: ["sh", "-c"]
           args:
             - |
@@ -52,6 +60,9 @@ spec:
               dir /data
               appendonly yes
               appendfsync everysec
+              save ""
+              maxmemory 160mb
+              maxmemory-policy allkeys-lru
               requirepass $REDIS_PASSWORD
               EOF
           ports:

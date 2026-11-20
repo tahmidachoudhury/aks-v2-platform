@@ -48,17 +48,19 @@ spec:
       containers:
         - name: postgres
           image: docker.io/library/postgres:16.16-bookworm@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175
+          # Sized from the services' pool caps (see README, Connections).
+          # The entrypoint passes these flags on to postgres.
+          args: ["-c", "max_connections=300"]
           ports:
             - name: postgres
               containerPort: 5432
           env:
             - name: POSTGRES_DB
               value: orders
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-credentials
-                  key: password
+            # A file, not an env var, so a rotated Secret reaches the pod
+            # without a restart and app-role.sql can read the current value.
+            - name: POSTGRES_PASSWORD_FILE
+              value: /etc/postgres-credentials/password
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           resources:
@@ -66,7 +68,7 @@ spec:
               cpu: 250m
               memory: 512Mi
             limits:
-              memory: 1Gi
+              memory: 1536Mi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -113,16 +115,21 @@ spec:
             - name: init
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
+            - name: credentials
+              mountPath: /etc/postgres-credentials
+              readOnly: true
       volumes:
         - name: run
           emptyDir: {}
         - name: tmp
           emptyDir: {}
-        # Executable, so the entrypoint runs the script rather than sourcing it.
         - name: init
           configMap:
             name: postgres-init
-            defaultMode: 0555
+        - name: credentials
+          secret:
+            secretName: postgres-credentials
+            defaultMode: 0440
   volumeClaimTemplates:
     - metadata:
         name: data

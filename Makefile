@@ -125,8 +125,9 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
 
-data: ## Postgres and Redis in data. Waits for the Key Vault passwords and both pods
+data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the app role
 	$(KUBECTL) apply -k k8s/data
 	$(KUBECTL) -n data wait externalsecret --all --for=condition=Ready --timeout=2m
 	$(KUBECTL) -n data rollout status statefulset/postgres --timeout=10m
 	$(KUBECTL) -n data rollout status statefulset/redis --timeout=10m
+	$(KUBECTL) -n data exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U postgres -d orders < k8s/data/postgres/app-role.sql

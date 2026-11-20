@@ -13,7 +13,7 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 | `postgres/service.yaml` | `Service` (headless) | `postgres` | `postgres.data.svc.cluster.local:5432` |
 | `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password` |
 | `postgres/pdb.yaml` | `PodDisruptionBudget` | `postgres` | `maxUnavailable: 0` |
-| `postgres/init-app-role.sh` | `ConfigMap` `postgres-init` | | Creates the `app` role on first start |
+| `postgres/app-role.sql` | `ConfigMap` `postgres-init` | | Creates or updates the `app` role and its password. Run on first start and by every `make data` |
 | `redis/statefulset.yaml` | `StatefulSet` | `redis` | One replica, volumeClaimTemplate `data`, so the PVC is `data-redis-0` |
 | `redis/service.yaml` | `Service` (headless) | `redis` | `redis.data.svc.cluster.local:6379` |
 | `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password` |
@@ -40,9 +40,24 @@ The services and the migration Job run in `apps` and can't read Secrets in `data
 Postgres users:
 
 - `postgres`, the superuser. Use it from inside the pod, where local connections need no password: `kubectl -n data exec postgres-0 -- psql -U postgres -d orders`.
-- `app`, the role all seven services use. It owns `orders`, so it can create tables, which the migration Job needs. `init-app-role.sh` creates it on the first start against an empty disk.
+- `app`, the role all seven services use. It owns `orders`, so it can create tables, which the migration Job needs.
 
 Both use the `postgres-password` value, since the vault holds one Postgres secret ([keyvault](../../infra/modules/keyvault/README.md)). Remote connections need the password (`scram-sha-256`). Only connections from inside the pod are trusted.
+
+`app-role.sql` sets both up, and is safe to run any number of times. It creates `app` if it is missing, sets both passwords from the mounted Secret file, and gives `app` the `orders` database. Two callers run it:
+
+- The image, from `/docker-entrypoint-initdb.d`, on the first start against an empty disk.
+- `make data`, through `kubectl exec`, after every rollout. This repairs a first start that failed partway: the image never runs init scripts again once `PGDATA` holds data, so without this the pod could be Ready with no `app` role. It also applies a rotated password, as below.
+
+psql reads the password from `/etc/postgres-credentials/password` inside the pod, so it never appears on a command line.
+
+## Rotating a password
+
+The rotation itself is in [keyvault](../../infra/modules/keyvault/README.md#rotate-a-secret): bump the secret's number in persistent and apply. That is a hard cut. Then:
+
+- Next morning: nothing to do. The new cluster starts from empty disks and reads the current values.
+- Mid-day, Postgres: wait for ESO to copy the new value into `postgres-credentials`, which takes up to its one-hour `refreshInterval`. To skip the wait, annotate the ExternalSecret, for example `kubectl -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite`. The kubelet updates the mounted file within about a minute. Then run `make data`, whose last step sets the new password on `app` and `postgres` with no restart. Then restart the services once their own ExternalSecrets in `apps` hold the new `DATABASE_URL`. Between the role change and the restart, new connections from the services fail, while open pooled connections carry on.
+- Mid-day, Redis: `requirepass` is read once at start. After ESO refreshes `redis-credentials`, run `kubectl -n data delete pod redis-0`. The pod comes back with the new password and its keys, from the AOF. Then restart api-gateway once its `REDIS_URL` refreshes. Until then its `INCR`s fail, and the gateway ignores the error, so rate limiting is off.
 
 ## Pod Security
 
@@ -53,7 +68,7 @@ Both use the `postgres-password` value, since the vault holds one Postgres secre
 - Have a read-only root filesystem. Postgres writes only to its disk and to `emptyDir` volumes at `/var/run/postgresql` and `/tmp`. Redis writes only to `/data`.
 - Mount no ServiceAccount token and set `enableServiceLinks: false`, so Kubernetes doesn't inject `POSTGRES_PORT` or `REDIS_PORT` variables that the images could misread.
 
-Postgres's disk is mounted at `/var/lib/postgresql/data` and `PGDATA` is `/var/lib/postgresql/data/pgdata`, because the disk root holds `lost+found` and `initdb` needs an empty directory. The Redis password reaches `redis-server` on stdin and the Postgres password goes through the environment, so neither shows in a process list.
+Postgres's disk is mounted at `/var/lib/postgresql/data` and `PGDATA` is `/var/lib/postgresql/data/pgdata`, because the disk root holds `lost+found` and `initdb` needs an empty directory. The Redis password reaches `redis-server` on stdin. Postgres reads its password from the Secret mounted as a file (`POSTGRES_PASSWORD_FILE`), not an environment variable, so a rotated value reaches the pod without a restart. Neither password shows in a process list.
 
 ## Images
 
@@ -81,12 +96,42 @@ Both use the multi-arch index digest, so the tag can't move. To upgrade, change 
 
 | Container | CPU request | Memory request | Memory limit |
 | --- | --- | --- | --- |
-| Postgres | 250m | 512Mi | 1Gi |
+| Postgres | 250m | 512Mi | 1536Mi |
 | Redis | 50m | 64Mi | 256Mi |
-| Restore drill's second Postgres, if it copies these | 250m | 512Mi | 1Gi |
-| **Total with the drill** | **550m of 750m** | **1,088Mi of 2Gi** | **2,304Mi of 6Gi** |
+| Restore drill's second Postgres, if it copies these | 250m | 512Mi | 1536Mi |
+| **Total with the drill** | **550m of 750m** | **1,088Mi of 2Gi** | **3,328Mi of 6Gi** |
 
-PVCs: three of four with the drill. Storage: 20 + 10 + 20 = 50Gi of 64Gi. These are inside the [data quota](../namespaces/README.md#sizes). There is no CPU limit, as the namespace README explains. Postgres's default `shared_buffers` (128MB) fits the 1Gi limit.
+PVCs: three of four with the drill. Storage: 20 + 10 + 20 = 50Gi of 64Gi. These are inside the [data quota](../namespaces/README.md#sizes) and under the LimitRange's 2Gi per container. There is no CPU limit, as the namespace README explains. The Postgres limit is sized from its connections, below.
+
+## Postgres connections
+
+Postgres runs with `max_connections=300`, passed as a server flag in the StatefulSet's `args`. The default, 100, is below what the services' pools can open at one replica each.
+
+Each service caps its pool with `SetMaxOpenConns`, hard-coded in `app/services/*/main.go`. The replica counts come from [Autoscaling](../../docs/architecture-decisions.md#autoscaling):
+
+| Service | Pool cap | HPA min | HPA max | At min | At max |
+| --- | --- | --- | --- | --- | --- |
+| order-service | 25 | 2 | 3 | 50 | 75 |
+| inventory-service | 25 | 2 | 3 | 50 | 75 |
+| payment-service | 25 | 2 | 3 | 50 | 75 |
+| shipping-service | 15 | 2 | 3 | 30 | 45 |
+| notification-service | 10 | 1 | 2 | 10 | 20 |
+| dashboard-api | 10 | 1 | 2 | 10 | 20 |
+| scheduler | 5 | 1 | 1 | 5 | 5 |
+| **Total** | **115** | | | **205** | **315** |
+
+300 covers the HPA minimums (205), one rolling-update surge pod (25), the migration Job and a few `psql` sessions, with Postgres's 3 reserved superuser slots on top. It doesn't cover every service at its HPA maximum (315). P6 must close that gap. Either lower the maximums for order, inventory and payment to 2 (the total at maximum becomes 240, or 265 with a surge pod), or make the pool size configurable and smaller. The pools open connections only under load, so 315 needs every service saturated at once. Past 300, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+
+Memory: an idle backend costs about 1.6 MiB. In a local run of this image, 290 open connections took the container from 29 MiB to 502 MiB. Under load, add `shared_buffers` (128 MB) and `work_mem` (4 MB per sort or hash, per query). The limit is 1536Mi so a burst of active queries at a high connection count doesn't hit the OOM killer. The memory request stays at 512Mi, the idle working set.
+
+## Redis memory
+
+Redis runs with `maxmemory 160mb`, `maxmemory-policy allkeys-lru` and `save ""`:
+
+- Every key is an api-gateway rate-limit counter, `rate:<ip>`, made by `INCR` and given a one-minute `EXPIRE` (`handleProxy` in `app/services/api-gateway/main.go`). Evicting one only resets one client's window, so eviction is safe.
+- `allkeys-lru`, not a `volatile-*` policy, because `INCR` and `EXPIRE` are two separate calls. A counter whose `EXPIRE` failed has no TTL, and a `volatile-*` policy can never evict it. `noeviction` would turn a full Redis into failed `INCR`s, which the gateway ignores, so rate limiting would silently stop.
+- `save ""` turns off RDB snapshots. The AOF already covers persistence, so the only fork left is the AOF rewrite, not two.
+- 160 MB leaves about 96 MiB of the 256Mi limit for that fork's copy-on-write pages and Redis's own overhead.
 
 ## Scheduling: off spot, and safe to move
 
@@ -102,12 +147,24 @@ Neither pod tolerates the spot taint, so the taint already keeps them off spot. 
 
 ### Disruption
 
-Each component has a PodDisruptionBudget with `maxUnavailable: 0`. It refuses every eviction: `kubectl drain`, NAP consolidation and node expiry. NAP leaves the node alone, even when it is underused. Two things still go through:
+Each component has a PodDisruptionBudget with `maxUnavailable: 0`. It refuses every eviction, including `kubectl drain`, NAP consolidation and node expiry. Two things still go through:
 
 - `kubectl delete pod`, which isn't an eviction. The acceptance tests use it.
 - Evicting a pod that isn't Ready (`unhealthyPodEvictionPolicy: AlwaysAllow`), so a broken Postgres can't block a drain forever.
 
-To drain a node on purpose, delete the pod, then drain the node. The cost is that NAP can't repack the node Postgres or Redis sits on. With one or two `general` nodes that loss is small, and cheaper than an unplanned restart of the only database.
+The budget blocks every planned move of these pods, not just consolidation:
+
+- NAP drift: after a NodePool or AKSNodeClass change, NAP replaces drifted nodes by draining them, and that drain waits on the budget.
+- AKS upgrades: a Kubernetes or node image upgrade drains each node, and the drain stalls on the budget until it times out.
+- NAP repacking: NAP can't repack the node Postgres or Redis sits on.
+
+The cluster lives for one day, so upgrades and drift rarely meet it, and an unplanned restart of the only database costs more. When one of them is stuck on a `data` pod, move the pod by hand:
+
+```bash
+kubectl -n data delete pod postgres-0   # or redis-0
+```
+
+The node is already cordoned, so the StatefulSet recreates the pod on another node and the drain completes. For a planned drain, delete the pod first and then drain the node.
 
 ### Priority
 
@@ -140,7 +197,7 @@ Decision: accept it. The sandbox starts each morning with an empty database.
 - The brief's durability tests run within a day on one cluster: pod restart, reschedule, zone move, snapshot and restore.
 - The [Postgres ADR](../../docs/architecture-decisions.md#postgres) already treats the data as disposable. The migration Job (P5-05, #59) creates the schema on each deploy.
 - The first start of the day re-reads `postgres-password` from Key Vault, so an overnight rotation needs no `ALTER ROLE`.
-- Keeping the data needs a managed disk in the persistent root, a role for the cluster identity on it, and a static PV bound to `data-postgres-0` through a `claimRef`. The disk would cost money while the cluster is down. The init script and the vault password would also disagree after any rotation.
+- Keeping the data needs a managed disk in the persistent root, a role for the cluster identity on it, and a static PV bound to `data-postgres-0` through a `claimRef`. The disk would cost money while the cluster is down.
 
 Postgres is the only state that must survive a pod, node or zone failure. Nothing here needs to outlive the cluster. To keep data, for example a long-running demo dataset, use a static PV:
 
@@ -163,7 +220,7 @@ From the repo root:
 make data
 ```
 
-It applies `k8s/data`, waits up to 2 minutes for both ExternalSecrets to sync, then waits up to 10 minutes for each StatefulSet. A first start takes a few minutes: NAP may create a node, the disk must be created and attached, and Postgres runs `initdb`.
+It applies `k8s/data`, waits up to 2 minutes for both ExternalSecrets to sync, then waits up to 10 minutes for each StatefulSet. Last, it runs `app-role.sql` in `postgres-0`. A first start takes a few minutes: NAP may create a node, the disk must be created and attached, and Postgres runs `initdb`.
 
 ## Acceptance test
 
@@ -192,10 +249,11 @@ The `app` role logs in over the network with the vault password. This is a passw
 
 ```bash
 kubectl -n data exec postgres-0 -- sh -c \
-  'PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgres.data.svc.cluster.local -U app -d orders -Atc "SELECT current_user"'
+  'PGPASSWORD="$(cat /etc/postgres-credentials/password)" psql -h postgres.data.svc.cluster.local -U app -d orders -Atc "SELECT current_user"'
+kubectl -n data exec postgres-0 -- psql -U postgres -Atc "SHOW max_connections"
 ```
 
-Expect `app`.
+Expect `app`, then `300`.
 
 ### P5-02 (#56): Redis keys survive a pod delete and the AOF is on the volume
 
@@ -205,11 +263,12 @@ kubectl -n data delete pod redis-0
 wait_ready redis-0
 kubectl -n data exec redis-0 -- redis-cli GET p5-test
 kubectl -n data exec redis-0 -- redis-cli CONFIG GET appendonly
-kubectl -n data exec redis-0 -- ls -l /data/appendonlydir
+kubectl -n data exec redis-0 -- redis-cli CONFIG GET maxmemory-policy
+kubectl -n data exec redis-0 -- ls -l /data /data/appendonlydir
 kubectl -n data exec redis-0 -- redis-cli DEL p5-test
 ```
 
-Expect `survives`, then `appendonly yes`, then `appendonly.aof.1.base.rdb`, `appendonly.aof.1.incr.aof` and `appendonly.aof.manifest`. With AOF on, Redis loads only the AOF at startup, never `dump.rdb`, so a returning key proves the AOF held it.
+Expect `survives`, then `appendonly yes` and `allkeys-lru`. `/data` holds only `appendonlydir`, with `appendonly.aof.1.base.rdb`, `appendonly.aof.1.incr.aof` and `appendonly.aof.manifest`. RDB is off, so there is no `dump.rdb`, and a returning key proves the AOF held it.
 
 ### P5-03 (#57): never on spot, eviction blocked, zone behaviour
 
