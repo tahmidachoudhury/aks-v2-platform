@@ -40,6 +40,7 @@ PERSISTENT_OUT := tofu -chdir=infra/persistent output
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
 	backup restore-drill
+.PHONY: migrate
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -69,6 +70,7 @@ up: ## Morning: platform, kubeconfig, then every component
 
 cluster: ## Install every in-cluster component, in order
 	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data backup
+	$(MAKE) migrate
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
 	tofu -chdir=infra/platform destroy
@@ -140,3 +142,34 @@ backup: ## Hourly Postgres snapshot CronJob in data, keeping six. Needs make dat
 
 restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up
 	CONTEXT=$(CTX) k8s/backup/restore-drill.sh
+
+# Postgres starts empty every morning, so cluster runs this last, after data,
+# to rebuild the schema. It needs only the public migrate image, no app image.
+# P6 applies the Deployments after it, so a failed migration stops make
+# before any rollout. ArgoCD runs the same Job as a PreSync hook from P7.
+# See k8s/migrations/README.md.
+# The old Job goes first: a finished Job of the same name would otherwise
+# leave apply unchanged and report success without migrating, for example
+# after the database was reset.
+migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
+	set -euo pipefail; \
+	$(KUBECTL) -n data rollout status statefulset/postgres --timeout=1m >/dev/null \
+	  || { echo "Postgres is not ready in data. Run make data first." >&2; exit 1; }; \
+	$(KUBECTL) -n apps delete job db-migrate --ignore-not-found --cascade=foreground --wait; \
+	$(KUBECTL) apply -k k8s/migrations; \
+	echo "Waiting for job/db-migrate"; \
+	for i in $$(seq 1 70); do \
+	  STATE=$$($(KUBECTL) -n apps get job db-migrate -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}') || STATE=; \
+	  case "$$STATE" in \
+	    *Complete*) \
+	      POD=$$($(KUBECTL) -n apps get pods -l job-name=db-migrate --field-selector=status.phase=Succeeded -o name) || POD=; \
+	      [[ -z "$$POD" ]] || $(KUBECTL) -n apps logs "$$POD" --tail=20 || true; \
+	      exit 0 ;; \
+	    *Failed*) \
+	      $(KUBECTL) -n apps logs job/db-migrate --tail=20 >&2 || true; \
+	      echo "job/db-migrate failed. Do not roll out the apps: see k8s/migrations/README.md." >&2; \
+	      exit 1 ;; \
+	  esac; \
+	  sleep 5; \
+	done; \
+	echo "job/db-migrate still running after 350s." >&2; exit 1

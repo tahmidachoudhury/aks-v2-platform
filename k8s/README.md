@@ -17,6 +17,7 @@ ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root 
 3. [`storage`](storage/README.md) (`make storage`).
 4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), then [`external-dns`](external-dns/README.md), each with `make <folder>`.
 5. [`data`](data/README.md) (`make data`): Postgres and Redis. It needs the ClusterSecretStore from `external-secrets` and the `premium-zrs` class from `storage`. It waits until both pods are Ready. Apps that use them go after it.
-6. [`backup`](backup/README.md) (`make backup`), last, after `make data` brings up Postgres: the hourly snapshot CronJob in `data`.
+6. [`backup`](backup/README.md) (`make backup`), after `make data` brings up Postgres: the hourly snapshot CronJob in `data`.
+7. [`migrations`](migrations/README.md) (`make migrate`), last: the Job that builds the schema in the empty database. It fails `make` if a migration fails, so P6's app rollout never starts on a broken schema.
 
 Every step is safe to run again. The [Makefile](../Makefile) holds the commands and pins the chart versions. Postgres and Redis start empty each morning, since `make down` deletes their disks with the cluster (see [data](data/README.md#the-nightly-destroy)).
