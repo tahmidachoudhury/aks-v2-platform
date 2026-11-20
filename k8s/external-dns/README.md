@@ -1,38 +1,10 @@
 # external-dns
 
-**TL;DR:** ExternalDNS 0.23 from the `external-dns` chart pinned at 1.23.0. It watches Ingresses and Services and writes A records into the Azure DNS zone `azure.order-fulfilment.tahmidchoudhury.uk`. It signs in as `id-external-dns` through workload identity, with no secret. A TXT registry marks the records it owns, and it changes nothing else. The client ID and subscription ID are not in Git: the install command reads them from OpenTofu and `$SUB`, and stops if either is missing. Filled by P4-05 (#52).
+**TL;DR:** ExternalDNS 0.23 from the `external-dns` chart pinned at 1.23.0. It watches Ingresses and Services and writes A records into the Azure DNS zone `azure.order-fulfilment.tahmidchoudhury.uk`. It signs in as `id-external-dns` through workload identity, with no secret. A TXT registry marks the records it owns, and it changes nothing else. The client ID and subscription ID are not in Git: `make external-dns` reads them from the persistent outputs and the platform tfvars, and stops if either is missing. Filled by P4-05 (#52).
 
 ## Install
 
-You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). Set `SUB` to the subscription ID, then run this from the repo root:
-
-```bash
-(
-set -euo pipefail
-: "${SUB:?Set SUB to the subscription ID first.}"
-[[ "$SUB" =~ ^[0-9a-f-]{36}$ ]] || { echo "SUB '$SUB' is not a GUID." >&2; exit 1; }
-
-# Values from persistent. None is committed.
-CLIENT_ID=$(tofu -chdir=infra/persistent output -json workload_identity_client_ids | jq -er '."external-dns"') \
-  || { echo "No external-dns client ID in the persistent outputs. Apply persistent first." >&2; exit 1; }
-ZONE=$(tofu -chdir=infra/persistent output -raw dns_zone_name)
-ZONE_RG=$(tofu -chdir=infra/persistent output -raw resource_group_name)
-[[ "$CLIENT_ID" =~ ^[0-9a-f-]{36}$ ]] || { echo "Client ID '$CLIENT_ID' is not a GUID." >&2; exit 1; }
-[[ -n "$ZONE" && -n "$ZONE_RG" ]] || { echo "No dns_zone_name or resource_group_name output." >&2; exit 1; }
-
-helm upgrade --install external-dns external-dns \
-  --kube-context aks-v2-platform \
-  --repo https://kubernetes-sigs.github.io/external-dns/ --version 1.23.0 \
-  --namespace platform -f k8s/external-dns/values.yaml \
-  --set-string serviceAccount.annotations."azure\.workload\.identity/client-id"="$CLIENT_ID" \
-  --set-string extraArgs.azure-subscription-id="$SUB" \
-  --set-string extraArgs.azure-resource-group="$ZONE_RG" \
-  --set-string "domainFilters[0]=$ZONE" \
-  --wait
-)
-```
-
-The block runs in a subshell with `set -euo pipefail`, the same pattern as the [External Secrets install](../external-secrets/README.md). A failed `tofu output`, a missing key or a value that isn't a GUID stops it before Helm runs, so the ServiceAccount is never annotated with `null`.
+You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). From the repo root, run `make external-dns`. The [Makefile](../../Makefile) pins the chart in `EXTERNAL_DNS_VERSION`. It reads the client ID, zone and zone resource group from the persistent outputs, and the subscription ID from `subscription_id` in `infra/platform/terraform.tfvars`, so none of them is committed. It runs under `set -euo pipefail`, the same pattern as the [External Secrets install](../external-secrets/README.md). A failed `tofu output`, a missing key or a value that isn't a GUID stops it before Helm runs, so the ServiceAccount is never annotated with `null`.
 
 For P7, the argocd root can read `id-external-dns` with a `data "azurerm_user_assigned_identity"` and pass the same four values as Helm parameters on the Application. See [Client IDs](../../infra/modules/workload-identity/README.md#client-ids).
 

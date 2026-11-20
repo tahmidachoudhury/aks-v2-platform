@@ -1,6 +1,6 @@
 # node-pools
 
-**TL;DR:** The Node Auto Provisioning (NAP) NodePools for user workloads: `general` for on-demand nodes, capped at 4 vCPUs, and `spot` for eviction-tolerant workloads, capped at 3 vCPUs. Both allow zones 1 to 3 and consolidate empty or underused nodes. Apply them by hand each morning after the platform apply (`kubectl apply -k k8s/node-pools`). Without them only critical add-ons can schedule, because the system pool is tainted. ArgoCD takes this over in P7.
+**TL;DR:** The Node Auto Provisioning (NAP) NodePools for user workloads: `general` for on-demand nodes, capped at 4 vCPUs, and `spot` for eviction-tolerant workloads, capped at 3 vCPUs. Both allow zones 1 to 3 and consolidate empty or underused nodes. `make node-pools` applies them each morning after the platform apply. Without them only critical add-ons can schedule, because the system pool is tainted. ArgoCD takes this over in P7.
 
 NAP is the AKS-managed Karpenter. OpenTofu turns it on with no default NodePools ([aks module](../../infra/modules/aks/README.md#node-auto-provisioning)), so these manifests are the only ones. Filled by P3-08 (#34).
 

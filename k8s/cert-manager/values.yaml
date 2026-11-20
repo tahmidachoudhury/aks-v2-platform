@@ -17,6 +17,32 @@ resources:
     memory: 256Mi
 
 webhook:
+  # AKS's admissions enforcer adds the two AKS expressions to every webhook's
+  # namespaceSelector, so kube-system and AKS-managed namespaces never call
+  # it. Declaring them here keeps the chart and AKS in agreement. Without
+  # them a second `helm upgrade` fails with a server-side apply conflict on
+  # .webhooks[].namespaceSelector, owned by "admissionsenforcer".
+  validatingWebhookConfiguration:
+    namespaceSelector:
+      matchExpressions:
+        - key: cert-manager.io/disable-validation
+          operator: NotIn
+          values: ["true"]
+        - key: control-plane
+          operator: NotIn
+          values: ["true"]
+        - key: kubernetes.azure.com/managedby
+          operator: NotIn
+          values: ["aks"]
+  mutatingWebhookConfiguration:
+    namespaceSelector:
+      matchExpressions:
+        - key: control-plane
+          operator: NotIn
+          values: ["true"]
+        - key: kubernetes.azure.com/managedby
+          operator: NotIn
+          values: ["aks"]
   resources:
     requests:
       cpu: 10m

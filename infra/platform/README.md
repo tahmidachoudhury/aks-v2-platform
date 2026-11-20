@@ -18,7 +18,7 @@
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
-After an apply, run `eval "$(tofu output -raw kubeconfig_command)"` to fetch an Entra ID kubeconfig. Then run `kubectl apply -k ../../k8s/node-pools` so user workloads have somewhere to run.
+`make up` from the repo root runs this apply, fetches an Entra ID kubeconfig with the `kubeconfig_command` output, then applies the NodePools and the other in-cluster components. See [Daily routine](../README.md#daily-routine).
 
 State lives in the `platform.tfstate` blob in the state account.
 
