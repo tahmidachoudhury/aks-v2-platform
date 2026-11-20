@@ -11,3 +11,6 @@ tfplan
 crash.log
 crash.*.log
 infra/backend.hcl
+
+# Kubernetes: per-deployment values written at install time
+k8s/external-secrets/store/vault.env
