@@ -44,6 +44,11 @@ AKS creates six classes on a new cluster, all on `disk.csi.azure.com`. In a regi
 
 The cluster is new every morning, so a manifest makes the change, not a one-off `kubectl annotate`. `storageclass-default.yaml` repeats AKS's spec for `default` with the flag set to `"false"`. The spec must match the live class, because StorageClass parameters can't change. If an AKS release changes them, the apply fails with `Forbidden: updates to parameters are forbidden`. Then copy the new values from `kubectl get sc default -o yaml`.
 
+Because this folder declares `default`, deleting the folder's resources deletes AKS's class too, and the addon manager brings it back as the default. So:
+
+- Never run `kubectl delete -k k8s/storage`, the cleanup pattern in [node-pools](../node-pools/README.md#acceptance-test). Delete test resources by name, as in the [acceptance test](#acceptance-test).
+- `storageclass-default.yaml` carries `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so from P7 neither an ArgoCD prune nor deleting the Application removes it.
+
 To check the label is still `EnsureExists` on a new cluster:
 
 ```bash
@@ -66,7 +71,7 @@ Snapshots go to the node resource group, `rg-aks-v2-platform-nodes`, and are del
 
 ## Morning apply
 
-After the platform apply and `kubectl apply -k k8s/node-pools`:
+After the platform apply, `kubectl apply -k k8s/node-pools` and `kubectl apply -k k8s/namespaces`:
 
 ```bash
 kubectl apply -k k8s/storage
@@ -148,7 +153,7 @@ kubectl get volumesnapshot storage-test
 
 `READYTOUSE` should say `true`. `SNAPSHOTCLASS` should say `csi-azuredisk-vsc`, since the snapshot named no class.
 
-Clean up. Deleting the PVC deletes the disk, and deleting the VolumeSnapshot deletes the Azure snapshot:
+Clean up the test resources by name. Deleting the PVC deletes the disk, and deleting the VolumeSnapshot deletes the Azure snapshot. Leave the classes in place, and don't use `kubectl delete -k k8s/storage`:
 
 ```bash
 kubectl delete volumesnapshot storage-test
