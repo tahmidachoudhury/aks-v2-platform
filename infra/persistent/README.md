@@ -8,6 +8,7 @@
 - The container registry (P3-10), through [`../modules/acr`](../modules/acr/README.md). Basic SKU, Entra ID access only.
 - The Key Vault and its four app secrets (P3-13), through [`../modules/keyvault`](../modules/keyvault/README.md). Secret values never reach state.
 - The public DNS zone `azure.order-fulfilment.tahmidchoudhury.uk` (P3-15), through [`../modules/dns`](../modules/dns/README.md). Its delegation from the parent zone is a manual step described there.
+- Traefik's public IP, `pip-aks-v2-ingress`, Standard and zone-redundant, in its own group `rg-aks-v2-ingress` (P4-03). Both have `prevent_destroy`. The A records in the zone point at it overnight too, so a released address could be taken by someone else and serve our names. Platform grants the cluster identity Network Contributor on the group each morning. See [Ingress public IP](../platform/README.md#ingress-public-ip).
 - The GitHub Actions identities `id-gh-infra`, `id-gh-infra-plan` and `id-gh-app` (P3-21), through [`../modules/github-oidc`](../modules/github-oidc/README.md). They sign in with OIDC and have no client secret. Their client IDs are in GitHub repository secrets, so they must not change. They sit in a second group, `rg-aks-v2-identity`, also with `prevent_destroy`. CI has no write role on that group, so it can't add federated credentials to its own identities.
 - The workload identities (P3-16, P3-18), through [`../modules/workload-identity`](../modules/workload-identity/README.md): `id-order-service`, `id-payment-service`, `id-shipping-service`, `id-worker`, `id-external-dns` and `id-external-secrets`, in `rg-aks-v2-persistent`. This root also gives External Secrets Key Vault Secrets User on the vault, and ExternalDNS DNS Zone Contributor on the zone and Reader on the group. Their federated credentials and Service Bus roles are in `platform`. The module README has the role matrix and says why they don't share the GitHub identities' group.
 
@@ -17,7 +18,7 @@ State lives in the `persistent.tfstate` blob in the state account.
 
 Put a resource here if recreating it every day would break something. The zone would get new name servers, the vault name stays reserved after a delete, and the registry would lose its images.
 
-Any managed identity whose client ID is referenced from Git belongs here too. This covers ExternalDNS, External Secrets and the per-service workload identities from P3-16 and P3-18, whose client IDs appear in manifests that ArgoCD applies. A recreated identity gets a new client ID, but Git still holds the old one. Their federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so those stay in `platform`.
+Any managed identity whose client ID goes on a ServiceAccount belongs here too. This covers ExternalDNS, External Secrets and the per-service workload identities from P3-16 and P3-18. A recreated identity gets a new client ID, and every install that set the old one breaks. The IDs are injected at install time, not committed: see [Client IDs](../modules/workload-identity/README.md#client-ids). Their federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so those stay in `platform`.
 
 ## Lifecycle
 

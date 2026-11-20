@@ -12,6 +12,7 @@
 - The Service Bus namespace and the `order-events` queue, through [`../modules/servicebus`](../modules/servicebus/README.md). Its firewall allows only the cluster's egress IP, so the namespace is created after the cluster.
 - The Log Analytics workspace `log-aks-v2-platform`, with a 0.5 GB daily cap and the AKS control plane diagnostic setting, through [`../modules/loganalytics`](../modules/loganalytics/README.md). No Container Insights: New Relic does that job.
 - Private endpoints for the Key Vault and the state account's blob service (P3-14), with their records in the zones above. See [Private endpoints](#private-endpoints).
+- Network Contributor for the cluster identity on `rg-aks-v2-ingress`, the persistent group that holds Traefik's static IP (P4-03). See [Ingress public IP](#ingress-public-ip).
 - A federated credential for each workload identity in persistent, trusting this cluster's OIDC issuer and one ServiceAccount, and the Service Bus Data Sender and Receiver roles on the queue (P3-16, P3-17, P3-18). The subjects and roles are in `local.workload_identities` and `local.servicebus_roles`. See [`../modules/workload-identity`](../modules/workload-identity/README.md).
 - Later: the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
@@ -99,6 +100,18 @@ az acr repository delete --subscription "$SUB" -n "$ACR" --repository acrpull-ch
 The role list shows one row, AcrPull, scoped to the registry. Both `imagePullSecrets` lines print empty. The events end with `Successfully pulled image` and `Started`. The system pool is tainted, so Node Auto Provisioning adds a node for the pod first, which takes a minute or two.
 
 `az aks check-acr -g rg-aks-v2-platform -n aks-v2-platform --acr "$ACR.azurecr.io"` runs a similar check from a pod of its own.
+
+## Ingress public IP
+
+Added in P4-03 (#50). Traefik's LoadBalancer Service takes a Standard, zone-redundant static IP, `pip-aks-v2-ingress`, that the persistent root holds in its own group, `rg-aks-v2-ingress`. The Service names both with the `azure-pip-name` and `azure-load-balancer-resource-group` annotations in [`k8s/traefik/values.yaml`](../../k8s/traefik/values.yaml), and the cloud provider puts the IP on a frontend of the cluster's load balancer. Persistent's output `ingress_ip_address` shows it. The names are fixed strings in persistent, in this root and in `values.yaml`, with no variables, so change all three together.
+
+**Why persistent.** ExternalDNS writes the A records into the public zone, and they stay there after the evening destroy, overnight and over weekends. If the IP went with the cluster, Azure would hand the released address to the next customer who asks for one. That customer would receive traffic for our names and could pass an HTTP-01 challenge for them, so Let's Encrypt would issue them a certificate for our hostnames. Keeping the IP means the records only ever point at an address we hold. It costs about $3.65 a month around the clock, against $0.88 for the 176-hour schedule. The address also stays the same, so morning DNS caches are never stale.
+
+It is a static IP rather than one AKS creates for the Service, because AKS deletes its own IP with the Service and the cluster. A named IP is also known from OpenTofu before Traefik is installed.
+
+**The role, in this root.** The cluster identity needs Network Contributor wherever the IP lives. The aks module only grants it on `snet-aks-nodes`, which doesn't cover an IP. The cloud provider reads the IP and also lists every public IP in its group, so a role on the IP alone isn't enough. A role on a group that holds anything else would reach that too, which is why the IP has a group to itself. The identity is new every morning, so the role is granted here, on `data.azurerm_resource_group.ingress`, and goes with the cluster. Network Contributor is on CI's ABAC list and the group is in its `infra_resource_group_ids`, but CI can't apply this root until the [known gap](../modules/github-oidc/README.md#known-gap-the-platform-resource-group) closes, so this grant is applied by hand for now.
+
+**Destroy.** The evening destroy deletes the cluster and its load balancer, which releases the IP from the frontend. Nothing deletes the IP itself, which has `prevent_destroy`. The cloud provider doesn't delete or retag an IP it didn't create, and persistent ignores tag changes on it in case one does.
 
 ## Private endpoints
 

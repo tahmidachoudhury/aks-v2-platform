@@ -1,0 +1,47 @@
+# ExternalDNS, chart external-dns 1.23.0 (ExternalDNS 0.23.0) from
+# https://kubernetes-sigs.github.io/external-dns/, installed into the
+# platform namespace. Install command and design: README.md.
+#
+# The install command in README.md sets four values from the persistent
+# outputs and $SUB, so none is written here. The client ID and subscription
+# stay out of this public repo. The zone and its group are variables in
+# persistent, so reading them keeps one source:
+#   serviceAccount.annotations."azure.workload.identity/client-id"
+#   extraArgs.azure-subscription-id
+#   extraArgs.azure-resource-group   (the zone's group)
+#   domainFilters[0]                 (the zone)
+
+provider:
+  name: azure
+
+# Only the delegated zone, and only records this instance owns. sync deletes
+# a record when its Ingress goes. The TXT registry stops it touching records
+# it didn't create.
+policy: sync
+registry: txt
+txtOwnerId: aks-v2-platform
+
+# Workload identity: the webhook injects the token and tenant for pods with
+# this label. The federated credential trusts
+# system:serviceaccount:platform:external-dns, the chart's default name.
+podLabels:
+  azure.workload.identity/use: "true"
+
+# The Azure provider reads its settings from /etc/kubernetes/azure.json and
+# fails without the file. Nothing in it is secret: the subscription and
+# resource group come from the flags above, and the client ID and tenant
+# from the workload identity webhook.
+secretConfiguration:
+  enabled: true
+  mountPath: /etc/kubernetes/
+  data:
+    azure.json: |
+      {"useWorkloadIdentityExtension": true}
+
+# The general NodePool is capped at 4 vCPUs, so requests stay small.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi

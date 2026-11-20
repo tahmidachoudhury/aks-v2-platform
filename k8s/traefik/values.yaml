@@ -1,0 +1,53 @@
+# Traefik, chart traefik 42.4.1 (Traefik v3.7.19) from
+# https://traefik.github.io/charts, installed into the platform namespace.
+# Install command and design: README.md.
+
+deployment:
+  replicas: 2
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Prefer two zones, but never hold a pod back for it: a second NAP node in
+# another zone costs more than the spread is worth here.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: traefik
+
+# The general NodePool is capped at 4 vCPUs, so requests stay small.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The dashboard is only on the traefik entrypoint (port 8080), which the
+# Service doesn't expose. Reach it with kubectl port-forward.
+ingressRoute:
+  dashboard:
+    enabled: true
+    entryPoints: ["traefik"]
+
+service:
+  annotations:
+    # The static IP from the persistent root (P4-03). Fixed names, the same
+    # as in infra/persistent/main.tf and infra/platform/main.tf.
+    service.beta.kubernetes.io/azure-pip-name: pip-aks-v2-ingress
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: rg-aks-v2-ingress
+    # With externalTrafficPolicy Local, the load balancer probes HTTP
+    # /healthz on the Service's healthCheckNodePort, which only answers 200
+    # on nodes running a ready Traefik pod. The path and protocol are fixed
+    # for Local, so only the timing is set: a node drops out after two
+    # failed probes 5 seconds apart.
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-interval: "5"
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-num-of-probe: "2"
+  spec:
+    # Keeps the client's own address, so Traefik and the api-gateway rate
+    # limiter see the real client, not a node (#128).
+    externalTrafficPolicy: Local

@@ -147,6 +147,23 @@ module "aks" {
   depends_on = [module.network]
 }
 
+# Traefik's public IP lives in persistent, in its own group, so the A records
+# never point at a released address (P4-03). The cluster identity is new
+# every morning, so its role on that group is granted here and goes with the
+# cluster. The cloud provider reads the IP and also lists every IP in the
+# group, so the role goes on the group, not the IP. The name matches
+# persistent and k8s/traefik/values.yaml. See README.md.
+data "azurerm_resource_group" "ingress" {
+  name = "rg-aks-v2-ingress"
+}
+
+resource "azurerm_role_assignment" "cluster_ingress_ip" {
+  scope                = data.azurerm_resource_group.ingress.id
+  role_definition_name = "Network Contributor"
+  principal_id         = module.aks.identity_principal_id
+  principal_type       = "ServicePrincipal"
+}
+
 # The kubelet pulls images as its own identity, so pods need no
 # imagePullSecret. AKS creates that identity with the cluster and deletes it
 # with the cluster, so the grant lives here and goes with it every evening.

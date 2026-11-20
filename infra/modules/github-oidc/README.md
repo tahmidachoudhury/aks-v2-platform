@@ -67,7 +67,7 @@ What this prevents:
 What it still allows:
 
 - CI can grant any listed role to any service principal in the tenant, itself included. For example, it can give itself Key Vault Secrets User and read the app secrets, or DNS Zone Contributor on the zone. The list holds data roles that real workloads need, so this is the price of letting CI wire them.
-- This only applies within `rg-aks-v2-persistent`, the one group in `infra_resource_group_ids`.
+- This only applies within the groups in `infra_resource_group_ids`: `rg-aks-v2-persistent`, and `rg-aks-v2-ingress`, which holds only Traefik's public IP (P4-03). CI needs Contributor there to refresh and change the IP on a persistent apply, and RBAC Administrator to grant the cluster identity Network Contributor there once it applies platform. Contributor also lets CI delete the IP. `prevent_destroy` stops an OpenTofu apply doing that, but not a direct API call.
 - The workload identities (`infra/modules/workload-identity`) sit in `rg-aks-v2-persistent`, so CI's Contributor role can add federated credentials to them. A reviewed apply could add one to `id-external-secrets` that trusts `pull_request`, and every pull request job could then read the app secrets, even though `id-gh-infra-plan` has no Key Vault role. That's no more than the first point already allows, but it's a second route. They sit there because CI has to write their credentials every morning once it applies platform.
 
 Add a role to `infra_assignable_roles` before a root assigns it, or the CI apply fails with a 403. Add a person to `operator_object_ids` before CI grants them anything.
@@ -78,7 +78,7 @@ The backend reads, writes and leases blobs as the caller, so `id-gh-infra` gets 
 
 ## Known gap: the platform resource group
 
-`id-gh-infra` has Contributor and RBAC Administrator on `rg-aks-v2-persistent` only. The card asked for `rg-aks-v2-platform` too, but the platform root creates that group every morning and deletes it every evening. A role assignment on it would be deleted with it, and would fail to create while the group doesn't exist.
+`id-gh-infra` has Contributor and RBAC Administrator on `rg-aks-v2-persistent` and `rg-aks-v2-ingress` only. Both are persistent groups. The card asked for `rg-aks-v2-platform` too, but the platform root creates that group every morning and deletes it every evening. A role assignment on it would be deleted with it, and would fail to create while the group doesn't exist.
 
 Until that changes, CI can't apply platform. It can plan it, with `-refresh=false` while a cluster exists. The fix is to move `rg-aks-v2-platform` into the persistent root, have platform read it with a `data` source like the Key Vault, then add it to `infra_resource_group_ids`. This changes the state of two roots, so it needs its own card.
 
