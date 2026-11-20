@@ -35,7 +35,7 @@ It takes about five minutes. The script, [`restore-drill.sh`](restore-drill.sh),
 3. Creates the VolumeSnapshot `postgres-restore` of `data-postgres-0` and waits for `readyToUse: true`.
 4. Inserts an `after-<time>` marker in `postgres-0`. The snapshot was cut before this, so the restore must not contain it.
 5. Creates the PVC `postgres-restore` from the snapshot, with the snapshot's `restoreSize` (20Gi) and the source PVC's class (`premium-zrs`).
-6. Starts the pod `postgres-restore` from the StatefulSet's own pod template, with the new PVC as its `data` volume. The image, env, securityContext and resources match `postgres-0`, so the drill can't drift from the StatefulSet. The pod has its own `app: postgres-restore` label, so the `postgres` Service never sends it traffic.
+6. Starts the pod `postgres-restore` from the StatefulSet's own pod template, with the new PVC as its `data` volume. The image, env, securityContext, resources, on-demand node affinity and `data-critical` priority class match `postgres-0`, so the drill can't drift from the StatefulSet. The pod's `app.kubernetes.io/name` label is `postgres-restore`, so neither the `postgres` Service nor its PodDisruptionBudget selects it.
 7. Waits for the pod and `pg_isready`, prints Postgres's recovery lines and lists the markers in the restored database.
 8. Passes if the `before` marker is there and the `after` marker isn't. Then cleans up on exit, pass or fail: deletes the pod, the PVC (and its disk), the VolumeSnapshot (and the Azure snapshot), and drops `restore_drill` from the live database.
 

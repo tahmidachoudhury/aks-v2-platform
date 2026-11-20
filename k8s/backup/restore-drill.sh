@@ -82,13 +82,14 @@ spec:
 EOF
 
 # The StatefulSet's pod template with the restored PVC as its data volume.
-# Same image, env, securityContext and resources as postgres-0. New labels,
-# so the postgres Service never sends traffic to it.
+# Same image, env, securityContext, resources, on-demand node affinity and
+# priority class as postgres-0. A new name label, so neither the postgres
+# Service nor its PodDisruptionBudget selects it.
 echo "==> Starting pod $DRILL from the postgres StatefulSet's template"
 k get statefulset postgres -o json | jq --arg name "$DRILL" '{
   apiVersion: "v1",
   kind: "Pod",
-  metadata: {name: $name, labels: {app: $name}},
+  metadata: {name: $name, labels: {"app.kubernetes.io/name": $name}},
   spec: (.spec.template.spec + {
     volumes: ([(.spec.template.spec.volumes // [])[] | select(.name != "data")]
       + [{name: "data", persistentVolumeClaim: {claimName: $name}}])
