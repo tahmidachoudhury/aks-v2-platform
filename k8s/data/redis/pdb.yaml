@@ -1,0 +1,12 @@
+# As Postgres: no voluntary eviction of the one replica, unless it is not Ready.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis
+  namespace: data
+spec:
+  maxUnavailable: 0
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
