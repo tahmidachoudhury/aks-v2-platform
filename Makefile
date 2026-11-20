@@ -39,6 +39,7 @@ PERSISTENT_OUT := tofu -chdir=infra/persistent output
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns
+.PHONY: migrate
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -68,6 +69,7 @@ up: ## Morning: platform, kubeconfig, then every component
 
 cluster: ## Install every in-cluster component, in order
 	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns
+	$(MAKE) migrate
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
 	tofu -chdir=infra/platform destroy
@@ -124,3 +126,25 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string extraArgs.azure-resource-group="$$ZONE_RG" \
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
+
+# Postgres starts empty every morning, so cluster runs this last, after data,
+# to rebuild the schema. It needs only the public migrate image, no app image.
+# P6 applies the Deployments after it, so a failed migration stops make
+# before any rollout. ArgoCD runs the same Job as a PreSync hook from P7.
+# See k8s/migrations/README.md.
+migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
+	set -euo pipefail; \
+	JOB=$$($(KUBECTL) apply -k k8s/migrations -o name | grep '^job'); \
+	echo "Waiting for $$JOB"; \
+	for i in $$(seq 1 70); do \
+	  STATE=$$($(KUBECTL) get -n apps "$$JOB" -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}'); \
+	  case "$$STATE" in \
+	    *Complete*) $(KUBECTL) logs -n apps "$$JOB" --tail=20; exit 0 ;; \
+	    *Failed*) \
+	      $(KUBECTL) logs -n apps "$$JOB" --tail=20 >&2 || true; \
+	      echo "$$JOB failed. Do not roll out the apps: see k8s/migrations/README.md." >&2; \
+	      exit 1 ;; \
+	  esac; \
+	  sleep 5; \
+	done; \
+	echo "$$JOB still running after 350s." >&2; exit 1

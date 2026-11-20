@@ -1,0 +1,86 @@
+# Applies every pending file in sql/ with golang-migrate, then exits.
+#
+# The name carries the newest migration's version. Bump it with each new
+# file in sql/. The same version always gives the same Job name, so applying
+# it again is a no-op and two operators applying at once get one Job. If the
+# bump is forgotten, the apply fails on the Job's immutable pod template, as
+# the ConfigMap name changes with the SQL. golang-migrate's Postgres advisory
+# lock serialises runs of different versions.
+#
+# make migrate applies this and waits for it (README.md). From P7 ArgoCD runs
+# it as a PreSync hook, so a failed Job fails the sync before any Deployment
+# changes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate-000001
+  namespace: apps
+  labels:
+    app.kubernetes.io/name: db-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # Two retries cover a Postgres restart or a lock timeout. A bad migration
+  # fails all three the same way and the Job ends Failed.
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  # Long enough to read the logs the next morning.
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: migrate/migrate:v4.20.1@sha256:76cc2074cb6642631f34a898ced71e6aeaa6b1a4d78c4daa743275a22e0c5be7
+          args:
+            - -path=/migrations
+            - -database=$(DATABASE_URL)
+            # Seconds to wait for another run's advisory lock before failing.
+            - -lock-timeout=60
+            - up
+          env:
+            # The one place the connection is set. app owns the orders
+            # database (k8s/data), so the tables it creates belong to the
+            # role the services connect as. They need that while they still
+            # run migrate() at startup (README.md). No password here: lib/pq
+            # reads PGPASSWORD, so it needs no URL escaping. lock_timeout
+            # makes a DDL statement give up after 10s rather than queue behind
+            # a long transaction and block the services' queries behind it.
+            - name: DATABASE_URL
+              value: postgres://app@postgres.data.svc.cluster.local:5432/orders?sslmode=disable&lock_timeout=10s
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-migrate
+                  key: PGPASSWORD
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrate
