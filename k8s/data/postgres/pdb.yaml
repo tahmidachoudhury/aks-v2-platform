@@ -1,0 +1,15 @@
+# Blocks every voluntary eviction of the one replica: a drain or a NAP
+# consolidation leaves this node alone. kubectl delete pod is not an eviction,
+# so it still works. A pod that is not Ready can be evicted, so a broken
+# Postgres never holds a node hostage.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres
+  namespace: data
+spec:
+  maxUnavailable: 0
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
