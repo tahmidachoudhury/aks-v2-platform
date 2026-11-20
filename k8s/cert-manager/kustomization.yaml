@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Only the ClusterIssuers. The chart itself is installed with Helm and
+# values.yaml: see README.md.
+resources:
+  - cluster-issuers.yaml

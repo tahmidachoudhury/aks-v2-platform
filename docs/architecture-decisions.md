@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys. Key Vault and state storage get private endpoints. The vault is firewalled to the operators' IPs, and state stays public behind Entra ID.
+**TL;DR:** All six P0 decisions are settled. We use Service Bus Standard, Kustomize plus Helm, in-cluster Postgres, HPA with KEDA, New Relic and External Secrets Operator. Infrastructure is written in OpenTofu, not Terraform. Cluster egress uses the load balancer's outbound rules, not a NAT Gateway. The container registry is ACR Basic, and disks use platform-managed keys. Key Vault and state storage get private endpoints. The vault is firewalled to the operators' IPs, and state stays public behind Entra ID. TLS certificates come from Let's Encrypt through cert-manager's HTTP-01 solver, so cert-manager needs no Azure identity.
 
 Prices are rough monthly figures in US dollars (USD) for the UK South region. They come from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices) and the vendor pricing pages. A month is 730 hours.
 
@@ -19,6 +19,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Container registry](#container-registry) | ACR Basic, Entra ID access only, no private endpoint | Accepted | [#36](https://github.com/tahmidachoudhury/aks-v2-platform/issues/36) |
 | [Disk encryption](#disk-encryption) | Platform-managed keys, no Disk Encryption Set, no encryption at host | Accepted | [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46) |
 | [Private endpoints](#private-endpoints) | Endpoints for Key Vault and state blob in platform. Vault firewalled to operator IPs, state public with Entra ID only | Accepted | [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40) |
+| [TLS certificates](#tls-certificates) | cert-manager with Let's Encrypt, HTTP-01 through Traefik, no Azure identity | Accepted | [#51](https://github.com/tahmidachoudhury/aks-v2-platform/issues/51) |
 
 ## Event bus
 
@@ -360,3 +361,30 @@ Ticket: [#46](https://github.com/tahmidachoudhury/aks-v2-platform/issues/46)
 Prices checked on 19 November 2026 from the [Azure Retail Prices API](https://prices.azure.com/api/retail/prices). Sources: [Key Vault network security](https://learn.microsoft.com/en-us/azure/key-vault/general/network-security), [storage account network rules](https://learn.microsoft.com/en-us/azure/storage/common/storage-network-security), [private endpoint DNS](https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns).
 
 Ticket: [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40)
+
+## TLS certificates
+
+**Status:** Accepted
+
+**Context:** The brief asks for cert-manager with Let's Encrypt, and for the dashboard to be reachable over HTTPS at a real DNS name. Let's Encrypt proves control of a name with one of two challenges. HTTP-01 fetches a token from the name over port 80. DNS-01 reads a TXT record that cert-manager writes into the zone. Traefik is the ingress controller, ExternalDNS writes A records into the Azure DNS zone, and the cluster is rebuilt every weekday, so every certificate is issued fresh each morning.
+
+**Decision:** HTTP-01 through Traefik, with a staging and a production ClusterIssuer. cert-manager starts a solver pod and a temporary Ingress for each challenge, and Let's Encrypt reaches it through Traefik's public IP, which ExternalDNS has already put in DNS. cert-manager needs no Azure access, so it gets no managed identity, no federated credential and no role on the zone.
+
+**Options compared**
+
+| Option | Azure setup | Covers | Depends on | Against |
+| --- | --- | --- | --- | --- |
+| HTTP-01 through Traefik (chosen) | None | Named hosts on the public load balancer | Port 80 open, the A record resolving, Traefik routing the challenge | No wildcards. No entrypoint-level HTTPS redirect, since that would catch the challenge |
+| DNS-01 through Azure DNS | An identity in persistent, a federated credential in platform, DNS Zone Contributor on the zone | Any name in the zone, wildcards included, reachable or not | Workload identity and the Azure DNS API | A second component with write access to the zone. More to build and nothing the brief needs |
+
+**Consequences / trade-offs**
+
+- One less identity with write access to the public zone. ExternalDNS stays the only workload that can change it.
+- A certificate can't be issued until ExternalDNS has written the A record and it resolves publicly. cert-manager's own self-check waits for that, so the first certificate each morning takes a minute or two longer.
+- No wildcard certificates. Each host on an Ingress gets its own order. The brief needs one host behind one Ingress.
+- Let's Encrypt production allows 5 new certificates for the same set of names every 7 days. The certificate Secret goes with the cluster every evening, so one host uses all five on the weekday schedule. DNS-01 doesn't change this: the limit counts certificates, not challenges. Day to day, Ingresses use `letsencrypt-staging`, and production is for demos and grading. Keeping the Secret overnight, for example in Key Vault through External Secrets, would allow production every day. The [cert-manager README](../k8s/cert-manager/README.md#rate-limits) has the detail.
+- Moving to DNS-01 later is a small change: add `cert-manager` to the workload identities in persistent with DNS Zone Contributor on the zone, a federated credential in platform, and an `azureDNS` solver on the issuers. See the [workload-identity README](../infra/modules/workload-identity/README.md#cert-manager).
+
+Checked on 20 November 2026. Sources: [Let's Encrypt challenge types](https://letsencrypt.org/docs/challenge-types/), [Let's Encrypt rate limits](https://letsencrypt.org/docs/rate-limits/), [cert-manager HTTP-01](https://cert-manager.io/docs/configuration/acme/http01/), [cert-manager Azure DNS](https://cert-manager.io/docs/configuration/acme/dns01/azuredns/).
+
+Ticket: [#51](https://github.com/tahmidachoudhury/aks-v2-platform/issues/51)

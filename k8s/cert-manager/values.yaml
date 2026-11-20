@@ -1,0 +1,33 @@
+# cert-manager, chart cert-manager v1.21.3 from https://charts.jetstack.io,
+# installed into the platform namespace. Install command and design:
+# README.md.
+
+# The chart installs and upgrades the CRDs. keep stops helm uninstall from
+# deleting them, and every Certificate with them.
+crds:
+  enabled: true
+  keep: true
+
+# The general NodePool is capped at 4 vCPUs, so requests stay small.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
