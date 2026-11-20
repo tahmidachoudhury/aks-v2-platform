@@ -44,7 +44,7 @@ If P4-07 or a chart install picks other names, change `local.workload_identities
 
 ### cert-manager
 
-No identity yet. P4-04 (#51) hasn't chosen between HTTP-01 through Traefik, which needs no Azure access, and DNS-01 through Azure DNS. If it picks DNS-01, add `cert-manager` to `names` in persistent, a `platform`-namespace binding in platform, and a DNS Zone Contributor assignment on the zone like ExternalDNS's.
+No identity. P4-04 (#51) chose HTTP-01 through Traefik, which needs no Azure access (see [TLS certificates](../../../docs/architecture-decisions.md#tls-certificates)). If a later card moves to DNS-01, add `cert-manager` to `names` in persistent, a `platform`-namespace binding in platform, and a DNS Zone Contributor assignment on the zone like ExternalDNS's.
 
 ## Role matrix
 
@@ -94,13 +94,19 @@ The Service Bus roles are in `rg-aks-v2-platform`, where CI has no RBAC Administ
 
 ## Client IDs
 
-A client ID isn't a credential. It only works with a token the cluster's issuer signs for the matching ServiceAccount. It is still an identifier, and this repo is public. The GitHub identities' client IDs are kept in repository secrets, not Git, so these follow the same rule for now: persistent outputs them, and nothing commits them.
+A client ID isn't a credential. It only works with a token the cluster's issuer signs for the matching ServiceAccount. It is still an identifier, and this repo is public. The GitHub identities' client IDs are kept in repository secrets, not Git, so these follow the same rule: persistent outputs them, and nothing commits them.
 
 ```bash
 tofu -chdir=infra/persistent output workload_identity_client_ids
 ```
 
-The ServiceAccount annotations need them (P6-05, #66, and the P4 component installs). Those cards decide how they get there, committed in the overlay or injected at sync. The [infra README](../../README.md#what-goes-in-persistent) assumes they will be committed.
+The ServiceAccount annotations need them. Decided in P4-05 (#52): they are injected at install time, never committed.
+
+- Until ArgoCD (P7), the morning `helm upgrade --install` reads the ID from this output and passes it with `--set-string`, as in the [ExternalDNS install](../../../k8s/external-dns/README.md#install).
+- From P7, the argocd root reads each identity with `data "azurerm_user_assigned_identity"` and sets the annotation as a Helm parameter on its Application. That root's state is private, like this output.
+- Our own services (P6-05, #66) need the same for their ServiceAccounts. A Kustomize overlay can't read OpenTofu, so the argocd root would pass the ID to that Application as a Kustomize patch or parameter.
+
+Why inject rather than commit: ExternalDNS also needs the subscription ID, which must stay out of a public repo, so an injection path is needed anyway. Once it exists, carrying the client ID through it costs nothing, and the rule matches the GitHub identities. Committing would also have been defensible, since a client ID grants nothing on its own.
 
 ## Proving it
 

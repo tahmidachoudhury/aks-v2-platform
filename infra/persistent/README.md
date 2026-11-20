@@ -17,7 +17,7 @@ State lives in the `persistent.tfstate` blob in the state account.
 
 Put a resource here if recreating it every day would break something. The zone would get new name servers, the vault name stays reserved after a delete, and the registry would lose its images.
 
-Any managed identity whose client ID is referenced from Git belongs here too. This covers ExternalDNS, External Secrets and the per-service workload identities from P3-16 and P3-18, whose client IDs appear in manifests that ArgoCD applies. A recreated identity gets a new client ID, but Git still holds the old one. Their federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so those stay in `platform`.
+Any managed identity whose client ID goes on a ServiceAccount belongs here too. This covers ExternalDNS, External Secrets and the per-service workload identities from P3-16 and P3-18. A recreated identity gets a new client ID, and every install that set the old one breaks. The IDs are injected at install time, not committed: see [Client IDs](../modules/workload-identity/README.md#client-ids). Their federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so those stay in `platform`.
 
 ## Lifecycle
 

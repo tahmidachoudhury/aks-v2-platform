@@ -41,6 +41,8 @@ kubectl apply -k k8s/node-pools   # until ArgoCD owns them (P7)
 tofu -chdir=infra/argocd apply
 ```
 
+Then install the cluster components by hand, until ArgoCD owns them (P7), in the order [`k8s/README.md`](../k8s/README.md) gives. Install commands are in [traefik](../k8s/traefik/README.md#install), [cert-manager](../k8s/cert-manager/README.md#install) and [external-dns](../k8s/external-dns/README.md#install).
+
 Evening:
 
 ```bash
@@ -54,7 +56,7 @@ Destroy argocd first, so its Helm release is removed while the cluster still exi
 
 A resource goes in `persistent` when recreating it every day would break something. A DNS zone would get new name servers. A Key Vault name stays reserved after a delete. A registry would lose its images.
 
-Any managed identity whose client ID is referenced from Git also belongs in `persistent`: ExternalDNS, External Secrets, and the per-service workload identities from P3-16 and P3-18 all appear in manifests that ArgoCD applies. A recreated identity gets a new client ID, and Git keeps the old one. Federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so they stay in `platform`.
+Any managed identity whose client ID goes on a ServiceAccount also belongs in `persistent`: ExternalDNS, External Secrets, and the per-service workload identities from P3-16 and P3-18. A recreated identity gets a new client ID, and every install that set the old one breaks. The IDs are injected at install time, not committed: see [Client IDs](modules/workload-identity/README.md#client-ids). Federated credentials depend on the cluster's OIDC issuer, which changes with each new cluster, so they stay in `platform`.
 
 ## How platform reads persistent
 
