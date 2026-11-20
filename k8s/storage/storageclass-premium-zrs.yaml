@@ -1,0 +1,17 @@
+# The cluster's default class: zone-redundant Premium SSD for Postgres and
+# Redis. A ZRS disk attaches to a node in any zone, so a rescheduled pod is
+# not pinned to its disk's zone. Disks are encrypted at rest with
+# platform-managed keys, so there is no diskEncryptionSetID (ADR "Disk
+# encryption").
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: premium-zrs
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_ZRS
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

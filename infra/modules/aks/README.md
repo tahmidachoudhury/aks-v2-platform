@@ -132,7 +132,7 @@ Added in P3-09 (#35). The `storage_profile` block sets each CSI driver on or off
 | Azure Blob CSI driver | `blob_driver_enabled = false` | Nothing here mounts Blob storage. Off by default |
 | Key Vault secrets provider | Not enabled | P0-10 chose External Secrets Operator, not the Secrets Store CSI Driver. See [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) |
 
-The StorageClass and VolumeSnapshotClass are Kubernetes manifests for a later card.
+The default StorageClass and the VolumeSnapshotClass are in [`k8s/storage`](../../../k8s/storage/README.md) (P4-01, P4-02).
 
 To check the add-ons on a live cluster:
 
