@@ -1,6 +1,6 @@
 # infra
 
-**TL;DR:** OpenTofu for the Azure side of the platform, split into four roots by lifecycle. Apply them in order: bootstrap, persistent, platform, argocd. Destroy platform and argocd every evening, and never destroy the other two.
+**TL;DR:** OpenTofu for the Azure side of the platform, split into four roots by lifecycle. Apply them in order: bootstrap, persistent, platform, argocd. Destroy platform and argocd every evening, and never destroy the other two. `make up` and `make down` run the daily part. Until P7 gives argocd resources, they cover platform only.
 
 ## Roots
 
@@ -46,7 +46,7 @@ make down  # platform destroy
 
 `make help` lists every target. `tofu apply` and `tofu destroy` stay interactive, so each shows its plan and waits for `yes`. Run `make init` once per clone, and again after a module is added. The [Makefile](../Makefile) runs the roots in the order above and the in-cluster components in the order [`k8s/README.md`](../k8s/README.md) gives. When `argocd` gets a provider in P7, add it to `up` after platform and to `down` before it.
 
-Once that root exists, argocd is destroyed first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
+Once the argocd root has resources (P7-01), it is destroyed first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
 
 ## What goes in persistent
 

@@ -108,7 +108,7 @@ node_provisioning_profile {
 ```
 
 - `mode = "Auto"` turns NAP on. It is the azurerm 4.81 argument for the AKS `nodeProvisioningProfile.mode` field.
-- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule, ArgoCD included. Each morning, apply them right after platform with `kubectl apply -k k8s/node-pools`. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
+- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule, ArgoCD included. Each morning, `make up` applies them right after platform. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
 
 NAP needs the following, and this cluster meets each one:
 

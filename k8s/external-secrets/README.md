@@ -1,6 +1,6 @@
 # external-secrets
 
-**TL;DR:** External Secrets Operator (ESO) 2.15.0 is installed with Helm into `platform`. One ClusterSecretStore, `azure-key-vault`, reads the Key Vault as `id-external-secrets` through workload identity. No ID or vault name is committed. The client ID goes in with `--set-string` at install time, the AKS webhook supplies the tenant, and a gitignored `vault.env` holds the vault URL. Install it by hand each morning after the node pools and namespaces. ArgoCD takes it over in P7. Filled by P4-06 (#53).
+**TL;DR:** External Secrets Operator (ESO) 2.15.0 is installed with Helm into `platform`. One ClusterSecretStore, `azure-key-vault`, reads the Key Vault as `id-external-secrets` through workload identity. No ID or vault name is committed. The client ID goes in with `--set-string` at install time, the AKS webhook supplies the tenant, and a gitignored `vault.env` holds the vault URL. `make external-secrets` installs it each morning after the node pools and namespaces. ArgoCD takes it over in P7. Filled by P4-06 (#53).
 
 Why ESO and not the CSI driver: [Secrets delivery](../../docs/architecture-decisions.md#secrets-delivery). Why Helm for it: [Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling).
 
@@ -65,8 +65,8 @@ This fits the `platform` quota from P4-07 (500m CPU and 2Gi of requests, 4Gi of 
 ArgoCD installs this from P7. Until then, `make up` or `make cluster` installs it each morning. Before you start:
 
 - The persistent and platform roots are applied. Platform creates the federated credential that trusts `system:serviceaccount:platform:external-secrets`.
-- `kubectl apply -k k8s/node-pools` has run, so ESO has a node to land on.
-- `kubectl apply -k k8s/namespaces` has run, so `platform`, `apps` and `data` exist (P4-07, #54).
+- `make node-pools` has run, so ESO has a node to land on.
+- `make namespaces` has run, so `platform`, `apps` and `data` exist (P4-07, #54).
 - `tofu`, `jq` and `helm` are on your PATH. The Makefile passes the cluster's context itself, so your current context doesn't matter.
 
 From the repo root, run `make external-secrets`. The [Makefile](../../Makefile) pins the chart in `ESO_VERSION`. It runs under `set -euo pipefail`, reads both values and checks them before writing anything. A failed `tofu output`, a missing key or an empty value stops it with a message, so it never writes an empty `vaultUrl` or annotates the ServiceAccount with `null`. Then it writes `vault.env`, installs the chart and applies the store. Check the store with:

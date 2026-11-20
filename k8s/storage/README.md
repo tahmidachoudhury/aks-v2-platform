@@ -1,6 +1,6 @@
 # storage
 
-**TL;DR:** `premium-zrs` is the default StorageClass: Azure Disk CSI, `Premium_ZRS`, `WaitForFirstConsumer`, volume expansion, platform-managed keys. AKS's `default` class is redeclared here with its default flag set to `"false"`. This sticks because AKS creates its classes with `EnsureExists`. `csi-azuredisk-vsc` is the VolumeSnapshotClass, with incremental snapshots. AKS ships none. Apply by hand each morning after the node pools (`kubectl apply -k k8s/storage`). ArgoCD takes this over in P7.
+**TL;DR:** `premium-zrs` is the default StorageClass: Azure Disk CSI, `Premium_ZRS`, `WaitForFirstConsumer`, volume expansion, platform-managed keys. AKS's `default` class is redeclared here with its default flag set to `"false"`. This sticks because AKS creates its classes with `EnsureExists`. `csi-azuredisk-vsc` is the VolumeSnapshotClass, with incremental snapshots. AKS ships none. `make storage` applies it each morning after the node pools. ArgoCD takes this over in P7.
 
 Filled by P4-01 (#48) and P4-02 (#49). The Azure Disk CSI driver and the snapshot controller are AKS add-ons, enabled in the [aks module](../../infra/modules/aks/README.md#add-ons) (P3-09).
 

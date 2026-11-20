@@ -1,6 +1,6 @@
 # namespaces
 
-**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD and KEDA, because most of these pods must not run on spot. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. Apply by hand each morning after the node pools and before any Helm install (`kubectl apply -k k8s/namespaces`). ArgoCD takes this over in P7.
+**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD and KEDA, because most of these pods must not run on spot. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. `make namespaces` applies them each morning after the node pools and before any Helm install. ArgoCD takes this over in P7.
 
 Filled by P4-07 (#54).
 
