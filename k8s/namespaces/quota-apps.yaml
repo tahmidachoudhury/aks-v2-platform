@@ -1,0 +1,35 @@
+# The nine services. Sized for every HPA and KEDA maximum (26 pods) plus a
+# rolling update's surge. Stateless, and only Traefik is exposed, so no PVCs
+# and no LoadBalancer Services.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: apps
+  namespace: apps
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+    pods: "40"
+    persistentvolumeclaims: "0"
+    services.loadbalancers: "0"
+---
+# Defaults for any container that sets no resources, so the quota never
+# rejects it for a missing request or memory limit. No CPU limit: a CPU
+# limit throttles a pod even when the node is idle.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: apps
+  namespace: apps
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        memory: 256Mi
+      max:
+        memory: 1Gi
