@@ -132,19 +132,28 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 # P6 applies the Deployments after it, so a failed migration stops make
 # before any rollout. ArgoCD runs the same Job as a PreSync hook from P7.
 # See k8s/migrations/README.md.
+# The old Job goes first: a finished Job of the same name would otherwise
+# leave apply unchanged and report success without migrating, for example
+# after the database was reset.
 migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 	set -euo pipefail; \
-	JOB=$$($(KUBECTL) apply -k k8s/migrations -o name | grep '^job'); \
-	echo "Waiting for $$JOB"; \
+	$(KUBECTL) -n data rollout status statefulset/postgres --timeout=1m >/dev/null \
+	  || { echo "Postgres is not ready in data. Run make data first." >&2; exit 1; }; \
+	$(KUBECTL) -n apps delete job db-migrate --ignore-not-found --cascade=foreground --wait; \
+	$(KUBECTL) apply -k k8s/migrations; \
+	echo "Waiting for job/db-migrate"; \
 	for i in $$(seq 1 70); do \
-	  STATE=$$($(KUBECTL) get -n apps "$$JOB" -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}'); \
+	  STATE=$$($(KUBECTL) -n apps get job db-migrate -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}') || STATE=; \
 	  case "$$STATE" in \
-	    *Complete*) $(KUBECTL) logs -n apps "$$JOB" --tail=20; exit 0 ;; \
+	    *Complete*) \
+	      POD=$$($(KUBECTL) -n apps get pods -l job-name=db-migrate --field-selector=status.phase=Succeeded -o name) || POD=; \
+	      [[ -z "$$POD" ]] || $(KUBECTL) -n apps logs "$$POD" --tail=20 || true; \
+	      exit 0 ;; \
 	    *Failed*) \
-	      $(KUBECTL) logs -n apps "$$JOB" --tail=20 >&2 || true; \
-	      echo "$$JOB failed. Do not roll out the apps: see k8s/migrations/README.md." >&2; \
+	      $(KUBECTL) -n apps logs job/db-migrate --tail=20 >&2 || true; \
+	      echo "job/db-migrate failed. Do not roll out the apps: see k8s/migrations/README.md." >&2; \
 	      exit 1 ;; \
 	  esac; \
 	  sleep 5; \
 	done; \
-	echo "$$JOB still running after 350s." >&2; exit 1
+	echo "job/db-migrate still running after 350s." >&2; exit 1

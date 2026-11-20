@@ -6,12 +6,16 @@ resources:
   - job.yaml
 
 # Every file in sql/ goes into one ConfigMap, mounted into the Job. List each
-# new migration here as well as adding the file: kustomize has no glob.
+# new migration here as well as adding the file: kustomize has no glob. The
+# name is fixed, with no hash suffix. The Job is recreated on every run, so it
+# always mounts the current SQL, and from P7 hashed names would pile up, as
+# ArgoCD never prunes hook resources.
 configMapGenerator:
   - name: db-migrate
     files:
       - sql/000001_baseline.up.sql
     options:
+      disableNameSuffixHash: true
       annotations:
         # P7: created in PreSync before the Job, like the ExternalSecret.
         argocd.argoproj.io/hook: PreSync

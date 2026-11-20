@@ -425,10 +425,10 @@ golang-migrate locks by default, ships a small image, and reads the same SQL a d
 **Locking and retries**
 
 - golang-migrate holds a Postgres advisory lock for the whole run, so two runs never apply at once. A second run waits up to 60 seconds, then finds nothing to do.
-- The Job is named after the newest migration, `db-migrate-000001`. Applying it again is a no-op, and two operators applying the same version get one Job.
+- `make migrate` deletes any earlier `db-migrate` Job before applying, so it always runs. A finished Job left from before a database reset would otherwise make the apply a no-op that reports success. golang-migrate is idempotent, so rerunning costs nothing.
 - Each file runs in one transaction. A failure leaves no partial change.
-- `lock_timeout=10s` on the connection. A DDL statement that can't get its table lock gives up rather than queue behind a long transaction, which would block every query queued behind it.
-- `backoffLimit: 2` retries a lock timeout or a Postgres restart. `activeDeadlineSeconds: 300` fails a Job that hangs.
+- Each file starts with `SET lock_timeout = '10s';`. A DDL statement that can't get its table lock gives up rather than queue behind a long transaction, which would block every query queued behind it. The setting is in the files, not the connection URL, because in the URL it also caps golang-migrate's wait for the advisory lock at 10 seconds.
+- `backoffLimit: 2` retries only failures before any file runs: a Postgres restart, or the advisory lock not freed in time. It can't recover a failure inside a file. golang-migrate marks the version dirty before running the file, so every retry stops at `Dirty database version N`, and that needs the manual recovery below. `activeDeadlineSeconds: 300` fails a Job that hangs.
 - The pod meets Pod Security `restricted`: user 65532, read-only root, no capabilities, no service account token. It requests 10m CPU and 32Mi, inside the `apps` headroom of about 210m left after the services' 40m budget.
 
 **Expand and contract: add a column to `orders`**
@@ -445,7 +445,7 @@ Every migration must work with the release that is running and with the one befo
 
 - **The application.** Roll back the image: an ArgoCD rollback or a revert of the tag. The schema stays expanded and the old code ignores the new column. Rolling back the code never needs a schema rollback.
 - **The schema.** Forward only. Undoing a change is a new migration that contracts it, once no release uses it. A down migration would run in the same window as the code rollback and could drop data that new code had already written.
-- **A failed migration.** Its transaction rolls back, so the schema is unchanged and the services were never rolled out. golang-migrate marks the version dirty. Fix the file, set the version back with one `UPDATE`, and run again. The steps are in [When a migration fails](../k8s/migrations/README.md#when-a-migration-fails).
+- **A failed migration.** Its transaction rolls back, so the schema is unchanged and the services were never rolled out. golang-migrate marks the version dirty. Fix the file, clear the dirty version and run again. For a later file that is one `UPDATE` back to the previous version. For a failed baseline it is a `DELETE` of the row, as version 0 isn't a migration and golang-migrate refuses it. The steps are in [When a migration fails](../k8s/migrations/README.md#when-a-migration-fails).
 - **Bad data from a migration that worked.** Restore the Postgres volume from a snapshot. That loses writes since the snapshot, so it is the last resort.
 
 **Consequences / trade-offs**
@@ -454,7 +454,9 @@ Every migration must work with the release that is running and with the one befo
 - The password reaches the Job as `PGPASSWORD`, not inside a URL, so it needs no escaping.
 - Until P7 nothing runs the Job by itself. `make cluster` runs it each morning, and P6's rollout comes after it.
 - In P7 the Job must sit in the same ArgoCD Application as the Deployments it protects. A PreSync hook only gates its own Application's sync.
-- Each migration takes three edits: the SQL file, its line in `kustomization.yaml` and the Job name. A forgotten Job name fails loudly, as the Job's pod template is immutable.
+- ArgoCD never prunes hook resources, so the ConfigMap has a fixed name, with no hash suffix. Hashed names would leave one ConfigMap behind per change. `BeforeHookCreation` recreates the Job, ConfigMap and ExternalSecret on every sync, so the Job always mounts the current SQL.
+- Each migration takes two edits: the SQL file, starting with the `SET lock_timeout` line, and its line in `kustomization.yaml`. A file left out of the kustomization never runs and nothing warns.
+- Run one `make migrate` at a time. A second run deletes the first one's Job, and a migration killed mid-file leaves its version dirty.
 - golang-migrate keeps no checksum, so editing an applied file is never detected. The README forbids it.
 - A long `CREATE INDEX` must be `CONCURRENTLY`, which can't run in a transaction, so it goes in a file of its own.
 

@@ -8,6 +8,12 @@
 -- file in this folder (see ../README.md), and the services' migrate()
 -- functions stay frozen until they are removed.
 
+-- Give up on a table lock after 10s rather than queue behind a long
+-- transaction and block the services' queries behind this one. Every file
+-- starts with this line. It is not in the connection URL, as there it would
+-- also cut golang-migrate's own wait for the advisory lock to 10s.
+SET lock_timeout = '10s';
+
 -- order-service
 CREATE TABLE IF NOT EXISTS orders (
 	id SERIAL PRIMARY KEY,
