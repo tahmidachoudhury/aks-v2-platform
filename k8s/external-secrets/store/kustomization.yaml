@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cluster-secret-store.yaml
+
+# vault.env is gitignored and written from the persistent output each
+# morning (see README.md), so the vault name stays out of Git. The local-config
+# annotation drops the ConfigMap from the output: it exists only to feed the
+# replacement below.
+configMapGenerator:
+  - name: vault
+    envs:
+      - vault.env
+    options:
+      disableNameSuffixHash: true
+      annotations:
+        config.kubernetes.io/local-config: "true"
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: vault
+      fieldPath: data.vaultUrl
+    targets:
+      - select:
+          kind: ClusterSecretStore
+          name: azure-key-vault
+        fieldPaths:
+          - spec.provider.azurekv.vaultUrl

@@ -1,0 +1,51 @@
+# Helm values for the external-secrets chart, version 2.15.0 from
+# oci://ghcr.io/external-secrets/charts/external-secrets. The install command
+# and the reasons are in README.md.
+#
+# The client ID annotation is not here. It is passed with --set-string at
+# install time from the persistent output, so no ID is committed. See
+# ../../infra/modules/workload-identity/README.md#client-ids.
+
+# Matches the federated credential's subject,
+# system:serviceaccount:platform:external-secrets.
+serviceAccount:
+  name: external-secrets
+
+# The workload identity webhook injects AZURE_CLIENT_ID, AZURE_TENANT_ID and
+# the token file into labelled pods only. Only the controller talks to Key
+# Vault, so only it gets the label.
+podLabels:
+  azure.workload.identity/use: "true"
+
+# Small, because the general NodePool is capped at 4 vCPUs. Memory limits
+# only: no CPU limit, so a burst of reconciles can use idle CPU instead of
+# being throttled.
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+# The validating webhook fails closed, so while no replica is up the API
+# server rejects every ExternalSecret and store write. NAP repacks nodes
+# after a minute, so run two and let the budget keep one up during a drain.
+webhook:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+certController:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
