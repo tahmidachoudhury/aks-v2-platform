@@ -4,15 +4,7 @@
 
 ## Install
 
-You need the NodePools, the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54) and Traefik. ExternalDNS can come after, but a certificate isn't issued until it has written the A record. The morning order is Traefik, cert-manager, then ExternalDNS. From the repo root:
-
-```bash
-helm upgrade --install cert-manager cert-manager \
-  --kube-context aks-v2-platform \
-  --repo https://charts.jetstack.io --version v1.21.3 \
-  --namespace platform -f k8s/cert-manager/values.yaml --wait
-kubectl --context aks-v2-platform apply -k k8s/cert-manager
-```
+You need the NodePools, the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54) and Traefik. ExternalDNS can come after, but a certificate isn't issued until it has written the A record. The morning order is Traefik, cert-manager, then ExternalDNS. From the repo root, run `make cert-manager`. The [Makefile](../../Makefile) installs the chart, pinned as `CERT_MANAGER_VERSION`, then applies the ClusterIssuers with `kubectl apply -k k8s/cert-manager`.
 
 The chart installs the CRDs (`crds.enabled`), so the ClusterIssuers apply straight after. `crds.keep` stops `helm uninstall` from deleting the CRDs, and every Certificate with them.
 

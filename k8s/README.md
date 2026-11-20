@@ -10,12 +10,11 @@ its workload identity's federated credential trusts `system:serviceaccount:apps:
 
 ## Morning apply
 
-ArgoCD syncs this folder from P7. Until then, apply these folders by hand each morning, after the
-persistent and platform OpenTofu applies, in this order:
+ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root applies these folders after the persistent and platform OpenTofu applies, in this order. `make up` runs the platform apply and the kubeconfig step first. Each step is also its own target:
 
-1. [`node-pools`](node-pools/README.md): `kubectl apply -k k8s/node-pools`. Nothing outside the system pool schedules without it.
-2. [`namespaces`](namespaces/README.md): `kubectl apply -k k8s/namespaces`. The Helm installs below go into `platform` and don't create it.
-3. [`storage`](storage/README.md): `kubectl apply -k k8s/storage`.
-4. The Helm installs into `platform`, each with the command in its README:
-   [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md),
-   [`cert-manager`](cert-manager/README.md), then [`external-dns`](external-dns/README.md).
+1. [`node-pools`](node-pools/README.md) (`make node-pools`). Nothing outside the system pool schedules without it.
+2. [`namespaces`](namespaces/README.md) (`make namespaces`). The Helm installs below go into `platform` and don't create it.
+3. [`storage`](storage/README.md) (`make storage`).
+4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), then [`external-dns`](external-dns/README.md), each with `make <folder>`.
+
+Every step is safe to run again. The [Makefile](../Makefile) holds the commands and pins the chart versions.

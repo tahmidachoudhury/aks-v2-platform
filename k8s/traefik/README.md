@@ -1,17 +1,10 @@
 # traefik
 
-**TL;DR:** Traefik v3.7, the cluster's only ingress controller, from the `traefik` chart pinned at 42.4.1. Two replicas in `platform`, behind the cluster's Standard Load Balancer on a static public IP kept in the persistent root. The Service keeps client addresses (`externalTrafficPolicy: Local`), and the dashboard is reachable only through `kubectl port-forward`. Install it by hand each morning with the command below until ArgoCD takes it over in P7. Filled by P4-03 (#50).
+**TL;DR:** Traefik v3.7, the cluster's only ingress controller, from the `traefik` chart pinned at 42.4.1. Two replicas in `platform`, behind the cluster's Standard Load Balancer on a static public IP kept in the persistent root. The Service keeps client addresses (`externalTrafficPolicy: Local`), and the dashboard is reachable only through `kubectl port-forward`. `make traefik` installs it each morning until ArgoCD takes it over in P7. Filled by P4-03 (#50).
 
 ## Install
 
-You need the NodePools from [`../node-pools`](../node-pools/README.md) and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). From the repo root:
-
-```bash
-helm upgrade --install traefik traefik \
-  --kube-context aks-v2-platform \
-  --repo https://traefik.github.io/charts --version 42.4.1 \
-  --namespace platform -f k8s/traefik/values.yaml --wait
-```
+You need the NodePools from [`../node-pools`](../node-pools/README.md) and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). From the repo root, run `make traefik`. The [Makefile](../../Makefile) holds the `helm upgrade --install` command and pins the chart version in `TRAEFIK_VERSION`.
 
 For P7, this maps to an Argo CD Helm source: `repoURL` is the chart repo, `chart` is `traefik`, `targetRevision` is the version, and `values.yaml` is the values file. The chart installs Traefik's CRDs from its `crds/` folder.
 

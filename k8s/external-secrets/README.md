@@ -62,46 +62,22 @@ This fits the `platform` quota from P4-07 (500m CPU and 2Gi of requests, 4Gi of 
 
 ## Install each morning
 
-ArgoCD installs this from P7. Until then, install it by hand each morning. Before you start:
+ArgoCD installs this from P7. Until then, `make up` or `make cluster` installs it each morning. Before you start:
 
 - The persistent and platform roots are applied. Platform creates the federated credential that trusts `system:serviceaccount:platform:external-secrets`.
 - `kubectl apply -k k8s/node-pools` has run, so ESO has a node to land on.
 - `kubectl apply -k k8s/namespaces` has run, so `platform`, `apps` and `data` exist (P4-07, #54).
-- Your kubectl context is the cluster, and `tofu`, `jq` and `helm` are on your PATH. Run everything from the repo root.
+- `tofu`, `jq` and `helm` are on your PATH. The Makefile passes the cluster's context itself, so your current context doesn't matter.
 
-The block runs in a subshell with `set -euo pipefail`, so a failure stops it without closing your terminal. It reads both values and checks them before writing anything. A failed `tofu output`, a missing key or an empty value stops it with a message, so it never writes an empty `vaultUrl` or annotates the ServiceAccount with `null`.
+From the repo root, run `make external-secrets`. The [Makefile](../../Makefile) pins the chart in `ESO_VERSION`. It runs under `set -euo pipefail`, reads both values and checks them before writing anything. A failed `tofu output`, a missing key or an empty value stops it with a message, so it never writes an empty `vaultUrl` or annotates the ServiceAccount with `null`. Then it writes `vault.env`, installs the chart and applies the store. Check the store with:
 
 ```bash
-(
-set -euo pipefail
-
-# Values from persistent. Neither is committed.
-CLIENT_ID=$(tofu -chdir=infra/persistent output -json workload_identity_client_ids | jq -er '."external-secrets"') \
-  || { echo "No external-secrets client ID in the persistent outputs. Apply persistent first." >&2; exit 1; }
-VAULT_URL=$(tofu -chdir=infra/persistent output -raw key_vault_uri) \
-  || { echo "No key_vault_uri in the persistent outputs. Apply persistent first." >&2; exit 1; }
-[[ "$CLIENT_ID" =~ ^[0-9a-f-]{36}$ ]] || { echo "Client ID '$CLIENT_ID' is not a GUID." >&2; exit 1; }
-[[ "$VAULT_URL" == https://*.vault.azure.net/ ]] || { echo "Vault URL '$VAULT_URL' is not a Key Vault URI." >&2; exit 1; }
-
-echo "vaultUrl=$VAULT_URL" > k8s/external-secrets/store/vault.env
-
-# The operator and its CRDs.
-helm upgrade --install external-secrets oci://ghcr.io/external-secrets/charts/external-secrets \
-  --version 2.15.0 \
-  --namespace platform \
-  --values k8s/external-secrets/values.yaml \
-  --set-string serviceAccount.annotations."azure\.workload\.identity/client-id"="$CLIENT_ID" \
-  --wait
-
-# The store. Needs the CRDs from the step above.
-kubectl apply -k k8s/external-secrets/store
-kubectl get clustersecretstore azure-key-vault
-)
+kubectl --context aks-v2-platform get clustersecretstore azure-key-vault
 ```
 
 The store should show `STATUS Valid` and `READY True`. `vault.env` only changes if the vault does, so writing it again each morning is harmless.
 
-To upgrade ESO, read the chart's release notes for CRD changes first. Then change the version in the command above and in the header of `values.yaml`.
+To upgrade ESO, read the chart's release notes for CRD changes first. Then change `ESO_VERSION` in the Makefile and the version in the header of `values.yaml`.
 
 ## Acceptance test
 

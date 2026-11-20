@@ -32,25 +32,21 @@ Reusable pieces go in [`modules/`](modules): network, aks, acr, servicebus, keyv
 
 The daily stack runs from 9am to 5pm to keep within the budget.
 
-Morning:
+Morning, from the repo root:
 
 ```bash
-tofu -chdir=infra/platform apply
-eval "$(tofu -chdir=infra/platform output -raw kubeconfig_command)"
-kubectl apply -k k8s/node-pools   # until ArgoCD owns them (P7)
-tofu -chdir=infra/argocd apply
+make up    # platform apply, kubeconfig, then every in-cluster component
 ```
-
-Then install the cluster components by hand, until ArgoCD owns them (P7), in the order [`k8s/README.md`](../k8s/README.md) gives. Install commands are in [traefik](../k8s/traefik/README.md#install), [cert-manager](../k8s/cert-manager/README.md#install) and [external-dns](../k8s/external-dns/README.md#install).
 
 Evening:
 
 ```bash
-tofu -chdir=infra/argocd destroy
-tofu -chdir=infra/platform destroy
+make down  # platform destroy
 ```
 
-Destroy argocd first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
+`make help` lists every target. `tofu apply` and `tofu destroy` stay interactive, so each shows its plan and waits for `yes`. Run `make init` once per clone, and again after a module is added. The [Makefile](../Makefile) runs the roots in the order above and the in-cluster components in the order [`k8s/README.md`](../k8s/README.md) gives. When `argocd` gets a provider in P7, add it to `up` after platform and to `down` before it.
+
+Once that root exists, argocd is destroyed first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
 
 ## What goes in persistent
 
