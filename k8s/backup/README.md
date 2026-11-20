@@ -1,6 +1,6 @@
 # backup
 
-**TL;DR:** A CronJob in `data` snapshots the Postgres disk every hour and keeps the newest six. `make restore-drill` proves a snapshot restores. It writes a marker row, snapshots the disk, writes a second marker, restores the snapshot to a temporary Postgres pod and checks it has the first marker and not the second. The snapshots live in the node resource group, so the evening destroy deletes them. They are recovery points for the day, not a backup that outlives the cluster. See the ADR [Volume snapshots](../../docs/architecture-decisions.md#volume-snapshots). Redis gets no snapshots. `make backup` applies the CronJob each morning, last in `make cluster`. ArgoCD takes this over in P7.
+**TL;DR:** A CronJob in `data` snapshots the Postgres disk every hour and keeps the newest six. `make restore-drill` proves a snapshot restores. It writes a marker row, snapshots the disk, writes a second marker, restores the snapshot to a temporary Postgres pod and checks it has the first marker and not the second. The snapshots live in the node resource group, so the evening destroy deletes them. They are recovery points for the day, not a backup that outlives the cluster. See the ADR [Volume snapshots](../../docs/architecture-decisions.md#volume-snapshots). Redis gets no snapshots. `make backup` applies the CronJob each morning, last in `make cluster`. It stops with an error if `data-postgres-0` doesn't exist yet. ArgoCD takes this over in P7.
 
 Filled by P5-06 (#60) and P5-07 (#61). It builds on the `csi-azuredisk-vsc` VolumeSnapshotClass in [storage](../storage/README.md#the-volumesnapshotclass) and the Postgres StatefulSet from P5-01 (#55).
 
@@ -8,9 +8,9 @@ Filled by P5-06 (#60) and P5-07 (#61). It builds on the `csi-azuredisk-vsc` Volu
 
 | File | Kind | Name | Purpose |
 | --- | --- | --- | --- |
-| `rbac.yaml` | `ServiceAccount`, `Role`, `RoleBinding` | `postgres-snapshot` | Create, list, watch and delete VolumeSnapshots in `data`. Nothing else |
+| `rbac.yaml` | `ServiceAccount`, `Role`, `RoleBinding` | `postgres-snapshot` | Create, get, list, watch and delete VolumeSnapshots in `data`. Nothing else |
 | `cronjob.yaml` | `CronJob` | `postgres-snapshot` | Runs `snapshot.sh` on the hour |
-| `snapshot.sh` | `ConfigMap` (generated) | `postgres-snapshot-<hash>` | Snapshot `data-postgres-0`, wait until it is ready, prune to the newest six |
+| `snapshot.sh` | `ConfigMap` (generated) | `postgres-snapshot-<hash>` | Snapshot `data-postgres-0`, wait until it is ready, prune to the newest six ready snapshots |
 | `restore-drill.sh` | Script, run locally | | The P5-06 restore drill, run by `make restore-drill` |
 
 ## Snapshot consistency
@@ -22,7 +22,7 @@ An Azure disk snapshot is crash-consistent. `PGDATA` and the WAL are on the one 
 
 ## Restore drill (P5-06)
 
-Needs the Postgres StatefulSet running in `data`, with `postgres-0` ready. Run from the repo root:
+Needs the Postgres StatefulSet running in `data` with `postgres-0` ready, and `jq` on your PATH. The script checks for `jq` before it changes anything. Run from the repo root:
 
 ```bash
 make restore-drill
@@ -77,7 +77,7 @@ A failing run prints `FAIL: expected ...`, exits 1 and still cleans up. To inspe
 
 What the drill needs from the cluster:
 
-- Quota: the `data` quota is 750m CPU, 2Gi of memory requests, 6Gi of memory limits, 4 PVCs and 64Gi of storage. It was sized for a second Postgres: Postgres at 250m, Redis at 100m and the drill pod at 250m fit, as do 20Gi, 10Gi and the 20Gi restore. Memory requests are the tight one. Two Postgres requests, Redis's and the CronJob's 64Mi must fit in 2Gi. Past that, the drill pod's creation fails with `exceeded quota`.
+- Quota: the `data` quota is 750m CPU, 2Gi of memory requests, 6Gi of memory limits, 4 PVCs and 64Gi of storage. During the drill it holds Postgres (250m CPU, 512Mi), Redis (50m, 64Mi), the drill pod (250m, 512Mi) and the CronJob if it fires (10m, 64Mi). That is 560m CPU, 1152Mi of memory requests and about 2.4Gi of limits, with three PVCs: 20Gi, 10Gi and the 20Gi restore. If the StatefulSet's requests grow, memory requests run out first, and the drill pod's creation fails with `exceeded quota`.
 - WaitForFirstConsumer: the restored PVC stays `Pending` until the pod is scheduled, and the disk is then created from the snapshot. The script doesn't wait for `Bound`, which would never come.
 - Zones: `premium-zrs` gives a ZRS disk, so the restored disk attaches to a node in any zone.
 - Snapshot state: restoring before `readyToUse` is `true` fails, so the script waits for it.
@@ -152,9 +152,9 @@ The StatefulSet must keep the default `persistentVolumeClaimRetentionPolicy` (`R
 | Setting | Value | Why |
 | --- | --- | --- |
 | Schedule | `0 * * * *`, UTC | The cluster lives for about eight hours a day. Hourly gives about eight recovery points, and a restore loses at most an hour of data |
-| Retention | Newest 6, by count | Covers the last six hours. Counting can't empty the list if the schedule stops. Snapshots without the label, such as the drill's or one you unlabel, are never pruned |
-| Pruning | After the new snapshot is ready | A failed snapshot fails the job before pruning, so a bad run never deletes a good snapshot |
-| Concurrency | `Forbid`, one retry, 15 minute deadline | Runs never overlap |
+| Retention | Newest 6 ready snapshots, by count | Covers the last six hours. Counting can't empty the list if the schedule stops. Only ready snapshots count, so broken ones can't push good ones out. Snapshots without the label, such as the drill's or one you unlabel, are never pruned |
+| Failures | The run deletes its own snapshot | If the snapshot isn't ready within `WAIT` (10 minutes), or the pod is stopped, the script's trap deletes it and the job fails without pruning. A labelled snapshot still not ready after `STALE_SECONDS` (an hour) was left by a run that died before its trap, and the next prune deletes it. Younger not-ready ones are left alone, since a manual run may still be waiting on one |
+| Retries and overlap | `Forbid`, no retry, 20 minute deadline | Runs never overlap, and the next hour is the retry. The deadline covers the 10 minute wait plus time to schedule the pod |
 | Image | `alpine/kubectl:1.37.1`, pinned by digest | kubectl plus a shell for the script, about 25 MB. `registry.k8s.io/kubectl` has no shell |
 | Pod | Non-root, read-only root filesystem, 10m CPU and 64Mi requested | Meets `restricted` |
 

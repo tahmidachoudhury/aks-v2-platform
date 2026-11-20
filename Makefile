@@ -126,7 +126,9 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
 
-backup: ## Hourly Postgres snapshot CronJob in data, keeping six
+backup: ## Hourly Postgres snapshot CronJob in data, keeping six. Needs make data first
+	$(KUBECTL) -n data get pvc data-postgres-0 >/dev/null \
+	  || { echo "No PVC data-postgres-0 in data. Run make data before make backup." >&2; exit 1; }
 	$(KUBECTL) apply -k k8s/backup
 
 restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up

@@ -14,6 +14,8 @@ SOURCE_POD=postgres-0
 SOURCE_PVC=data-postgres-0
 DRILL=postgres-restore # the snapshot, PVC and pod all take this name
 
+command -v jq >/dev/null || { echo "The drill needs jq on PATH." >&2; exit 1; }
+
 k() { kubectl --context "$CONTEXT" -n data "$@"; }
 
 # Runs one SQL statement in a pod over the local socket, as the image's
@@ -25,11 +27,13 @@ sql() {
     sh "$2"
 }
 
+# Best effort: every step runs even if one before it fails, so a failed
+# delete never leaves the 20Gi PVC or the drill table behind.
 cleanup() {
   echo "==> Cleaning up"
-  k delete pod "$DRILL" --ignore-not-found --wait=true
-  k delete pvc "$DRILL" --ignore-not-found --wait=true
-  k delete volumesnapshot "$DRILL" --ignore-not-found --wait=true
+  k delete pod "$DRILL" --ignore-not-found --wait=true || true
+  k delete pvc "$DRILL" --ignore-not-found --wait=true || true
+  k delete volumesnapshot "$DRILL" --ignore-not-found --wait=true || true
   sql "$SOURCE_POD" 'DROP TABLE IF EXISTS restore_drill' >/dev/null || true
 }
 
@@ -99,15 +103,22 @@ k wait --for=condition=Ready "pod/$DRILL" --timeout=10m
 
 # Ready can come before Postgres accepts connections if the template has no
 # readiness probe. Recovery replays the WAL written since the CHECKPOINT.
+ready=false
 for _ in $(seq 60); do
-  k exec "$DRILL" -c "$CONTAINER" -- pg_isready -q && break
+  if k exec "$DRILL" -c "$CONTAINER" -- pg_isready -q; then ready=true; break; fi
   sleep 5
 done
+if [[ $ready != true ]]; then
+  echo "FAIL: Postgres in $DRILL did not accept connections within 5 minutes" >&2
+  k logs "$DRILL" -c "$CONTAINER" --tail=20 >&2 || true
+  exit 1
+fi
 echo "==> Recovery log of $DRILL"
 k logs "$DRILL" -c "$CONTAINER" | grep -E 'not properly shut down|redo (starts|done|is not required)|ready to accept connections' || true
 
 echo "==> Markers in the restored database"
-restored=$(sql "$DRILL" 'SELECT marker FROM restore_drill ORDER BY written_at')
+# A missing table means the restore lost the data: let it reach FAIL below.
+restored=$(sql "$DRILL" 'SELECT marker FROM restore_drill ORDER BY written_at') || restored=''
 echo "$restored"
 
 if grep -qx "$before" <<<"$restored" && ! grep -qx "$after" <<<"$restored"; then

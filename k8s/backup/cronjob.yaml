@@ -15,8 +15,12 @@ spec:
   failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
-      backoffLimit: 1
-      activeDeadlineSeconds: 900
+      # No retry: the next hour is the retry. The deadline is the 10 minute
+      # wait plus room to schedule the pod, so it never cuts a wait short.
+      # If it does fire, SIGTERM runs the script's trap, which deletes the
+      # unfinished snapshot.
+      backoffLimit: 0
+      activeDeadlineSeconds: 1200
       template:
         metadata:
           labels:
@@ -41,6 +45,12 @@ spec:
                   value: data-postgres-0
                 - name: KEEP
                   value: "6"
+                - name: WAIT
+                  value: 10m
+                # A labelled snapshot this old that still isn't ready was
+                # left by a run that died before its trap ran.
+                - name: STALE_SECONDS
+                  value: "3600"
                 # kubectl writes its discovery cache under $HOME.
                 - name: HOME
                   value: /tmp
