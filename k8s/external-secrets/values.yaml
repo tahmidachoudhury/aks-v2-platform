@@ -1,6 +1,6 @@
 # Helm values for the external-secrets chart, version 2.15.0 from
-# https://charts.external-secrets.io. The install command and the reasons
-# are in README.md.
+# oci://ghcr.io/external-secrets/charts/external-secrets. The install command
+# and the reasons are in README.md.
 #
 # The client ID annotation is not here. It is passed with --set-string at
 # install time from the persistent output, so no ID is committed. See
@@ -27,7 +27,14 @@ resources:
   limits:
     memory: 256Mi
 
+# The validating webhook fails closed, so while no replica is up the API
+# server rejects every ExternalSecret and store write. NAP repacks nodes
+# after a minute, so run two and let the budget keep one up during a drain.
 webhook:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   resources:
     requests:
       cpu: 10m
