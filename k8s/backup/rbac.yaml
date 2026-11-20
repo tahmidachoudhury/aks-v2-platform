@@ -1,0 +1,28 @@
+# The snapshot CronJob's identity. It can manage VolumeSnapshots in data and
+# nothing else: no pods/exec, so it can't run commands in Postgres, and no
+# PVCs, so it can't delete a disk.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-snapshot
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: postgres-snapshot
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgres-snapshot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: postgres-snapshot
+subjects:
+  - kind: ServiceAccount
+    name: postgres-snapshot

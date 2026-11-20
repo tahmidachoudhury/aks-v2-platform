@@ -38,7 +38,8 @@ EXTERNAL_DNS_VERSION := 1.23.0
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
-	node-pools namespaces storage external-secrets traefik cert-manager external-dns data
+	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
+	backup restore-drill
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -67,7 +68,7 @@ up: ## Morning: platform, kubeconfig, then every component
 	$(MAKE) cluster
 
 cluster: ## Install every in-cluster component, in order
-	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data
+	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data backup
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
 	tofu -chdir=infra/platform destroy
@@ -131,3 +132,11 @@ data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the a
 	$(KUBECTL) -n data rollout status statefulset/postgres --timeout=10m
 	$(KUBECTL) -n data rollout status statefulset/redis --timeout=10m
 	$(KUBECTL) -n data exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U postgres -d orders < k8s/data/postgres/app-role.sql
+
+backup: ## Hourly Postgres snapshot CronJob in data, keeping six. Needs make data first
+	$(KUBECTL) -n data get pvc data-postgres-0 >/dev/null \
+	  || { echo "No PVC data-postgres-0 in data. Run make data before make backup." >&2; exit 1; }
+	$(KUBECTL) apply -k k8s/backup
+
+restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up
+	CONTEXT=$(CTX) k8s/backup/restore-drill.sh
