@@ -58,6 +58,8 @@ Changing the VM size, OS disk or zones of the system pool on a live cluster rota
 
 The cluster joins nodes and load balancer frontends to a subnet it doesn't own, so its identity has Network Contributor on `snet-aks-nodes`. The identity is system-assigned, so the role assignment can only be made once the cluster exists. The create doesn't need it. The load balancer for a `LoadBalancer` Service and the first Node Auto Provisioning node do need it, and both come later, after ArgoCD.
 
+That role doesn't cover public IPs. Traefik's static IP sits in its own group, and the platform root gives the cluster identity Network Contributor there through the `identity_principal_id` output. See [Ingress public IP](../../platform/README.md#ingress-public-ip).
+
 ## Egress
 
 Decided in P3-05 (#31). Also recorded in [architecture decisions](../../../docs/architecture-decisions.md#egress).

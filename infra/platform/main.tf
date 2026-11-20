@@ -144,7 +144,41 @@ module "aks" {
 
   # Nodes must not boot into the subnet before its NSG and the Overlay rule
   # are attached. The subnet ID alone doesn't make the cluster wait for them.
-  depends_on = [module.network]
+  # The ingress IP is here for the evening destroy: the cluster, and with it
+  # the load balancer frontend that holds the IP, must go first, or Azure
+  # refuses to delete an IP that is still in use.
+  depends_on = [module.network, azurerm_public_ip.ingress]
+}
+
+# Traefik's public IP (P4-03). A Standard static IP that the Traefik Service
+# names in its azure-pip-name annotation, so the address is known before
+# Traefik is installed and survives a reinstall during the day. It is new
+# every morning, like the egress IP, and ExternalDNS points the A records at
+# it. Its own group keeps the cluster identity's Network Contributor role off
+# the VNet, NSGs and private endpoints in the platform group. See README.md.
+resource "azurerm_resource_group" "ingress" {
+  name     = var.ingress_resource_group_name
+  location = var.location
+  tags     = local.tags
+}
+
+resource "azurerm_public_ip" "ingress" {
+  name                = var.ingress_public_ip_name
+  resource_group_name = azurerm_resource_group.ingress.name
+  location            = azurerm_resource_group.ingress.location
+  sku                 = "Standard"
+  allocation_method   = "Static"
+  zones               = ["1", "2", "3"]
+  tags                = local.tags
+}
+
+# The cloud provider reads the IP and also lists every IP in its group, so
+# the role goes on the group, not the IP. The group holds nothing else.
+resource "azurerm_role_assignment" "cluster_ingress_ip" {
+  scope                = azurerm_resource_group.ingress.id
+  role_definition_name = "Network Contributor"
+  principal_id         = module.aks.identity_principal_id
+  principal_type       = "ServicePrincipal"
 }
 
 # The kubelet pulls images as its own identity, so pods need no

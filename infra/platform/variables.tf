@@ -102,6 +102,20 @@ variable "system_node_vm_size" {
   default     = "Standard_D2nls_v6"
 }
 
+# Ingress: see the Ingress public IP section of README.md.
+
+variable "ingress_resource_group_name" {
+  description = "Resource group for Traefik's public IP. Matches the azure-load-balancer-resource-group annotation in k8s/traefik/values.yaml."
+  type        = string
+  default     = "rg-aks-v2-ingress"
+}
+
+variable "ingress_public_ip_name" {
+  description = "Name of Traefik's public IP. Matches the azure-pip-name annotation in k8s/traefik/values.yaml."
+  type        = string
+  default     = "pip-aks-v2-ingress"
+}
+
 variable "operator_object_ids" {
   description = "Entra object IDs of the people who run applies by hand. They get AKS RBAC Cluster Admin. Set in terraform.tfvars, never committed."
   type        = list(string)

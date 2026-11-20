@@ -12,6 +12,7 @@
 - The Service Bus namespace and the `order-events` queue, through [`../modules/servicebus`](../modules/servicebus/README.md). Its firewall allows only the cluster's egress IP, so the namespace is created after the cluster.
 - The Log Analytics workspace `log-aks-v2-platform`, with a 0.5 GB daily cap and the AKS control plane diagnostic setting, through [`../modules/loganalytics`](../modules/loganalytics/README.md). No Container Insights: New Relic does that job.
 - Private endpoints for the Key Vault and the state account's blob service (P3-14), with their records in the zones above. See [Private endpoints](#private-endpoints).
+- Traefik's static public IP, `pip-aks-v2-ingress`, in its own group `rg-aks-v2-ingress`, with Network Contributor on that group for the cluster identity (P4-03). See [Ingress public IP](#ingress-public-ip).
 - A federated credential for each workload identity in persistent, trusting this cluster's OIDC issuer and one ServiceAccount, and the Service Bus Data Sender and Receiver roles on the queue (P3-16, P3-17, P3-18). The subjects and roles are in `local.workload_identities` and `local.servicebus_roles`. See [`../modules/workload-identity`](../modules/workload-identity/README.md).
 - Later: the other cluster-bound resources, through the modules in [`../modules`](../modules).
 
@@ -99,6 +100,18 @@ az acr repository delete --subscription "$SUB" -n "$ACR" --repository acrpull-ch
 The role list shows one row, AcrPull, scoped to the registry. Both `imagePullSecrets` lines print empty. The events end with `Successfully pulled image` and `Started`. The system pool is tainted, so Node Auto Provisioning adds a node for the pod first, which takes a minute or two.
 
 `az aks check-acr -g rg-aks-v2-platform -n aks-v2-platform --acr "$ACR.azurecr.io"` runs a similar check from a pod of its own.
+
+## Ingress public IP
+
+Added in P4-03 (#50). Traefik's LoadBalancer Service takes a Standard, zone-redundant static IP that this root creates, `pip-aks-v2-ingress`. The Service names it with the `azure-pip-name` and `azure-load-balancer-resource-group` annotations in [`k8s/traefik/values.yaml`](../../k8s/traefik/values.yaml), and the cloud provider puts it on a frontend of the cluster's load balancer. Output `ingress_ip_address` shows it.
+
+It lives here, not in persistent, and gets a new address every morning. ExternalDNS points the A records at whatever the Service reports, so nothing depends on the address staying the same. Keeping it overnight in persistent would cost about $3.65 a month instead of $0.88 on the 176-hour schedule, for an address nobody reads. A persistent IP would also need a role for each morning's new cluster identity on a group that holds the DNS zone and the vault.
+
+It is still a static IP rather than one AKS creates for the Service, for three reasons. The address is known from OpenTofu before Traefik is installed. It survives a Traefik reinstall during the day, so the A records don't move. And a named IP is easier to find and cost than one in the node resource group.
+
+The cluster identity needs Network Contributor wherever the IP lives. The aks module only grants it on `snet-aks-nodes`, which doesn't cover an IP. The cloud provider reads the IP and also lists every public IP in its group, so a role on the IP alone isn't enough. A role on `rg-aks-v2-platform` would also let the cluster change the VNet, NSGs, private endpoints and private DNS zones. So the IP gets its own group, `rg-aks-v2-ingress`, which holds nothing else, and the role goes on that group. Network Contributor is already on CI's ABAC list.
+
+Destroy order matters. Azure refuses to delete an IP that a load balancer frontend still uses. The cluster depends on the IP in `main.tf`, so the evening destroy deletes the cluster, and with it the load balancer, before the IP. Nothing has to uninstall Traefik first.
 
 ## Private endpoints
 
