@@ -1,0 +1,70 @@
+# Hourly crash-consistent snapshot of the Postgres disk, keeping the newest
+# six. Snapshots land in the node resource group, so they last until the
+# evening destroy (ADR "Volume snapshots"). Redis isn't snapshotted: it holds
+# only api-gateway's rate-limit counters.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-snapshot
+spec:
+  schedule: "0 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: postgres-snapshot
+        spec:
+          serviceAccountName: postgres-snapshot
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: snapshot
+              # alpine/kubectl rather than registry.k8s.io/kubectl, which has
+              # no shell. Minor version matches the cluster.
+              image: alpine/kubectl:1.37.1@sha256:a5d0fbecab3f7b6c2ab7398f1daa73a3e0ed6ece18556d21698233e9e3759cc7
+              command: ["/bin/sh", "/scripts/snapshot.sh"]
+              env:
+                - name: PVC
+                  value: data-postgres-0
+                - name: KEEP
+                  value: "6"
+                # kubectl writes its discovery cache under $HOME.
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: scripts
+              configMap:
+                name: postgres-snapshot
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

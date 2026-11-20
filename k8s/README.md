@@ -16,5 +16,6 @@ ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root 
 2. [`namespaces`](namespaces/README.md) (`make namespaces`). The Helm installs below go into `platform` and don't create it.
 3. [`storage`](storage/README.md) (`make storage`).
 4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), then [`external-dns`](external-dns/README.md), each with `make <folder>`.
+5. [`backup`](backup/README.md) (`make backup`), last, after Postgres: the hourly snapshot CronJob in `data`.
 
 Every step is safe to run again. The [Makefile](../Makefile) holds the commands and pins the chart versions.
