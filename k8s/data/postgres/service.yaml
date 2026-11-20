@@ -1,0 +1,17 @@
+# Headless, as the StatefulSet's governing Service. postgres.data.svc.cluster.local
+# resolves to the pod's IP once it is Ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: data
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

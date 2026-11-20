@@ -77,7 +77,7 @@ A failing run prints `FAIL: expected ...`, exits 1 and still cleans up. To inspe
 
 What the drill needs from the cluster:
 
-- Quota: the `data` quota is 750m CPU, 2Gi of memory requests, 6Gi of memory limits, 4 PVCs and 64Gi of storage. During the drill it holds Postgres (250m CPU, 512Mi), Redis (50m, 64Mi), the drill pod (250m, 512Mi) and the CronJob if it fires (10m, 64Mi). That is 560m CPU, 1152Mi of memory requests and about 2.4Gi of limits, with three PVCs: 20Gi, 10Gi and the 20Gi restore. If the StatefulSet's requests grow, memory requests run out first, and the drill pod's creation fails with `exceeded quota`.
+- Quota: the `data` quota is 750m CPU, 2Gi of memory requests, 6Gi of memory limits, 4 PVCs and 64Gi of storage. During the drill it holds Postgres (250m CPU, 512Mi), Redis (50m, 64Mi), the drill pod (250m, 512Mi) and the CronJob if it fires (10m, 64Mi). That is 560m CPU, 1152Mi of memory requests and about 3.4Gi of limits (each Postgres has a 1536Mi limit), with three PVCs: 20Gi, 10Gi and the 20Gi restore. If the StatefulSet's requests grow, memory requests run out first, and the drill pod's creation fails with `exceeded quota`.
 - WaitForFirstConsumer: the restored PVC stays `Pending` until the pod is scheduled, and the disk is then created from the snapshot. The script doesn't wait for `Bound`, which would never come.
 - Zones: `premium-zrs` gives a ZRS disk, so the restored disk attaches to a node in any zone.
 - Snapshot state: restoring before `readyToUse` is `true` fails, so the script waits for it.

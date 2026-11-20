@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: data
+resources:
+  - external-secret.yaml
+  - service.yaml
+  - statefulset.yaml
+  - pdb.yaml
+
+# The image runs this on the first start against an empty disk, and make data
+# runs it after every rollout. Editing it changes the ConfigMap's hash suffix,
+# which rolls the pod, but on a disk that already holds data the image skips
+# it, so make data is what applies the change.
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - app-role.sql
