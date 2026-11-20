@@ -38,7 +38,7 @@ EXTERNAL_DNS_VERSION := 1.23.0
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
-	node-pools namespaces storage external-secrets traefik cert-manager external-dns
+	node-pools namespaces storage external-secrets traefik cert-manager external-dns data
 .PHONY: migrate
 
 help: ## List the targets
@@ -68,7 +68,7 @@ up: ## Morning: platform, kubeconfig, then every component
 	$(MAKE) cluster
 
 cluster: ## Install every in-cluster component, in order
-	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns
+	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data
 	$(MAKE) migrate
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
@@ -126,6 +126,13 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string extraArgs.azure-resource-group="$$ZONE_RG" \
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
+
+data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the app role
+	$(KUBECTL) apply -k k8s/data
+	$(KUBECTL) -n data wait externalsecret --all --for=condition=Ready --timeout=2m
+	$(KUBECTL) -n data rollout status statefulset/postgres --timeout=10m
+	$(KUBECTL) -n data rollout status statefulset/redis --timeout=10m
+	$(KUBECTL) -n data exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U postgres -d orders < k8s/data/postgres/app-role.sql
 
 # Postgres starts empty every morning, so cluster runs this last, after data,
 # to rebuild the schema. It needs only the public migrate image, no app image.

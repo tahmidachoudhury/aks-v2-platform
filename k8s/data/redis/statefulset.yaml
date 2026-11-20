@@ -1,0 +1,121 @@
+# One Redis replica with the append-only file on a 10Gi Premium ZRS disk. The
+# official image starts as UID 999 directly, so the namespace's restricted Pod
+# Security admits it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: data
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      priorityClassName: data-critical
+      # On-demand NAP nodes only, as Postgres.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.sh/capacity-type
+                    operator: In
+                    values: ["on-demand"]
+      automountServiceAccountToken: false
+      # Stops Kubernetes injecting REDIS_PORT and friends from the Service.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: docker.io/library/redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+          # The config arrives on stdin ("-"), so the password never appears
+          # in the process's arguments. exec keeps redis-server as PID 1, so
+          # it gets SIGTERM and fsyncs the AOF before it exits.
+          #
+          # AOF only: save "" turns RDB snapshots off, so there is one fork
+          # (the AOF rewrite), not two. maxmemory leaves about 96Mi of the
+          # 256Mi limit for that fork's copy-on-write pages and Redis's own
+          # overhead. Every key is an api-gateway rate:<ip> counter with a
+          # one-minute TTL, so evicting any of them only resets one client's
+          # window. allkeys-lru, not volatile-*, because INCR and EXPIRE are
+          # separate calls and a counter whose EXPIRE failed has no TTL.
+          command: ["sh", "-c"]
+          args:
+            - |
+              exec redis-server - <<EOF
+              dir /data
+              appendonly yes
+              appendfsync everysec
+              save ""
+              maxmemory 160mb
+              maxmemory-policy allkeys-lru
+              requirepass $REDIS_PASSWORD
+              EOF
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: password
+            # redis-cli reads this, so the probe and kubectl exec sessions
+            # authenticate without -a on the command line.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Not Ready while it replays the AOF: PING answers LOADING until then.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # The port is open while loading, so a long replay never trips this.
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: premium-zrs
+        resources:
+          requests:
+            storage: 10Gi

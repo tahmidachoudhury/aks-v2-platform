@@ -1,0 +1,13 @@
+# Postgres and Redis outrank every other user workload. The general NodePool
+# is capped at 4 vCPUs, so when it is full the scheduler evicts lower-priority
+# app pods to make room for a stateful pod rather than leaving it Pending.
+# Well below system-cluster-critical (2000000000), so it never preempts AKS
+# add-ons.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: data-critical
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: Postgres and Redis in the data namespace. Preempts app pods when the general NodePool is full.
