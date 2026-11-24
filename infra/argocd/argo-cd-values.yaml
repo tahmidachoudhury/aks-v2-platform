@@ -1,0 +1,66 @@
+# Helm values for the argo-cd chart, version 10.17.1 (Argo CD v3.6.1), from
+# https://argoproj.github.io/argo-helm. main.tf installs it and adds the
+# repository. Design: README.md.
+
+global:
+  # NAP has no NodePools until Argo CD applies k8s/node-pools, so Argo CD
+  # must start on the system pool, which is tainted CriticalAddonsOnly.
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+# The CRDs stay when the release goes. Deleting the Application CRD would
+# delete every Application with it, and the evening destroy needs none of
+# that: the cluster goes next.
+crds:
+  install: true
+  keep: true
+
+configs:
+  cm:
+    # The local admin user, with the password from the
+    # argocd-initial-admin-secret each install generates. No SSO.
+    admin.enabled: true
+
+# Off: no SSO, no notifications. The chart has no switch for the
+# ApplicationSet controller, so it runs no replicas.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  replicas: 0
+
+# No Ingress anywhere: the UI is reached with kubectl port-forward only
+# (README.md). The chart's defaults already create none.
+server:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
