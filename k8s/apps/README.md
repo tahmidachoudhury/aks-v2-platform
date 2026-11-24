@@ -455,4 +455,4 @@ yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | 
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 45, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.
+Expect `Valid: 56, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.

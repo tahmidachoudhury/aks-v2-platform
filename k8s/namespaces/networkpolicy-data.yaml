@@ -1,6 +1,7 @@
 # Default deny for data, in and out: a pod here talks to nothing until a
 # NetworkPolicy allows it. The allow rules live next to the workloads they
-# cover: Postgres, Redis, the snapshot CronJob and the restore drill.
+# cover: Postgres, Redis and the snapshot CronJob. The restore drill works
+# through kubectl exec, so it needs no rule.
 # Cilium enforces standard NetworkPolicy on this cluster
 # (network_policy = "cilium", infra/modules/aks).
 apiVersion: networking.k8s.io/v1
