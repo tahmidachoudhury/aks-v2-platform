@@ -1,0 +1,37 @@
+# Turns the first constraint from components/service, the zone spread, into a
+# hard rule. A JSON patch, since a strategic merge keys these entries on
+# topologyKey and whenUnsatisfiable together and would add a second zone
+# entry instead of changing the first. The test op fails the build if that
+# entry ever moves, rather than hardening the wrong one.
+#
+# Why each field:
+# - DoNotSchedule: with ScheduleAnyway the scheduler packed every pod onto
+#   the one general node it had, and NAP never added a second. Karpenter, and
+#   so NAP, treats a hard zone spread as a requirement when it provisions, and
+#   starts a node in another zone for a pod this rule holds back
+#   (karpenter.sh/docs/concepts/scheduling, Topology Spread).
+# - nodeTaintsPolicy Honor: only nodes the pod tolerates count as zones. The
+#   default, Ignore, would count the three aks-system nodes, one per zone,
+#   which carry CriticalAddonsOnly. Then a third replica would need a general
+#   node in the third zone, and general's 4 vCPU limit holds two 2 vCPU nodes
+#   at most, so it would stay Pending. Cordoned and spot nodes drop out too.
+# - minDomains 2: with Honor and a single general node, that node's zone
+#   would be the only domain and the rule would always hold. Below two
+#   eligible zones, the scheduler takes the global minimum as 0, so each zone
+#   takes one pod of a service and the next waits for a second zone
+#   (kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints).
+#   At two or more zones it has no effect. Karpenter applies minDomains and
+#   nodeTaintsPolicy in its own simulation as well.
+# The hostname spread, the second entry, stays ScheduleAnyway.
+- op: test
+  path: /spec/template/spec/topologySpreadConstraints/0/topologyKey
+  value: topology.kubernetes.io/zone
+- op: replace
+  path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable
+  value: DoNotSchedule
+- op: add
+  path: /spec/template/spec/topologySpreadConstraints/0/minDomains
+  value: 2
+- op: add
+  path: /spec/template/spec/topologySpreadConstraints/0/nodeTaintsPolicy
+  value: Honor

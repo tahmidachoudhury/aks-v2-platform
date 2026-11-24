@@ -9,6 +9,7 @@ Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06
 ```text
 k8s/apps/
   components/service/       the pod shape every workload shares (a Kustomize Component)
+  components/zone-spread/   a hard zone spread for the five multi-replica services
   <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service, NetworkPolicy, PodDisruptionBudget,
                             HorizontalPodAutoscaler, ExternalSecret, config.env
   <service>/overlays/dev/   image tag for dev (and the scheduler's one replica)
@@ -53,7 +54,7 @@ Every Deployment, and the scheduler's StatefulSet, gets these from `components/s
 | Memory | 64Mi request, 256Mi limit | The namespace defaults, set explicitly |
 | `enableServiceLinks` | `false` | Stops `ORDER_SERVICE_PORT` and similar variables being injected for every Service in `apps` |
 | Rollout | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `progressDeadlineSeconds: 300` | Deployments only, from `rollout.yaml`. See [Rollouts](#rollouts) |
-| Spread | Across zones, then nodes, `ScheduleAnyway` | See [Disruption and spread](#disruption-and-spread) |
+| Spread | Across zones, then nodes, `ScheduleAnyway`. Zones are a hard rule for the five multi-replica services, from `components/zone-spread` | See [Disruption and spread](#disruption-and-spread) |
 | `preStop` | The kubelet's `sleep` action, 5s | Holds SIGTERM back while Cilium and Traefik drop the pod from their endpoints. The images have no shell to exec `sleep` in |
 | `terminationGracePeriodSeconds` | 45 | The 5s preStop, then the HTTP services' 5s drain and 30s shutdown: 40s. The scheduler's 5s, 20s job wait and 5s stop: 30s |
 | Startup probe | `/livez`, every 5s, 30 tries | The Postgres users ping the database for up to 120s before they listen |
@@ -145,7 +146,17 @@ P6-04 (#65). Every service except the scheduler has a PodDisruptionBudget with `
 - `minAvailable: 1` would block every drain of a single-replica service, so it isn't used.
 - The scheduler has no budget. It is one replica, and a budget allowing no disruption would block every drain of its node. A StatefulSet never starts its replacement before it has gone, and a missed tick only delays the next run.
 
-The shared component spreads each service's pods across zones, then across nodes, with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`. A hard rule would make NAP add a node per zone, and `general` is capped at 4 vCPUs. So the spread is a preference, as it is for Traefik, and the budgets are what keep a service up through a drain. `matchLabelKeys` adds the pod's own `app.kubernetes.io/name` and `pod-template-hash` to the selector, so one rule in the component spreads each service, and each revision, on its own. NAP only creates nodes in more than one zone when pods ask for it ([node-pools](../node-pools/README.md#zones)), and this asks.
+The shared component spreads each service's pods across zones, then across nodes, with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`. `matchLabelKeys` adds the pod's own `app.kubernetes.io/name` and `pod-template-hash` to the selector, so one rule spreads each service, and each revision, on its own.
+
+A preference isn't enough. On a fresh cluster the scheduler put all 14 app pods on the one `general` node, in one zone, and NAP never added a second: `ScheduleAnyway` is met on whatever nodes exist. So the five services that run two or more replicas at their minimum, api-gateway, order-service, inventory-service, payment-service and shipping-service, also include `components/zone-spread`. It makes their zone entry a hard rule:
+
+- `whenUnsatisfiable: DoNotSchedule`. A pod the rule holds back stays `Pending`. NAP runs Karpenter, which treats a hard zone spread as a requirement and starts a node in another zone for it ([Karpenter scheduling](https://karpenter.sh/docs/concepts/scheduling/#topology-spread)).
+- `nodeTaintsPolicy: Honor`. Only nodes the pod tolerates count as zones. With the default, `Ignore`, the three `aks-system` nodes, one per zone and tainted `CriticalAddonsOnly`, would count. A third replica would then need a `general` node in the third zone, which `general`'s limit has no room for. Cordoned and spot nodes drop out too.
+- `minDomains: 2`. With `Honor` and one `general` node, its zone would be the only one and the rule would always hold. Below two eligible zones, Kubernetes takes the global minimum as 0, so each zone takes one pod of a service and the next waits for a second zone ([topology spread](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/#spread-constraint-definition)). From two zones on it has no effect, so three or four replicas split 2 and 1 or 2 and 2. Karpenter applies `minDomains` and `nodeTaintsPolicy` in its own simulation too.
+
+The result is two `general` nodes in two zones, each with at least one pod of each of the five. `general` offers only 2 vCPU sizes, so its 4 vCPU limit always holds both ([node-pools](../node-pools/README.md#sizes-and-limits)). NAP consolidation won't merge them back: it removes a node only when its pods fit elsewhere under their rules. The hostname spread stays a preference, and so does the zone spread for the other four: notification-service and dashboard-api idle at one replica, the worker prefers spot, and the scheduler is one pod. Pod counts don't change, so the `apps` quota is as before.
+
+The cost shows in a drain. A cordoned node drops out as a zone, which leaves one, so a drained pod of the five stays `Pending` until the node is uncordoned: the limit has no room for a node in a third zone while the drained one exists. The other copy keeps serving, so no service reaches zero. A service with two pods on the drained node, at three or four replicas, stalls the drain: its budget allows one pod down, and the first one's replacement is `Pending`. Drain with the five at their minimums, one pod per node each.
 
 ## Autoscaling
 
@@ -501,28 +512,41 @@ az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/
 
 Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists only the old pods' addresses, and the load test still sees no errors. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
 
-**P6-04 (#65), criterion 11: draining a node never takes a multi-replica service to zero Ready.**
-
-Pick a `general` node without `postgres-0` or `redis-0`: their budgets block a drain on purpose ([data](../data/README.md#disruption)).
+**P6-04 (#65), criterion 11: the five multi-replica services run in at least two zones, and draining a node never takes one to zero Ready.**
 
 ```bash
 CTX=aks-v2-platform
 K="kubectl --context $CTX"
+FIVE='app.kubernetes.io/name in (api-gateway,order-service,inventory-service,payment-service,shipping-service)'
+# 1. Two general nodes in two zones, and each of the five in at least two zones.
+$K get nodes -l karpenter.sh/nodepool=general -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
+$K get nodes -o json > /tmp/nodes.json
+$K -n apps get pods -l "$FIVE" -o json | jq -r --slurpfile n /tmp/nodes.json '
+  ($n[0].items | map({key: .metadata.name, value: .metadata.labels["topology.kubernetes.io/zone"]}) | from_entries) as $zone
+  | [.items[] | select(.spec.nodeName) | {svc: .metadata.labels["app.kubernetes.io/name"], zone: $zone[.spec.nodeName]}]
+  | group_by(.svc)[] | ([.[].zone] | unique) as $z | "\(.[0].svc) \($z | length) zones: \($z | join(" "))"'
+$K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
+
+# 2. Drain one general node. The selector leaves postgres-0 and redis-0 in
+# place: their budgets refuse every eviction, so a plain drain would retry
+# them until it timed out.
 $K -n apps get pdb
-$K get pods -A -o wide --field-selector=status.phase=Running | grep -E ' apps | data ' | awk '{print $1, $2, $8}'
-NODE=<a general node with app pods and no data pods>
+NODE=$($K get nodes -l karpenter.sh/nodepool=general -o jsonpath='{.items[0].metadata.name}')
 # Ready replicas of the five multi-replica services, every second, while the node drains.
 ( for i in $(seq 240); do
     $K -n apps get deploy api-gateway order-service inventory-service payment-service shipping-service \
       -o jsonpath='{range .items[*]}{.metadata.name}={.status.readyReplicas} {end}{"\n"}'; sleep 1
   done > /tmp/ready.log ) &
-$K drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=10m
+$K drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
+  --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=10m
+$K -n apps get pods -l "$FIVE" -o wide --field-selector=status.phase=Pending
 wait
 grep -E '=0( |$)|=( |$)' /tmp/ready.log || echo "never zero"
 $K uncordon "$NODE"
+$K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
 ```
 
-Expect each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. Run the load test at the same time to see no failed requests as well.
+Expect two `general` nodes, `Standard_D2s_v6` or `Standard_D2nls_v6`, in different zones. Each of the five shows `2 zones`, and none is `Pending`. Then each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. While the node is cordoned, the five's pods from it are `Pending`: the cordoned node no longer counts as a zone and there is no room for a new one ([Disruption and spread](#disruption-and-spread)). After `uncordon` they schedule back and nothing is `Pending`. If the drained node held no data pod, NAP may remove it as empty first. Then the `Pending` pods get a new node in another zone within a few minutes, and `uncordon` reports the node not found. Run this with the five at their minimums. Under the load test api-gateway scales to 3 or 4, puts two pods on a node, and the drain waits on its budget.
 
 **P6-09 (#70), criterion 12: the HPAs match the ADR, load triggers scale-out, and KEDA scales the worker on queue depth.**
 
@@ -643,6 +667,12 @@ yq -N -r 'select(.kind == "HorizontalPodAutoscaler") | [.metadata.name, .spec.mi
   .spec.maxReplicas, .spec.metrics[0].resource.target.averageUtilization] | @tsv' "$TMP/dev.yaml" | grep .
 yq -N -r 'select(.kind == "ScaledObject") | [.metadata.name, .spec.minReplicaCount,
   .spec.maxReplicaCount, .spec.triggers[0].metadata.messageCount] | @tsv' "$TMP/dev.yaml" | grep .
+
+# Criterion 11: each workload's zone and hostname spread. The five multi-replica
+# services read DoNotSchedule 2 Honor ScheduleAnyway, the other four
+# ScheduleAnyway null null ScheduleAnyway.
+yq -N -r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .spec.template.spec.topologySpreadConstraints as $t |
+  [.metadata.name, $t[0].whenUnsatisfiable, $t[0].minDomains, $t[0].nodeTaintsPolicy, $t[1].whenUnsatisfiable] | @tsv' "$TMP/dev.yaml" | grep .
 
 # Criterion 2: the gateway trusts X-Forwarded-For only from the pod CIDR.
 yq -N -r 'select(.kind == "ConfigMap" and .metadata.name == "api-gateway*") | .data.TRUSTED_PROXIES' "$TMP/dev.yaml" | grep .
