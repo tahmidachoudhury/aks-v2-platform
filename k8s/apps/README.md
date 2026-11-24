@@ -2,7 +2,7 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
 
 ## Layout
 
@@ -52,7 +52,9 @@ Every Deployment, and the scheduler's StatefulSet, gets these from `components/s
 | CPU request | 40m, no CPU limit | The per-pod budget in [namespaces](../namespaces/README.md#cpu-budget) |
 | Memory | 64Mi request, 256Mi limit | The namespace defaults, set explicitly |
 | `enableServiceLinks` | `false` | Stops `ORDER_SERVICE_PORT` and similar variables being injected for every Service in `apps` |
-| `terminationGracePeriodSeconds` | 40 | Covers the HTTP services' 5s drain and 30s shutdown, and the scheduler's 20s job wait and 5s stop |
+| Rollout | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `progressDeadlineSeconds: 300` | Deployments only, from `rollout.yaml`. See [Rollouts](#rollouts) |
+| `preStop` | The kubelet's `sleep` action, 5s | Holds SIGTERM back while Cilium and Traefik drop the pod from their endpoints. The images have no shell to exec `sleep` in |
+| `terminationGracePeriodSeconds` | 45 | The 5s preStop, then the HTTP services' 5s drain and 30s shutdown: 40s. The scheduler's 5s, 20s job wait and 5s stop: 30s |
 | Startup probe | `/livez`, every 5s, 30 tries | The Postgres users ping the database for up to 120s before they listen |
 | Liveness probe | `/livez`, every 10s, 3s timeout, 3 tries | Always 200 while the process runs, so a dependency outage never restarts a pod |
 | Readiness probe | `/healthz`, every 5s, 3s timeout, 3 tries | 503 on SIGTERM, for Postgres, and for Service Bus on the worker. The Postgres ping has no timeout, so the probe's 3s bounds it |
@@ -116,6 +118,21 @@ order-service, payment-service, shipping-service and worker each have:
 - `SERVICEBUS_NAMESPACE` set to the namespace's FQDN and no `SERVICEBUS_CONNECTION_STRING`, so `DefaultAzureCredential` signs in with that token.
 
 Each identity holds one role, on the `order-events` queue only: Data Sender for the three publishers, Data Receiver for the worker ([role matrix](../../infra/modules/workload-identity/README.md#role-matrix)). The other five services have no label and no annotation, so the webhook injects nothing into them. All nine ServiceAccounts set `automountServiceAccountToken: false`, since no service calls the API server. The webhook mounts its own projected token at `/var/run/secrets/azure/tokens`, separate from the API token, so the four callers keep their Azure sign-in. No service reads Key Vault. ESO does that with its own identity.
+
+## Rollouts
+
+P6-03 (#64). Every Deployment but the scheduler rolls one pod at a time, and keeps every old pod until the new one is Ready:
+
+1. The Deployment adds one new pod (`maxSurge: 1`). It takes traffic only once `/healthz` passes, so a pod that never turns Ready takes none.
+2. Only then does it remove an old pod (`maxUnavailable: 0`). That pod leaves the Service endpoints straight away. The 5s `preStop` sleep gives Cilium and Traefik time to stop sending it new connections.
+3. Kubernetes sends SIGTERM. The HTTP services fail `/healthz` and keep serving for `SHUTDOWN_DRAIN_DELAY` (5s), then `server.Shutdown` waits up to 30s for requests in flight. The 45s grace period covers all of it.
+4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and `make apps` fails. The old pods keep serving. Undo with `kubectl rollout undo`.
+
+The worker loses no messages in a rollout. It receives in PeekLock mode, so a message it hasn't completed is locked, not removed. On SIGTERM it abandons what it received after the signal, and Service Bus redelivers those at once. A message it was handling when the pod died returns when its one-minute lock expires.
+
+The scheduler is a StatefulSet, so the rollout fields live in a second component patch, `rollout.yaml`, that targets Deployments only. The StatefulSet's own rolling update deletes `scheduler-0` before it creates the new one, and has no progress deadline: `make apps` gives up on it after its 10-minute `rollout status` timeout (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)).
+
+With replicas near the HPA maximums, roll one service at a time. Each rollout adds a 40m surge pod, and at the maximums the `apps` quota has room for only a few at once ([Quotas](#quotas)). A surge pod the quota refuses holds its rollout until the deadline fails it.
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -403,6 +420,37 @@ Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-ht
 
 Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
 
+**P6-03 (#64), criterion 10: a rollout under load has no errors, a broken image fails without taking traffic, and rolling the worker loses no messages.**
+
+Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another:
+
+```bash
+CTX=aks-v2-platform
+K="kubectl --context $CTX -n apps"
+# 1. Roll two services under load.
+$K rollout restart deploy/api-gateway deploy/order-service
+$K rollout status deploy/api-gateway --timeout=5m
+$K rollout status deploy/order-service --timeout=5m
+
+# 2. A broken image: the new pod never turns Ready, the old ones keep serving.
+ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
+$K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
+$K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
+$K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}{"\n"}'
+$K get endpointslices -l kubernetes.io/service-name=payment-service -o wide
+$K rollout undo deploy/payment-service
+
+# 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
+$K rollout restart deploy/worker
+$K rollout status deploy/worker --timeout=5m
+# After the load test ends and the worker drains the queue:
+az servicebus queue show -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+  --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
+  -n order-events --query countDetails
+```
+
+Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists only the old pods' addresses, and the load test still sees no errors. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
+
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
 ```bash
@@ -460,6 +508,14 @@ yq ea -r '[select(.kind == "Deployment" or .kind == "StatefulSet")] | .[] | .spe
    $p.securityContext.seccompProfile.type, .securityContext.readOnlyRootFilesystem,
    .securityContext.allowPrivilegeEscalation, (.securityContext.capabilities.drop | join(",")),
    .resources.requests.cpu, .readinessProbe.timeoutSeconds] | @tsv' "$TMP/dev.yaml"
+
+# Criterion 10: rollout settings for the eight Deployments. Every row reads
+# RollingUpdate 0 1 300 45 5. The scheduler is a StatefulSet and has none of
+# these: its grace period and preStop come from the same patch as the rest.
+yq ea -r '[select(.kind == "Deployment")] | .[] | [.metadata.name, .spec.strategy.type,
+  .spec.strategy.rollingUpdate.maxUnavailable, .spec.strategy.rollingUpdate.maxSurge,
+  .spec.progressDeadlineSeconds, .spec.template.spec.terminationGracePeriodSeconds,
+  .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds] | @tsv' "$TMP/dev.yaml"
 
 # Criterion 2: the gateway trusts X-Forwarded-For only from the pod CIDR.
 yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | .[].data.TRUSTED_PROXIES' "$TMP/dev.yaml"

@@ -14,10 +14,11 @@ spec:
       # Stops Kubernetes injecting ORDER_SERVICE_PORT and friends for every
       # Service in apps. The services read only the variables we set.
       enableServiceLinks: false
-      # The HTTP services wait SHUTDOWN_DRAIN_DELAY (5s) after SIGTERM, then
-      # give in-flight requests up to 30s. The scheduler waits up to 20s for a
-      # running job, then 5s for its health server. 40s covers both.
-      terminationGracePeriodSeconds: 40
+      # The preStop sleep (5s), then, after SIGTERM, the HTTP services' drain
+      # (SHUTDOWN_DRAIN_DELAY, 5s) and up to 30s for in-flight requests: 40s.
+      # The scheduler takes 5s, then up to 20s for a running job and 5s for
+      # its health server. 45s covers both with room to spare.
+      terminationGracePeriodSeconds: 45
       # The images are distroless static:nonroot, user and group 65532.
       securityContext:
         runAsNonRoot: true
@@ -36,6 +37,14 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+          # Holds SIGTERM back 5s after the pod leaves the Service endpoints,
+          # so Cilium and Traefik stop sending it new connections before the
+          # service starts its own drain. The images have no shell, so this is
+          # the kubelet's sleep action, not an exec of sleep.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

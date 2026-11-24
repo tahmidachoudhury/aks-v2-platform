@@ -17,3 +17,4 @@ configMapGenerator:
   - name: scheduler
     envs:
       - config.env
+

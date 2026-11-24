@@ -1,0 +1,21 @@
+# Merged into the Deployments only. A StatefulSet has neither field: the
+# scheduler's own RollingUpdate deletes scheduler-0 before it creates the
+# new one, which is the point of it being a StatefulSet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any-service
+spec:
+  # One new pod at a time, and no old pod goes until the new one is Ready, so
+  # serving capacity never drops during a rollout and a pod that never turns
+  # Ready takes no traffic.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  # A rollout that makes no progress for 5 minutes is marked failed, and
+  # kubectl rollout status (make apps) exits non-zero. Long enough for NAP to
+  # add a node for the surge pod and for the 150s startup probe, half the
+  # default 10 minutes.
+  progressDeadlineSeconds: 300
