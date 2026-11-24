@@ -11,6 +11,8 @@ images:
   - name: ACR_LOGIN_SERVER/scheduler
     newTag: b33be046503f
 
+# Always exactly one, in every environment: the jobs have no lock. See the
+# base for why the rollout is Recreate.
 replicas:
   - name: scheduler
     count: 1

@@ -11,6 +11,12 @@ metadata:
     # for no other Secret, so rotating one key restarts only its users.
     secret.reloader.stakater.com/reload: scheduler
 spec:
+  # Never two at once, even during a rollout: the jobs run in-process with
+  # no lock, and each runs once at startup. A rolling update would run the
+  # old and new pod together, and expire_reservations would release the
+  # same stock twice (ADR Autoscaling). Recreate stops the old pod first.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: scheduler
