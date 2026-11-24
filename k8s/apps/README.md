@@ -128,7 +128,7 @@ P6-03 (#64). Every Deployment rolls one pod at a time, and keeps every old pod u
 1. The Deployment adds one new pod (`maxSurge: 1`). It takes traffic only once `/healthz` passes, so a pod that never turns Ready takes none.
 2. Only then does it remove an old pod (`maxUnavailable: 0`). That pod leaves the Service endpoints straight away. The 5s `preStop` sleep gives Cilium and Traefik time to stop sending it new connections.
 3. Kubernetes sends SIGTERM. The HTTP services fail `/healthz` and keep serving for `SHUTDOWN_DRAIN_DELAY` (5s), then `server.Shutdown` waits up to 30s for requests in flight. The 45s grace period covers all of it.
-4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and `make apps` fails. The old pods keep serving. Undo with `kubectl rollout undo`.
+4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and `make apps` fails. The old pods keep serving. Revert the tag in Git and run `make apps`. `kubectl rollout undo` also works for a Deployment, but the next `make apps` puts the broken tag back. A broken scheduler release needs `scheduler-0` deleted after the revert, since a StatefulSet doesn't replace an unready pod. `make apps` does that, or run `kubectl -n apps delete pod scheduler-0` ([Scheduler](#scheduler-one-statefulset-not-cronjobs)).
 
 The worker loses no messages in a rollout. It receives in PeekLock mode, so a message it hasn't completed is locked, not removed. On SIGTERM it abandons what it received after the signal, and Service Bus redelivers those at once. A message it was handling when the pod died returns when its one-minute lock expires.
 
