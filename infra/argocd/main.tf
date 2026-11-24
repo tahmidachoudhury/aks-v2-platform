@@ -86,3 +86,54 @@ resource "helm_release" "argocd" {
   wait    = true
   timeout = 600
 }
+
+# A release of its own: Helm can't install an Application in the same
+# release as the CRD that defines it. No finalizer on the root, so
+# destroying this release deletes the Application and nothing under it.
+resource "helm_release" "root" {
+  name       = "root"
+  repository = "https://argoproj.github.io/argo-helm"
+  chart      = "argocd-apps"
+  version    = "2.0.8"
+  namespace  = kubernetes_namespace_v1.argocd.metadata[0].name
+
+  values = [yamlencode({
+    applications = {
+      root = {
+        namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+        project   = "default"
+        source = {
+          repoURL        = var.repo_url
+          targetRevision = var.target_revision
+          path           = "argocd/apps"
+          helm = {
+            valuesObject = {
+              repoURL        = var.repo_url
+              targetRevision = var.target_revision
+              azure = {
+                acrLoginServer          = data.azurerm_container_registry.acr.login_server
+                keyVaultUri             = data.azurerm_key_vault.this.vault_uri
+                subscriptionId          = var.subscription_id
+                dnsZoneName             = data.azurerm_dns_zone.this.name
+                dnsZoneResourceGroup    = data.azurerm_dns_zone.this.resource_group_name
+                serviceBusNamespace     = "${data.azurerm_servicebus_namespace.this.name}.servicebus.windows.net"
+                serviceBusNamespaceName = data.azurerm_servicebus_namespace.this.name
+                serviceBusQueue         = data.azurerm_servicebus_queue.this.name
+                clientIds               = { for k, v in data.azurerm_user_assigned_identity.workload : k => v.client_id }
+              }
+            }
+          }
+        }
+        destination = {
+          server    = "https://kubernetes.default.svc"
+          namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+        }
+        syncPolicy = {
+          syncOptions = ["ServerSideApply=true"]
+        }
+      }
+    }
+  })]
+
+  depends_on = [helm_release.argocd]
+}

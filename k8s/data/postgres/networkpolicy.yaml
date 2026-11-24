@@ -4,7 +4,7 @@
 # these names. Postgres itself connects to nothing.
 #
 # Nothing in data needs a rule here: the snapshot CronJob talks only to the
-# API server, and make data, the restore drill and the acceptance tests reach
+# API server, and app-role.sql, the restore drill and the acceptance tests reach
 # Postgres through kubectl exec, which doesn't cross the pod network. psql -h
 # from inside postgres-0 stays inside the pod.
 apiVersion: networking.k8s.io/v1

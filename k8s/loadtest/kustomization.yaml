@@ -1,4 +1,4 @@
-# Applied only by make loadtest. Not part of make apps or make cluster.
+# Applied only by make loadtest. Argo CD never applies it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: default

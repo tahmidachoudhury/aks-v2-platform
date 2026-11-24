@@ -1,0 +1,40 @@
+# Set by the root Application, which infra/argocd creates. Nothing
+# deployment-specific is committed: the azure block arrives from OpenTofu,
+# and values.schema.json refuses a render without it. See
+# values.example.yaml for its shape.
+
+# Where every child's own manifests and values files come from. The root
+# passes its own target_revision, so a branch under test reaches every
+# child.
+repoURL: https://github.com/tahmidachoudhury/aks-v2-platform.git
+targetRevision: main
+
+# azure:
+#   acrLoginServer:          the registry host, for every service image
+#   keyVaultUri:             the ClusterSecretStore's vaultUrl
+#   subscriptionId:          ExternalDNS, for the DNS zone
+#   dnsZoneName:             ExternalDNS's domain filter
+#   dnsZoneResourceGroup:    the zone's resource group
+#   serviceBusNamespace:     the namespace's FQDN, for SERVICEBUS_NAMESPACE
+#   serviceBusNamespaceName: its name, for the worker's ScaledObject
+#   serviceBusQueue:         the queue
+#   clientIds:               workload identity client IDs, by ServiceAccount name
+
+# The nine services, each its own Application so one rollback touches no
+# other. workloadIdentity marks the four that sign in to Service Bus as
+# their own identity: their ServiceAccount gets its client ID, and their
+# Deployment the namespace and queue.
+services:
+  api-gateway: {}
+  order-service:
+    workloadIdentity: true
+  inventory-service: {}
+  payment-service:
+    workloadIdentity: true
+  notification-service: {}
+  shipping-service:
+    workloadIdentity: true
+  dashboard-api: {}
+  worker:
+    workloadIdentity: true
+  scheduler: {}

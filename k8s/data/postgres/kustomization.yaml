@@ -8,10 +8,10 @@ resources:
   - pdb.yaml
   - networkpolicy.yaml
 
-# The image runs this on the first start against an empty disk, and make data
-# runs it after every rollout. Editing it changes the ConfigMap's hash suffix,
-# which rolls the pod, but on a disk that already holds data the image skips
-# it, so make data is what applies the change.
+# The image runs this on the first start against an empty disk. Editing it
+# changes the ConfigMap's hash suffix, which rolls the pod, but on a disk that
+# already holds data the image skips it, so run it by hand to apply a change
+# mid-day (README.md). Each morning's empty disk gets it anyway.
 configMapGenerator:
   - name: postgres-init
     files:

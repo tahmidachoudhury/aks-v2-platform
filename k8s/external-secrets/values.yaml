@@ -1,9 +1,10 @@
 # Helm values for the external-secrets chart, version 2.15.0 from
-# oci://ghcr.io/external-secrets/charts/external-secrets. The install command
-# and the reasons are in README.md.
+# oci://ghcr.io/external-secrets/charts/external-secrets. The
+# external-secrets Application in argocd/apps pins the version and reads
+# this file. The reasons are in README.md.
 #
-# The client ID annotation is not here. It is passed with --set-string at
-# install time from the persistent output, so no ID is committed. See
+# The client ID annotation is not here. The Application sets it from
+# OpenTofu, so no ID is committed. See
 # ../../infra/modules/workload-identity/README.md#client-ids.
 
 # Matches the federated credential's subject,

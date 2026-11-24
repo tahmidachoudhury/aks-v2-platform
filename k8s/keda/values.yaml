@@ -1,9 +1,9 @@
 # KEDA, chart keda 2.21.1 (KEDA 2.21.1) from https://kedacore.github.io/charts,
-# installed into the platform namespace. Install command and design:
-# README.md.
+# installed into the platform namespace by the keda Application in
+# argocd/apps, which pins the version and reads this file. Design: README.md.
 #
-# The client ID is not here. make keda passes it with --set-string from the
-# persistent output, so no ID is committed.
+# The client ID is not here. The Application sets it from OpenTofu, so no ID
+# is committed.
 
 # The operator reads the queue's message count as id-keda. The chart labels
 # the operator's pods azure.workload.identity/use and annotates the

@@ -1,6 +1,6 @@
 # cert-manager, chart cert-manager v1.21.3 from https://charts.jetstack.io,
-# installed into the platform namespace. Install command and design:
-# README.md.
+# installed into the platform namespace by its Application in argocd/apps,
+# which pins the version and reads this file. Design: README.md.
 
 # The chart installs and upgrades the CRDs. keep stops helm uninstall from
 # deleting them, and every Certificate with them.

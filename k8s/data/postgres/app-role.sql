@@ -2,8 +2,8 @@
 -- so migrations can create tables. Safe to run any number of times.
 --
 -- Two callers: the image runs it once from /docker-entrypoint-initdb.d when
--- PGDATA is empty, and make data runs it after every rollout, which repairs
--- a failed first init and applies a rotated password. The password is read
+-- PGDATA is empty, and an operator runs it with kubectl exec to apply a
+-- rotated password or repair a failed first init (k8s/data/README.md). The password is read
 -- from the mounted Secret file, which follows the Secret, so it never
 -- appears on a command line. The superuser gets the same value, the only
 -- Postgres secret in the vault.

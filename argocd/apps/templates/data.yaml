@@ -1,0 +1,33 @@
+{{- /*
+Postgres and Redis, the snapshot CronJob, then the migrations. data never
+prunes: a resource dropped from Git by mistake stays, so a bad commit can't
+delete Postgres or its disk. Remove one by hand (README.md).
+*/ -}}
+{{- include "apps.head" (dict "root" . "name" "data" "wave" 6) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/data
+  {{- include "apps.tail" (dict "namespace" "data" "noPrune" true "skipDryRun" true) | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "backup" "wave" 7) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/backup
+  {{- include "apps.tail" (dict "namespace" "data") | nindent 2 }}
+---
+{{- /*
+The migration Job, once per change to k8s/migrations, in the wave before
+the services. See k8s/migrations/README.md for why it is not in the
+services' Applications.
+*/}}
+{{ include "apps.head" (dict "root" . "name" "migrations" "wave" 8) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/migrations
+  {{- include "apps.tail" (dict "namespace" "apps" "skipDryRun" true) | nindent 2 }}

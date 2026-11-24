@@ -1,9 +1,9 @@
 # ExternalDNS, chart external-dns 1.23.0 (ExternalDNS 0.23.0) from
 # https://kubernetes-sigs.github.io/external-dns/, installed into the
-# platform namespace. Install command and design: README.md.
+# platform namespace by the external-dns Application in argocd/apps, which
+# pins the version and reads this file. Design: README.md.
 #
-# The install command in README.md sets four values from the persistent
-# outputs and $SUB, so none is written here. The client ID and subscription
+# The Application sets four values from OpenTofu, so none is written here. The client ID and subscription
 # stay out of this public repo. The zone and its group are variables in
 # persistent, so reading them keeps one source:
 #   serviceAccount.annotations."azure.workload.identity/client-id"

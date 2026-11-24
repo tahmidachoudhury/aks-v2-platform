@@ -1,0 +1,71 @@
+{{- /*
+One Application per service, all in the last wave, after the migrations.
+Each renders its dev overlay and fills in the placeholders the bases carry:
+- The registry. The trailing :* keeps the tag the overlay pins, so the tag
+  stays in Git, where CI bumps it.
+- For the four with a workload identity: the client ID on the
+  ServiceAccount, and the Service Bus namespace and queue on the
+  Deployment. The worker's ScaledObject also gets the namespace's name
+  and the queue. The test steps make the patch fail if the trigger moves.
+*/ -}}
+{{- $root := . }}
+{{- $azure := .Values.azure }}
+{{- range $name, $svc := .Values.services }}
+---
+{{ include "apps.head" (dict "root" $root "name" $name "wave" 9) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" $root | nindent 4 }}
+    path: k8s/apps/{{ $name }}/overlays/dev
+    kustomize:
+      images:
+        - ACR_LOGIN_SERVER/{{ $name }}={{ $azure.acrLoginServer }}/{{ $name }}:*
+      {{- if $svc.workloadIdentity }}
+      patches:
+        - target:
+            kind: ServiceAccount
+            name: {{ $name }}
+          patch: |-
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              name: {{ $name }}
+              annotations:
+                azure.workload.identity/client-id: {{ index $azure.clientIds $name | quote }}
+        - target:
+            kind: Deployment
+            name: {{ $name }}
+          patch: |-
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: {{ $name }}
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: app
+                      env:
+                        - name: SERVICEBUS_NAMESPACE
+                          value: {{ $azure.serviceBusNamespace | quote }}
+                        - name: SERVICEBUS_QUEUE
+                          value: {{ $azure.serviceBusQueue | quote }}
+        {{- if eq $name "worker" }}
+        - target:
+            kind: ScaledObject
+            name: worker
+          patch: |-
+            - op: test
+              path: /spec/triggers/0/type
+              value: azure-servicebus
+            - op: replace
+              path: /spec/triggers/0/metadata/namespace
+              value: {{ $azure.serviceBusNamespaceName | quote }}
+            - op: replace
+              path: /spec/triggers/0/metadata/queueName
+              value: {{ $azure.serviceBusQueue | quote }}
+        {{- end }}
+      {{- end }}
+  {{- include "apps.tail" (dict "namespace" "apps" "skipDryRun" true) | nindent 2 }}
+{{- end }}
