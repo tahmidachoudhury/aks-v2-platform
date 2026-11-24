@@ -4,7 +4,8 @@ namespace: apps
 resources:
   - serviceaccount.yaml
   - external-secret.yaml
-  - deployment.yaml
+  - statefulset.yaml
+  - service.yaml
 
 components:
   - ../../components/service

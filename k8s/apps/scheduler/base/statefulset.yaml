@@ -1,22 +1,28 @@
 # Runs five jobs on in-process tickers: expiring reservations, cancelling
 # abandoned orders and so on. Its port serves only /livez and /healthz.
+#
+# A one-replica StatefulSet, not a Deployment, so two copies never run. The
+# jobs take no lock and each runs once at startup, so two copies would run
+# every job twice, and expire_reservations would release the same stock
+# twice (ADR Autoscaling). A StatefulSet creates scheduler-0's replacement
+# only once the old pod has gone, on a rollout, a drain, an eviction or a
+# delete. A Deployment's Recreate covers only rollouts. It keeps no state, so
+# it has no volumeClaimTemplates.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: scheduler
   labels:
     app.kubernetes.io/name: scheduler
   annotations:
-    # Reloader rolls this Deployment when the scheduler Secret changes, and
+    # Reloader rolls this StatefulSet when the scheduler Secret changes, and
     # for no other Secret, so rotating one key restarts only its users.
     secret.reloader.stakater.com/reload: scheduler
 spec:
-  # Never two at once, even during a rollout: the jobs run in-process with
-  # no lock, and each runs once at startup. A rolling update would run the
-  # old and new pod together, and expire_reservations would release the
-  # same stock twice (ADR Autoscaling). Recreate stops the old pod first.
-  strategy:
-    type: Recreate
+  # Required by a StatefulSet: the headless Service in service.yaml.
+  serviceName: scheduler
+  # The default RollingUpdate. With one replica it deletes scheduler-0 and
+  # waits for it to go before it creates the new one.
   selector:
     matchLabels:
       app.kubernetes.io/name: scheduler

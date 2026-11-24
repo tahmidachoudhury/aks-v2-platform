@@ -6,16 +6,17 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
 # On every resource and pod template, never on selectors: a selector change
-# would recreate the Deployments, and kustomize would also rewrite the
+# would recreate the workloads, and kustomize would also rewrite the
 # podSelectors in other services' NetworkPolicies.
 labels:
   - pairs:
       app.kubernetes.io/part-of: order-fulfilment
     includeTemplates: true
 
-# Every Deployment in the base, whatever its name. The container in each base
-# is called app, so this patch merges into it by name.
+# Every workload in the base, whatever its name: the Deployments, and the
+# scheduler's StatefulSet. The target's kind is a regular expression. The
+# container in each base is called app, so this patch merges into it by name.
 patches:
-  - path: deployment.yaml
+  - path: workload.yaml
     target:
-      kind: Deployment
+      kind: Deployment|StatefulSet

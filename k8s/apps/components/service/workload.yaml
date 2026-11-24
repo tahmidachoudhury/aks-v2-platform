@@ -1,6 +1,8 @@
-# Merged into every service Deployment. The name is ignored: the target in
-# kustomization.yaml picks the Deployments by kind. Each base sets its own
-# port, named http, so the probes here find it.
+# Merged into every service workload, the eight Deployments and the
+# scheduler's StatefulSet. The kind and name are ignored: the target in
+# kustomization.yaml picks the workloads by kind. Only fields both kinds have
+# belong here. Each base sets its own port, named http, so the probes here
+# find it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

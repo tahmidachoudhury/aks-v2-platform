@@ -12,7 +12,7 @@ images:
     newTag: b33be046503f
 
 # Always exactly one, in every environment: the jobs have no lock. See the
-# base for why the rollout is Recreate.
+# base for why it is a StatefulSet.
 replicas:
   - name: scheduler
     count: 1

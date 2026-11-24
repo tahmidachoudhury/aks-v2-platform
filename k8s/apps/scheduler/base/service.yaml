@@ -1,0 +1,16 @@
+# Headless and unused by callers: nothing calls the scheduler. A StatefulSet
+# needs a governing Service, and this is the smallest one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: scheduler
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http

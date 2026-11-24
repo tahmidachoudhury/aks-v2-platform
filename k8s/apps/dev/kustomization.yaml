@@ -38,11 +38,15 @@ replacements:
     targets:
       - select:
           kind: Deployment
-        fieldPaths:
+        fieldPaths: &image
           - spec.template.spec.containers.[name=app].image
-        options:
+        options: &first-segment
           delimiter: /
           index: 0
+      - select:
+          kind: StatefulSet
+        fieldPaths: *image
+        options: *first-segment
   - source:
       kind: ConfigMap
       name: azure

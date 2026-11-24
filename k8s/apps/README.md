@@ -1,6 +1,6 @@
 # apps
 
-**TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every Deployment the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
+**TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
 Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67) and P6-11 (#72).
 
@@ -8,15 +8,16 @@ Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67) and P6-11 (#72).
 
 ```text
 k8s/apps/
-  components/service/       the pod shape every Deployment shares (a Kustomize Component)
-  <service>/base/           ServiceAccount, Deployment, Service, ExternalSecret, config.env
+  components/service/       the pod shape every workload shares (a Kustomize Component)
+  <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service,
+                            ExternalSecret, config.env
   <service>/overlays/dev/   image tag and replica count for dev
   dev/                      all nine dev overlays, plus the values from OpenTofu
 ```
 
 This follows [data](../data/README.md#why-k8sdatacomponent): one folder per namespace, then one per component. The service folder name is also the name of its ServiceAccount, of the federated credential's subject (`system:serviceaccount:apps:<service>`), and of its ArgoCD Application in P7.
 
-The [Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling) ADR warned of nine near-identical bases and chose a Kustomize component. `components/service` holds what the services share. Each base includes it and keeps only its port, config, Secret and identity. The component patches every Deployment by kind and merges into the container called `app`. It also labels everything `app.kubernetes.io/part-of: order-fulfilment`, on resources and pod templates but never on selectors.
+The [Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling) ADR warned of nine near-identical bases and chose a Kustomize component. `components/service` holds what the services share. Each base includes it and keeps only its port, config, Secret and identity. The component patches every Deployment and the scheduler's StatefulSet by kind (`Deployment|StatefulSet`, a regular expression) and merges into the container called `app`. It carries only fields both kinds have. It also labels everything `app.kubernetes.io/part-of: order-fulfilment`, on resources and pod templates but never on selectors.
 
 Each file writes its selectors out. Kustomize's `labels` with `includeSelectors` also rewrites `podSelector`s in NetworkPolicies, which would break any rule that names another service.
 
@@ -34,13 +35,13 @@ Each file writes its selectors out. Kustomize's `labels` with `includeSelectors`
 | worker | 8090, health only | 1 | `id-worker`, Service Bus Data Receiver | none | no |
 | scheduler | 8091, health only | 1 | none | `PGPASSWORD` | yes |
 
-The replica counts are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums. The worker and scheduler have no Service, since nothing calls them. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
+The replica counts are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums. The worker has no Service, since nothing calls it. The scheduler has a headless one only because a StatefulSet needs a governing Service. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
 
 `ADMIN_EMAILS` is unset on api-gateway on purpose. Login checks no password, so anyone who knows an admin email would get an admin token ([service catalogue](../../docs/service-catalogue.md#api-gateway)).
 
 ## The pod shape
 
-Every Deployment gets these from `components/service`:
+Every Deployment, and the scheduler's StatefulSet, gets these from `components/service`:
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -106,16 +107,18 @@ order-service, payment-service, shipping-service and worker each have:
 
 Each identity holds one role, on the `order-events` queue only: Data Sender for the three publishers, Data Receiver for the worker ([role matrix](../../infra/modules/workload-identity/README.md#role-matrix)). The other five services have no label, no annotation and `automountServiceAccountToken: false` on their ServiceAccount. The webhook injects nothing into them and they get no API token. No service reads Key Vault. ESO does that with its own identity.
 
-## Scheduler: one Deployment, not CronJobs
+## Scheduler: one StatefulSet, not CronJobs
 
-P6-11 (#72) asked which fits the code. The answer is a Deployment with one replica and `strategy: Recreate`:
+P6-11 (#72) asked which fits the code. The answer is a StatefulSet with one replica and no volumes:
 
 - `app/services/scheduler/main.go` runs five jobs on in-process tickers (1, 5, 15, 30 and 60 minutes). Each runs once at startup, then on its tick. It is a long-running process with a health port.
 - The jobs take no lock, so two copies would run every job twice. `expire_reservations` lowers `products.reserved` without checking that the reservation is still active, so two runs release the same stock twice ([Autoscaling](../../docs/architecture-decisions.md#autoscaling)).
-- A rolling update runs the old and new pods together, and the new one runs every job at startup. `Recreate` stops the old pod first, so a rollout never runs two copies.
+- A Deployment's rolling update runs the old and new pods together, and the new one runs every job at startup. `strategy: Recreate` fixes rollouts only. On a drain, an eviction or a `kubectl delete pod`, a Deployment starts the new pod while the old one is still in its 40-second shutdown.
+- A StatefulSet creates `scheduler-0` again only once the old `scheduler-0` has gone, whatever removed it. Its rolling update, with one replica, deletes the pod and waits for it before it creates the new one. If a node is lost without a clean shutdown, the pod isn't replaced until the node is confirmed gone, which is the trade the jobs need.
+- The scheduler keeps no state, so it has no `volumeClaimTemplates`. The headless Service `scheduler` exists only because a StatefulSet requires `serviceName`.
 - CronJobs would need a new entry point per job. `concurrencyPolicy: Forbid` also doesn't stop two Jobs overlapping across a CronJob edit. That change isn't worth making for five short jobs.
 
-The cost: no scheduler copy runs while it rolls out or its node drains. A missed tick only delays the next run, since each job works through whatever is due.
+The cost: no scheduler copy runs while it rolls out or its node drains, and it has no PodDisruptionBudget or autoscaler. A missed tick only delays the next run, since each job works through whatever is due.
 
 ## Quotas
 
@@ -145,7 +148,7 @@ make reloader   # before make data, in the first line of make cluster
 make apps
 ```
 
-`make apps` writes `dev/azure.env` and applies `dev/`. It waits up to 2 minutes for every ExternalSecret in `apps`, then up to 10 minutes for each Deployment's rollout. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy.
+`make apps` writes `dev/azure.env` and applies `dev/`. It waits up to 2 minutes for every ExternalSecret in `apps`, then up to 10 minutes for each rollout: eight Deployments and `statefulset/scheduler`. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy.
 
 ## Proving it
 
@@ -219,22 +222,35 @@ diff <(kubectl --context aks-v2-platform -n apps get secret api-gateway -o jsonp
 
 Expect `no Secret manifests`, nine ExternalSecrets `SecretSynced` (eight services and `db-migrate`), and `match`. Neither value is printed. Run the `az` call from an IP the vault firewall allows. The rotation test is in [reloader](../reloader/README.md#proving-it). It rotates `shipping-webhook-secret` and expects only shipping-service to restart.
 
-**P6-11 (#72), criterion 7: one copy of each job per tick, including across a rollout.**
+**P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
 ```bash
 CTX=aks-v2-platform
-kubectl --context $CTX -n apps get deploy scheduler -o jsonpath='{.spec.strategy.type} {.spec.replicas}{"\n"}'
-kubectl --context $CTX -n apps rollout restart deploy/scheduler
-# During the rollout there is never more than one scheduler pod.
-for i in $(seq 30); do kubectl --context $CTX -n apps get pods -l app.kubernetes.io/name=scheduler --no-headers | grep -vc Terminating; sleep 2; done | sort -u
-kubectl --context $CTX -n apps rollout status deploy/scheduler --timeout=3m
-# Over the next five minutes, one expire_reservations run a minute.
+K="kubectl --context $CTX -n apps"
+$K get statefulset scheduler -o jsonpath='{.kind} {.spec.replicas}{"\n"}'
+# Count scheduler pods that exist, Terminating included, every second, in the background.
+( for i in $(seq 600); do $K get pods -l app.kubernetes.io/name=scheduler --no-headers 2>/dev/null | wc -l; sleep 1; done \
+  | sort | uniq -c > /tmp/scheduler-pods.log ) &
+
+# 1. A rollout.
+$K rollout restart statefulset/scheduler
+$K rollout status statefulset/scheduler --timeout=3m
+# 2. A pod delete.
+$K delete pod scheduler-0
+$K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
+# 3. A drain of its node. Pick a node without postgres-0 or redis-0, whose budgets block drains.
+NODE=$($K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
+kubectl --context $CTX drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=5m
+$K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
+kubectl --context $CTX uncordon "$NODE"
+
+wait; cat /tmp/scheduler-pods.log
+# One expire_reservations run a minute since the drain.
 sleep 300
-kubectl --context $CTX -n apps logs deploy/scheduler --since=5m --timestamps \
-  | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
+$K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
 ```
 
-Expect `Recreate 1`. The count loop prints only `0` and `1`, never `2`. Each minute shows one `expire_reservations` run. The new pod's first run comes at startup, after the old pod stopped.
+Expect `StatefulSet 1`. The pod count log shows only `0` and `1`, never `2`, even while an old pod is `Terminating`. Each minute since the drain shows one `expire_reservations` run. Each new pod's first run comes at startup, after the old pod stopped.
 
 ## Validate
 
@@ -252,9 +268,9 @@ kubeconform -strict -summary \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
   "$TMP/dev.yaml"
 
-# Criteria 1 and 2: one line per Deployment. Every column after the name must read
+# Criteria 1 and 2: one line per workload. Every column after the name must read
 # true 65532 RuntimeDefault true false ALL 40m 3
-yq ea -r '[select(.kind == "Deployment")] | .[] | .spec.template.spec as $p | $p.containers[] |
+yq ea -r '[select(.kind == "Deployment" or .kind == "StatefulSet")] | .[] | .spec.template.spec as $p | $p.containers[] |
   [$p.serviceAccountName, $p.securityContext.runAsNonRoot, $p.securityContext.runAsUser,
    $p.securityContext.seccompProfile.type, .securityContext.readOnlyRootFilesystem,
    .securityContext.allowPrivilegeEscalation, (.securityContext.capabilities.drop | join(",")),
@@ -265,4 +281,4 @@ yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | 
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 42, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.
+Expect `Valid: 43, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.

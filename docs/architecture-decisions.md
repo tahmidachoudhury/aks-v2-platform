@@ -138,7 +138,7 @@ Behaviour: [KEDA Service Bus scaler](https://keda.sh/docs/latest/scalers/azure-s
 **Notes on the table**
 
 - notification-service and dashboard-api start at one replica, not two. Neither sits on the path a customer waits on.
-- scheduler needs `strategy: Recreate`, not only one replica. A rolling update runs the old and new pod together, and each job runs once at start-up (`runEvery` in `app/services/scheduler/main.go`). `expire_reservations` lowers `products.reserved` without checking the reservation is still active, so two runs can release the same stock twice.
+- scheduler runs as a one-replica StatefulSet, not a Deployment. A Deployment's rolling update runs the old and new pod together, and even `strategy: Recreate` only covers rollouts: a drain, an eviction or a delete starts the new pod while the old one is still stopping. Each job runs once at start-up (`runEvery` in `app/services/scheduler/main.go`), and `expire_reservations` lowers `products.reserved` without checking the reservation is still active, so two copies can release the same stock twice. A StatefulSet creates `scheduler-0` again only once the old pod has gone, whatever removed it ([apps](../k8s/apps/README.md#scheduler-one-statefulset-not-cronjobs)).
 - Postgres connections set the low max replica counts. CPU does not.
 
 **Consequences / trade-offs**

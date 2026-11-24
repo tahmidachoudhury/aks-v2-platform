@@ -251,5 +251,6 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 	$(KUBECTL) apply -k k8s/apps/dev; \
 	$(KUBECTL) -n apps wait externalsecret --all --for=condition=Ready --timeout=2m; \
 	for svc in $(SERVICES); do \
-	  $(KUBECTL) -n apps rollout status deployment/$$svc --timeout=10m; \
+	  KIND=deployment; [[ "$$svc" != scheduler ]] || KIND=statefulset; \
+	  $(KUBECTL) -n apps rollout status "$$KIND/$$svc" --timeout=10m; \
 	done
