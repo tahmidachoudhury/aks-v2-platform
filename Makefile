@@ -232,6 +232,7 @@ pin-images: ## Pin each dev overlay to its service's current image tag. Edits Gi
 	  F=k8s/apps/$$svc/overlays/dev/kustomization.yaml; \
 	  sed -E "s/^(    newTag: ).*/\1$$TAG/" "$$F" > "$$F.tmp"; \
 	  mv "$$F.tmp" "$$F"; \
+	  grep -qx "    newTag: $$TAG" "$$F" || { echo "$$F has no newTag line to pin. Check its images entry." >&2; exit 1; }; \
 	  echo "$$svc: $$TAG"; \
 	done
 
