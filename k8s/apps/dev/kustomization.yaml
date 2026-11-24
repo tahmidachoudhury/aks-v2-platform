@@ -87,3 +87,42 @@ replacements:
           kind: Deployment
           name: worker
         fieldPaths: *servicebus-queue
+  # One client ID per workload identity, keyed in azure.env by the
+  # ServiceAccount's name.
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.order-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: order-service
+        fieldPaths: &client-id
+          - metadata.annotations.[azure.workload.identity/client-id]
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.payment-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: payment-service
+        fieldPaths: *client-id
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.shipping-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: shipping-service
+        fieldPaths: *client-id
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.worker
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: worker
+        fieldPaths: *client-id

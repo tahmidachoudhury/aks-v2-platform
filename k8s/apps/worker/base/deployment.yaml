@@ -15,6 +15,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: worker
+        # The workload identity webhook injects AZURE_CLIENT_ID, the tenant
+        # and a token file only into pods with this label.
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: worker
       containers:
@@ -27,6 +30,8 @@ spec:
             - configMapRef:
                 name: worker
           # Placeholders: k8s/apps/dev fills them in from the platform outputs.
+          # No SERVICEBUS_CONNECTION_STRING, so the SDK signs in with
+          # DefaultAzureCredential, which picks up the workload identity.
           env:
             - name: SERVICEBUS_NAMESPACE
               value: SERVICEBUS_FQDN_FROM_AZURE_ENV

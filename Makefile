@@ -219,10 +219,13 @@ pin-images: ## Pin each dev overlay to its service's current image tag. Edits Gi
 
 # The services go in after the migration, so a failed migration stops make
 # before any rollout. azure.env carries the values that stay out of Git:
-# the registry and the Service Bus namespace and queue. Every value is read
-# and checked before anything is written. See k8s/apps/README.md.
-apps: ## The nine services in apps. Values come from tofu output. Waits for every rollout
+# the registry, the Service Bus namespace and queue, and the workload
+# identities' client IDs. Every value is read and checked before anything
+# is written. See k8s/apps/README.md.
+apps: ## The nine services in apps. IDs come from tofu output. Waits for every rollout
 	set -euo pipefail; \
+	IDS=$$($(PERSISTENT_OUT) -json workload_identity_client_ids) \
+	  || { echo "No workload_identity_client_ids in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
 	ACR=$$($(PERSISTENT_OUT) -raw acr_login_server) \
 	  || { echo "No acr_login_server in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
 	SB=$$($(PLATFORM_OUT) -raw servicebus_fqdn) \
@@ -233,6 +236,12 @@ apps: ## The nine services in apps. Values come from tofu output. Waits for ever
 	[[ "$$SB" =~ ^[a-z0-9-]+\.servicebus\.windows\.net$$ ]] || { echo "'$$SB' is not a Service Bus namespace FQDN." >&2; exit 1; }; \
 	[[ "$$QUEUE" =~ ^[A-Za-z0-9._-]+$$ ]] || { echo "'$$QUEUE' is not a queue name." >&2; exit 1; }; \
 	ENV="acrLoginServer=$$ACR"$$'\n'"serviceBusNamespace=$$SB"$$'\n'"serviceBusQueue=$$QUEUE"; \
+	for id in order-service payment-service shipping-service worker; do \
+	  CLIENT_ID=$$(jq -er --arg k "$$id" '.[$$k]' <<<"$$IDS") \
+	    || { echo "No $$id client ID in the persistent outputs." >&2; exit 1; }; \
+	  [[ "$$CLIENT_ID" =~ ^[0-9a-f-]{36}$$ ]] || { echo "Client ID '$$CLIENT_ID' for $$id is not a GUID." >&2; exit 1; }; \
+	  ENV="$$ENV"$$'\n'"$$id=$$CLIENT_ID"; \
+	done; \
 	printf '%s\n' "$$ENV" > k8s/apps/dev/azure.env; \
 	$(KUBECTL) apply -k k8s/apps/dev; \
 	$(KUBECTL) -n apps wait externalsecret --all --for=condition=Ready --timeout=2m; \
