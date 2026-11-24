@@ -40,7 +40,14 @@ Chart versions are pinned in `platform.yaml` and nowhere else. Each chart's valu
 | 8 | migrations | `k8s/migrations` | The schema, before any service starts ([migrations](../k8s/migrations/README.md)) |
 | 9 | the nine services | `k8s/apps/<service>/overlays/dev` | Last. Each is its own Application, named after its folder |
 
-Argo CD 1.8 dropped health for Applications, so the root would apply every wave at once. `infra/argocd/argo-cd-values.yaml` restores it in `argocd-cm` and adds one rule: a child whose last sync failed reports Degraded. A Degraded child fails the root's wave, so a failed migration Job holds the services back, and the root retries.
+Argo CD 1.8 dropped health for Applications, so the root would apply every wave at once. `infra/argocd/argo-cd-values.yaml` restores it in `argocd-cm`, stricter than Argo CD's own. Argo CD's health for an Application skips hooks and missing resources, and a failing sync stays Running while it retries, so on its own it could pass `migrations` while the Job still runs. The check here passes a child only once its last sync has Succeeded, and then on the child's own health:
+
+- No sync yet, as when the root has just created it: Progressing. A child that is already Synced, say one recreated over resources that stayed, has nothing to sync and goes by its health.
+- A sync running or retrying: Progressing.
+- A sync that Failed or errored: Degraded, which fails the root's wave.
+- A sync that Succeeded: the child's health.
+
+It never asks for Synced, since data doesn't prune and can stay OutOfSync. So a migration Job that is still running, retrying or failed holds the services back. The root then retries until the wave passes ([When a sync fails](#when-a-sync-fails)).
 
 The waves order a bootstrap only. After that, each child syncs on its own when its folder changes. A tag bump and a migration in the same merge sync in parallel, so merge the migration first ([migrations](../k8s/migrations/README.md#under-argo-cd)).
 
@@ -65,8 +72,8 @@ Every child, and the root, has:
 
 - Automated sync with selfHeal. A merged change deploys with no click, and Argo CD reverts a hand edit to a managed field.
 - Prune, except on data. A resource dropped from Git is deleted. data never prunes, so a bad commit can't delete Postgres, Redis or their disks. Delete a resource that left `k8s/data` by hand.
-- Server-side apply. ESO's, KEDA's and cert-manager's CRDs are larger than the 256 KiB the last-applied annotation allows. From Argo CD 3.6, server-side apply also selects the server-side diff, which leaves out what mutating webhooks add.
-- Retries, 5 with backoff from 10 seconds to 3 minutes, since a webhook from the wave before can take a moment to answer.
+- Server-side apply. ESO's, KEDA's and cert-manager's CRDs are larger than the 256 KiB the last-applied annotation allows. From Argo CD 3.6, server-side apply also selects the server-side diff, which leaves out fields Argo CD doesn't own.
+- Retries without a limit, with backoff from 10 seconds to 3 minutes, picking up a new revision as it lands (`refresh`). Auto-sync never retries a failed revision by itself, so without them a short Degraded spell, such as a webhook from the wave before still starting, would leave every later wave undeployed until the next commit. `migrations` stops after 2, since rerunning a failed SQL file only marks the version dirty again.
 - SkipDryRunOnMissingResource on the Applications whose custom resources use another Application's CRDs: the store, data, migrations and the services.
 
 ### Testing a branch
@@ -86,10 +93,28 @@ Nothing needs `ignoreDifferences` today:
 - Replicas. Only the scheduler's StatefulSet sets `replicas`. The eight Deployments leave it out, so the HPAs and KEDA own the count.
 - Reloader. It stamps an annotation on the pod template (`reloadStrategy: annotations`). The annotation isn't in Git, so it isn't in the diff.
 - Secrets from ESO, and cert-manager's solver pods, Services and Ingresses. Their controllers create them. They carry no Argo CD tracking annotation, so Argo CD never prunes them.
-- AKS's admissions enforcer, which adds expressions to every webhook's `namespaceSelector`. The server-side diff ignores what mutating webhooks add.
+- AKS's admissions enforcer, which adds expressions to every webhook's `namespaceSelector`. It writes them as its own field manager, `admissionsenforcer`, and the server-side diff ignores fields Argo CD doesn't own. [Proving it](#proving-it) checks that cert-manager's and ESO's webhooks don't flap.
 - The `default` StorageClass, which AKS owns. `k8s/storage` redeclares it with `Prune=false,Delete=false`.
 
 selfHeal undoes any `kubectl edit`, `kubectl annotate` or `kubectl scale` on a field Git sets. That includes the old switch to the production certificate, now a commit ([apps](../k8s/apps/README.md#ingress)). `kubectl annotate ... force-sync=` on an ExternalSecret survives, since Git doesn't set that annotation.
+
+## When a sync fails
+
+The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges. To see why one is stuck:
+
+```bash
+argocd app get <app>    # the operation's phase and message, and each resource's state
+argocd app get root     # the wave the root waits on
+```
+
+To retry now rather than wait for the backoff, stop the retrying operation and sync again, the child first, then the root. `terminate-op` fails harmlessly if nothing is running:
+
+```bash
+argocd app terminate-op <app>; argocd app sync <app>
+argocd app terminate-op root; argocd app sync root
+```
+
+After a failed migration at bootstrap: clear the dirty version as in [When a migration fails](../k8s/migrations/README.md#when-a-migration-fails), merge the fixed file if the file was wrong, then run `argocd app sync migrations`. Once `migrations` is Healthy, the root's next retry starts the services, or sync the root as above.
 
 ## The UI
 
@@ -120,7 +145,13 @@ argocd login localhost:8080 --insecure --username admin \
 
 No step waits on a cascade, so the destroy never hangs on a finalizer.
 
-On a live cluster, **removing a child from `argocd/apps` deletes its Application but leaves its resources running.** To remove a component, delete its resources first, or add `resources-finalizer.argocd.argoproj.io` to that child for one sync before removing it.
+On a live cluster, **removing a child from `argocd/apps` deletes its Application but leaves its resources running.** To remove a component, delete its resources first, or add `resources-finalizer.argocd.argoproj.io` to that child for one sync before removing it. Finish a removal the same day. A finalizer left on a child makes the evening's argocd destroy wait on a controller that is going away.
+
+If the argocd destroy fails or is cancelled, `make down` stops, prints the recovery and says the platform destroy has not run, so the cluster is still up. For a stuck finalizer, strip it, then run `make down` again:
+
+```bash
+kubectl --context aks-v2-platform -n argocd patch application <name> --type merge -p '{"metadata":{"finalizers":null}}'
+```
 
 If platform was destroyed first, `tofu destroy` in `infra/argocd` can't reach the cluster. Its resources went with the cluster, so drop them from state: `tofu -chdir=infra/argocd state list`, then `state rm` each one.
 
@@ -227,6 +258,31 @@ kubectl --context aks-v2-platform -n argocd get applications -o json | jq -r '.i
 
 Expect every row `Synced` and `Healthy`, and the start times rising with the wave. Then check the services: `kubectl --context aks-v2-platform -n apps get deploy,statefulset`.
 
+**P7-04 (#76): a failed migration at bootstrap holds the services back.**
+
+On a test branch, add a migration that fails, then bootstrap a fresh cluster from that branch:
+
+```bash
+git switch -c tc/p7-gate-test
+printf "SET lock_timeout = '10s';\nSELECT 1/0;\n" > k8s/migrations/sql/000002_fail.up.sql
+yq -i '.configMapGenerator[0].files += ["sql/000002_fail.up.sql"]' k8s/migrations/kustomization.yaml
+git add k8s/migrations && git commit -m "test: a migration that fails" && git push -u origin tc/p7-gate-test
+make platform kubeconfig
+tofu -chdir=infra/argocd apply -var target_revision=tc/p7-gate-test
+```
+
+About 15 minutes later:
+
+```bash
+K="kubectl --context aks-v2-platform"
+$K -n argocd get application migrations -o jsonpath='{.status.operationState.phase}{"\n"}'
+$K -n apps logs job/db-migrate --tail=5
+$K -n argocd get applications -o name | grep -c -E '/(api-gateway|order-service|inventory-service|payment-service|notification-service|shipping-service|dashboard-api|worker|scheduler)$'
+$K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
+```
+
+Expect `Failed`, `division by zero` in the log, `0` service Applications, and the root `Running` with a message that it is retrying. Then clean up: set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), run `tofu -chdir=infra/argocd apply` with no `-var` to go back to `main`, and delete the branch. The services' Applications appear once `migrations` passes.
+
 **P7-05 (#77): a merged tag bump deploys with no manual sync.**
 
 Bump one service's tag (`make images`, `make pin-images`, commit, merge), then:
@@ -239,6 +295,22 @@ $K -n apps get deploy order-service -o jsonpath='{.spec.template.spec.containers
 ```
 
 Expect the Application to go OutOfSync, then Synced within about three minutes, `{"automated":true}`, the merge commit as the revision, and the new tag on the Deployment.
+
+**Server-side diff and AKS's admissions enforcer: the webhooks don't flap.**
+
+```bash
+K="kubectl --context aks-v2-platform"
+$K get validatingwebhookconfiguration cert-manager-webhook -o json | jq -c '[.metadata.managedFields[].manager] | unique'
+for i in $(seq 10); do
+  for app in cert-manager external-secrets; do
+    $K -n argocd get application $app -o jsonpath='{.metadata.name} {.status.sync.status} {.status.operationState.finishedAt}{"\n"}'
+  done; sleep 30
+done | sort | uniq -c
+argocd app diff cert-manager; echo "exit $?"
+argocd app diff external-secrets; echo "exit $?"
+```
+
+Expect `admissionsenforcer` among the managers, one line per Application with a count of 10: `Synced` with the same finish time for five minutes, so no sync ran. Both diffs print nothing and exit 0.
 
 **P7-06 (#78):** the runbook is above. P9-05 exercises it.
 

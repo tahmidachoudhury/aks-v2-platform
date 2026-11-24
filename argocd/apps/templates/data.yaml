@@ -30,4 +30,4 @@ spec:
   source:
     {{- include "apps.repo" . | nindent 4 }}
     path: k8s/migrations
-  {{- include "apps.tail" (dict "namespace" "apps" "skipDryRun" true) | nindent 2 }}
+  {{- include "apps.tail" (dict "namespace" "apps" "skipDryRun" true "retryLimit" 2) | nindent 2 }}

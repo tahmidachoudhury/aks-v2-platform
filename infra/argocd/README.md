@@ -24,7 +24,7 @@ From `argo-cd-values.yaml`:
 - No Ingress. Use `kubectl port-forward` to reach the UI ([The UI](../../argocd/README.md#the-ui)).
 - Admin with the generated password. Each install writes a new one to `argocd-initial-admin-secret`, so the nightly rebuild rotates it. dex is off since there is no SSO.
 - Notifications and the ApplicationSet controller are off. The chart has no switch for the controller, so it runs no replicas.
-- Application health, which Argo CD dropped in 1.8, is back in `argocd-cm`. The root's sync waves then wait for each wave. A child whose last sync failed reports Degraded, which fails the root's wave.
+- Application health, which Argo CD dropped in 1.8, is back in `argocd-cm`, so the root's sync waves wait for each wave. A child passes only once its last sync has Succeeded and it is Healthy, so a hook Job still running holds the wave. One whose sync failed reports Degraded, which fails the root's wave ([How the cluster comes up](../../argocd/README.md#how-the-cluster-comes-up)).
 - `crds.keep` is set, so uninstalling the release leaves the Application CRD and doesn't delete every Application.
 - Requests are 180m CPU and 480Mi across the controller, repo server, API server and Redis. No CPU limits, as elsewhere.
 
@@ -59,9 +59,15 @@ Copy `terraform.tfvars.example` to `terraform.tfvars`, which is gitignored. `sub
 
 ## Lifecycle
 
-Destroyed and applied again with `platform` every day. `make up` applies it after platform and the kubeconfig step. `make down` destroys it before platform, so the Helm releases go while the cluster still exists. No Application has a finalizer, so the destroy never waits on a cascade ([The evening destroy](../../argocd/README.md#the-evening-destroy)).
+Destroyed and applied again with `platform` every day. `make up` applies it after platform and the kubeconfig step. `make down` destroys it before platform, so the Helm releases go while the cluster still exists. No Application has a finalizer, so the destroy never waits on a cascade ([The evening destroy](../../argocd/README.md#the-evening-destroy)). If it fails, `make down` stops before platform and prints the recovery.
+
+The root retries a failed sync without a limit, every 3 minutes at most, and picks up a new revision as it lands. Auto-sync never retries a failed revision by itself, so a root that gave up would leave the later waves undeployed until the next commit.
 
 A plan or apply needs the cluster up, since the providers read it.
+
+## Helm repositories
+
+The helm provider uses a repository config and cache of its own, in the repo's gitignored `.helm/`, resolved from this folder so `make` and plain `tofu` agree. A stale entry in your own Helm config, such as a repo with no cached index, would otherwise fail the install before anything is applied. The Validate commands below use the same path.
 
 ## Init
 
@@ -83,6 +89,9 @@ TF_DATA_DIR=$(mktemp -d) sh -c 'tofu -chdir=infra/argocd init -backend=false -in
 tofu fmt -check infra/argocd
 
 # The chart renders with these values, with the toleration, and with no Ingress.
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template argocd argo-cd --repo https://argoproj.github.io/argo-helm --version 10.17.1 \
   -n argocd -f infra/argocd/argo-cd-values.yaml > /tmp/argocd.yaml
 grep -c 'kind: Ingress' /tmp/argocd.yaml

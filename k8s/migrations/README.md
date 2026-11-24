@@ -33,7 +33,9 @@ The Job sits in its own Application, `migrations`, at wave 8, one wave before th
 
 **Why not in the services' Applications.** A hook only gates its own Application's sync, and each service is its own Application. Gating every Postgres user would take seven copies of the Job under seven names, each run but the first waiting on the advisory lock. One Application runs it once.
 
-**At bootstrap** the root waits for each wave to turn Healthy. A child whose last sync failed reports Degraded, so a failed Job fails the root's wave 8 and the services never start on a broken schema. The root retries with backoff.
+**At bootstrap** the root waits for each wave to pass its health check, which passes `migrations` only once its last sync has Succeeded: the Job has completed, not just its inputs turned Healthy. A running or retrying Job holds wave 9, and a failed one fails the root's wave 8, so the services never start on an unmigrated or broken schema. The root retries every 3 minutes at most until the wave passes ([When a sync fails](../../argocd/README.md#when-a-sync-fails)).
+
+`migrations` itself retries only twice, unlike the other Applications. Rerunning a failed file only marks the version dirty again, so it waits for you.
 
 **Day to day** each Application syncs on its own when its folder changes, so nothing orders a migration before a service in the same merge. The rule: **merge a migration before the release that needs it.** Expand/contract makes that safe, since every migration must already work with the running release ([Database migrations](../../docs/architecture-decisions.md#database-migrations)).
 
@@ -96,6 +98,8 @@ golang-migrate marks the version dirty before running a file. The file's transac
 3. Fix the file and merge the fix. It never applied, so editing it is safe. The new hash makes Argo CD sync `migrations` and replace the failed Job.
 
 Clear the version before the fix merges, or the new Job stops at the dirty version too. If it did, clear it and run `argocd app sync migrations`.
+
+At bootstrap, the root keeps retrying wave 8 every 3 minutes at most. Once `migrations` has synced and is Healthy, its next retry starts the services. To start them now: `argocd app terminate-op root`, then `argocd app sync root`.
 
 The services were never rolled out on a migration that failed at bootstrap. Day to day, the rule above means they are still on the release that matches the old schema.
 

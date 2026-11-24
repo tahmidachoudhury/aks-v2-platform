@@ -22,26 +22,46 @@ configs:
     # argocd-initial-admin-secret each install generates. No SSO.
     admin.enabled: true
     # Application health, which Argo CD dropped in 1.8. The root's sync
-    # waves wait on it, so each wave of children must be Healthy before the
-    # next starts. A child whose last sync failed reports Degraded, which
-    # fails the root's wave: a failed migration holds the services back.
+    # waves wait on it, so each wave of children must pass before the next
+    # starts. Argo CD's own health for an Application skips hooks and
+    # missing resources, so it can read Healthy while a hook Job still runs,
+    # and a failing sync stays Running while it retries. So a child passes
+    # only once its last sync has Succeeded, and then only on its own
+    # health:
+    # - no sync yet, as when the root has just created it: Progressing,
+    #   unless it is already Synced, as when recreated over resources that
+    #   stayed, which leaves nothing for it to sync;
+    # - a sync running or retrying: Progressing;
+    # - a sync Failed or Error: Degraded, which fails the root's wave;
+    # - a sync Succeeded: the child's health.
+    # It never asks for Synced, since data doesn't prune and can stay
+    # OutOfSync for good.
     resource.customizations.health.argoproj.io_Application: |
       hs = {}
       hs.status = "Progressing"
-      hs.message = ""
-      if obj.status ~= nil then
-        local op = obj.status.operationState
-        if op ~= nil and (op.phase == "Failed" or op.phase == "Error") then
+      hs.message = "Waiting for the first sync"
+      if obj.status == nil then
+        return hs
+      end
+      local op = obj.status.operationState
+      local synced = obj.status.sync ~= nil and obj.status.sync.status == "Synced"
+      if op == nil and not synced then
+        return hs
+      end
+      if op ~= nil then
+        if op.phase == "Failed" or op.phase == "Error" then
           hs.status = "Degraded"
-          hs.message = op.message or ""
+          hs.message = op.message or "The last sync failed"
           return hs
         end
-        if obj.status.health ~= nil then
-          hs.status = obj.status.health.status
-          if obj.status.health.message ~= nil then
-            hs.message = obj.status.health.message
-          end
+        if op.phase ~= "Succeeded" then
+          hs.message = op.message or "Syncing"
+          return hs
         end
+      end
+      if obj.status.health ~= nil and obj.status.health.status ~= nil then
+        hs.status = obj.status.health.status
+        hs.message = obj.status.health.message or ""
       end
       return hs
 

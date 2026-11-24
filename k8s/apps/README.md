@@ -294,7 +294,7 @@ While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 
 
 ## Morning apply
 
-Argo CD deploys the nine services last, in wave 9, after `migrations` has built the schema, so a failed migration holds every service back ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). Each service's Application waits for its ExternalSecrets and its rollout to turn Healthy. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy. A merged tag bump deploys on its own, with no click.
+Argo CD deploys the nine services last, in wave 9, after the `migrations` sync has succeeded, so a migration still running, or one that failed, holds every service back ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). Each service's Application waits for its ExternalSecrets and its rollout to turn Healthy. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy. A merged tag bump deploys on its own, with no click.
 
 ## Proving it
 

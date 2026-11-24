@@ -131,8 +131,12 @@ resource "helm_release" "root" {
         syncPolicy = {
           automated   = { prune = true, selfHeal = true }
           syncOptions = ["ServerSideApply=true"]
+          # No limit: auto-sync never retries a failed revision by itself,
+          # so a root that gave up would leave the later waves undeployed
+          # until the next commit. refresh picks up a new revision mid-retry.
           retry = {
-            limit   = 5
+            limit   = -1
+            refresh = true
             backoff = { duration = "10s", factor = 2, maxDuration = "3m" }
           }
         }
