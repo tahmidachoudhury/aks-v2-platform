@@ -102,6 +102,9 @@ This test uses one of the test host's five production certificates for the week.
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template cert-manager cert-manager --kube-context aks-v2-platform --repo https://charts.jetstack.io --version v1.21.3 \
   -n platform -f k8s/cert-manager/values.yaml | kubeconform -strict -ignore-missing-schemas -summary
 kustomize build k8s/cert-manager | kubeconform -strict -summary \

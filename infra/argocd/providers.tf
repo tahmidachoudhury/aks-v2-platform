@@ -33,7 +33,13 @@ provider "kubernetes" {
   }
 }
 
+# A Helm repository config and cache of our own, in the repo's gitignored
+# .helm/, so a stale entry in the operator's own Helm config can't fail the
+# install. abspath, so it is the same path from make and from plain tofu.
 provider "helm" {
+  repository_config_path = "${abspath(path.module)}/../../.helm/repositories.yaml"
+  repository_cache       = "${abspath(path.module)}/../../.helm/cache"
+
   kubernetes = {
     host                   = local.kube_host
     cluster_ca_certificate = local.kube_ca

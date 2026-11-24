@@ -58,6 +58,9 @@ Expect the `diff` to show only `shipping-service` pods replaced, and a Reloader 
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template reloader reloader --repo https://stakater.github.io/stakater-charts \
   --version 2.2.20 --namespace platform -f k8s/reloader/values.yaml \
   | kubeconform -strict -summary

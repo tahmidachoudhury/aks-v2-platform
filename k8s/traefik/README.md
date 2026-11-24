@@ -83,6 +83,9 @@ The first command prints the IP from the output and `Local`. The probe list show
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template traefik traefik --kube-context aks-v2-platform --repo https://traefik.github.io/charts --version 42.4.1 \
   -n platform -f k8s/traefik/values.yaml | kubeconform -strict -ignore-missing-schemas -summary
 ```

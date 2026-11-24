@@ -74,6 +74,9 @@ The logs show `Using workload identity extension` and no authorisation errors. `
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template external-dns external-dns --kube-context aks-v2-platform --repo https://kubernetes-sigs.github.io/external-dns/ --version 1.23.0 \
   -n platform -f k8s/external-dns/values.yaml \
   --set-string 'serviceAccount.annotations.azure\.workload\.identity/client-id=00000000-0000-0000-0000-000000000000' \

@@ -83,6 +83,9 @@ The log also holds `Server rejected event` errors ending in `action: Invalid val
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template keda keda --repo https://kedacore.github.io/charts \
   --version 2.21.1 --namespace platform -f k8s/keda/values.yaml \
   --set-string podIdentity.azureWorkload.clientId=00000000-0000-0000-0000-000000000000 \

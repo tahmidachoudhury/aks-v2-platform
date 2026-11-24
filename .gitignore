@@ -16,4 +16,6 @@ infra/backend.hcl
 # copy left in an old clone, with its IDs, is never committed.
 k8s/external-secrets/store/vault.env
 k8s/apps/dev/azure.env
+
+# Helm repository config and cache for infra/argocd and the README checks
 .helm/
