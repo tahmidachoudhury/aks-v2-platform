@@ -81,7 +81,7 @@ A per-service overlay applied alone still holds the placeholders. Until P7, appl
 `make images` builds each service with `az acr build` from `app/services/<service>`, for `linux/amd64`. ACR runs the build, so you need no local Docker.
 
 - Tag: the first 12 characters of the last commit that touched `app/services/<service>`. A service with unchanged code keeps its tag.
-- Immutable: if the tag is already in ACR, the target skips the build. Only ACR's not-found answer (`not found`, `NAME_UNKNOWN` or `MANIFEST_UNKNOWN`) starts a build. Any other error, such as no access to the registry, stops `make` with ACR's message. After each image, built or found, the target locks the tag with `az acr repository update --write-enabled false`, so pushing or deleting that tag again fails.
+- Immutable: if the tag is already in ACR, the target skips the build. It finds out by listing the registry's repositories (`az acr repository list`), then the service's tags (`az acr repository show-tags`), and matching the tag exactly. Both calls succeed when there is nothing to list, so a build starts only when the repository or tag is absent. Any error from either, such as no access to the registry, stops `make` with az's message. After each image, built or found, the target locks the tag with `az acr repository update --write-enabled false`, so pushing or deleting that tag again fails.
 - Clean tree: uncommitted or untracked changes in a service folder stop the target, since the tag would name a commit without them.
 - Pinning: each dev overlay pins its tag under `images`. `make pin-images` sets every overlay to its current tag, offline, with `sed`, so the comments survive. Commit the result. In P8 CI bumps the same line.
 

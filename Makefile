@@ -189,15 +189,18 @@ migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 # touched its folder, so the tag names exactly what was built and the dev
 # overlays can pin it in Git. Tags are immutable: a tag already in ACR is
 # never rebuilt, and each tag is locked with write-enabled false, so a later
-# push or delete of it fails. Only a not-found answer from ACR means "build
-# it". Any other error, such as no access, stops make. Uncommitted changes in
-# a service folder stop the build too: the tag would name a commit that
-# doesn't hold them. See k8s/apps/README.md.
+# push or delete of it fails. Whether a tag exists comes from listing the
+# repositories and the service's tags, calls that succeed when nothing is
+# there, so any az error stops make rather than starting a build.
+# Uncommitted changes in a service folder stop the build too: the tag would
+# name a commit that doesn't hold them. See k8s/apps/README.md.
 images: ## Build each service into ACR with az acr build. Skips tags already there
 	set -euo pipefail; \
 	ACR=$$($(PERSISTENT_OUT) -raw acr_name) \
 	  || { echo "No acr_name in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
 	[[ "$$ACR" =~ ^[a-z0-9]{5,50}$$ ]] || { echo "ACR name '$$ACR' is not a registry name." >&2; exit 1; }; \
+	REPOS=$$(az acr repository list --name "$$ACR" -o tsv) \
+	  || { echo "Could not list the repositories in $$ACR." >&2; exit 1; }; \
 	for svc in $(SERVICES); do \
 	  DIR=app/services/$$svc; \
 	  if ! git diff --quiet HEAD -- "$$DIR" || [[ -n "$$(git ls-files --others --exclude-standard -- "$$DIR")" ]]; then \
@@ -205,12 +208,15 @@ images: ## Build each service into ACR with az acr build. Skips tags already the
 	  fi; \
 	  TAG=$$(git log -1 --format=%H -- "$$DIR" | cut -c1-12); \
 	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches $$DIR." >&2; exit 1; }; \
-	  if OUT=$$(az acr repository show --name "$$ACR" --image "$$svc:$$TAG" 2>&1); then \
+	  TAGS=; \
+	  if grep -qx "$$svc" <<<"$$REPOS"; then \
+	    TAGS=$$(az acr repository show-tags --name "$$ACR" --repository "$$svc" -o tsv) \
+	      || { echo "Could not list the tags of $$svc in $$ACR." >&2; exit 1; }; \
+	  fi; \
+	  if grep -qx "$$TAG" <<<"$$TAGS"; then \
 	    echo "$$svc:$$TAG is already in $$ACR"; \
-	  elif grep -qiE 'not found|NAME_UNKNOWN|MANIFEST_UNKNOWN|ManifestUnknown' <<<"$$OUT"; then \
-	    az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
 	  else \
-	    echo "Could not check $$svc:$$TAG in $$ACR:" >&2; echo "$$OUT" >&2; exit 1; \
+	    az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
 	  fi; \
 	  az acr repository update --name "$$ACR" --image "$$svc:$$TAG" --write-enabled false >/dev/null; \
 	done
