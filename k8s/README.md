@@ -21,4 +21,6 @@ ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root 
 7. [`migrations`](migrations/README.md) (`make migrate`): the Job that builds the schema in the empty database. It fails `make` if a migration fails, so the services never roll out on a broken schema.
 8. [`apps`](apps/README.md) (`make apps`), last: the nine services. It fills in the registry, Service Bus and client IDs from the OpenTofu outputs and waits for every rollout. The images must already be in ACR (`make images`, after a service changes).
 
+Two drills stay out of `make cluster`: `make restore-drill` ([backup](backup/README.md)) and `make loadtest` ([loadtest](loadtest/README.md)).
+
 Every step is safe to run again. The [Makefile](../Makefile) holds the commands and pins the chart versions. Postgres and Redis start empty each morning, since `make down` deletes their disks with the cluster (see [data](data/README.md#the-nightly-destroy)).

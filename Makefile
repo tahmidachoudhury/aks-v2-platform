@@ -38,6 +38,11 @@ RELOADER_VERSION := 2.2.20
 KEDA_VERSION := 2.21.1
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
+
+# make loadtest settings: how long, and how many page loads and logins a
+# second each of its three pods sends. Override on the command line.
+DURATION ?= 5m
+RATE ?= 10
 PLATFORM_OUT := tofu -chdir=infra/platform output
 
 # The nine services, by their folder in app/services/ and k8s/apps/.
@@ -46,7 +51,7 @@ SERVICES := api-gateway order-service inventory-service payment-service notifica
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
-	backup restore-drill reloader keda images pin-images apps
+	backup restore-drill reloader keda images pin-images apps loadtest
 .PHONY: migrate
 
 help: ## List the targets
@@ -301,3 +306,22 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 	  KIND=deployment; [[ "$$svc" != scheduler ]] || KIND=statefulset; \
 	  $(KUBECTL) -n apps rollout status "$$KIND/$$svc" --timeout=10m; \
 	done
+
+# Not part of cluster or apps: a drill, like restore-drill. Three k6 pods in
+# default send page loads, logins and one order a second each to the public
+# host, then exit. The Job fails if any request fails. The old Job goes
+# first, so every run starts clean. See k8s/loadtest/README.md.
+loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 by default
+	set -euo pipefail; \
+	[[ "$(DURATION)" =~ ^[0-9]+[smh]$$ ]] || { echo "DURATION '$(DURATION)' is not like 5m." >&2; exit 1; }; \
+	[[ "$(RATE)" =~ ^[0-9]+$$ ]] || { echo "RATE '$(RATE)' is not a number." >&2; exit 1; }; \
+	$(KUBECTL) -n default delete job loadtest --ignore-not-found --wait; \
+	$(KUBECTL) -n default create configmap loadtest-settings \
+	  --from-literal=DURATION=$(DURATION) --from-literal=RATE=$(RATE) --dry-run=client -o yaml \
+	  | $(KUBECTL) apply -f -; \
+	$(KUBECTL) apply -k k8s/loadtest; \
+	echo "Waiting for job/loadtest ($(DURATION) of load)"; \
+	until STATE=$$($(KUBECTL) -n default get job loadtest -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}') \
+	  && [[ "$$STATE" == *Complete* || "$$STATE" == *Failed* ]]; do sleep 10; done; \
+	$(KUBECTL) -n default logs -l app.kubernetes.io/name=loadtest --tail=40 --prefix || true; \
+	[[ "$$STATE" == *Complete* ]] || { echo "job/loadtest failed: some requests failed. See the summaries above." >&2; exit 1; }

@@ -1,0 +1,15 @@
+# Applied only by make loadtest. Not part of make apps or make cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: default
+resources:
+  - job.yaml
+
+# A fixed name: make loadtest deletes the Job before each run, so the new
+# one always mounts the current script.
+configMapGenerator:
+  - name: loadtest
+    files:
+      - script.js
+    options:
+      disableNameSuffixHash: true
