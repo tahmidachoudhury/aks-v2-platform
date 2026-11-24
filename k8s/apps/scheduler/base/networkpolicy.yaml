@@ -1,0 +1,42 @@
+# What this service may talk to. default-deny in k8s/namespaces blocks the
+# rest, and allow-dns there lets every pod reach CoreDNS.
+# Nothing connects to the scheduler. Out: Postgres, order-service and
+# inventory-service, the two it calls (#69).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler
+  policyTypes:
+    - Egress
+  egress:
+    # Postgres, for the orders database.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: order-service
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: inventory-service
+      ports:
+        - protocol: TCP
+          port: 8082

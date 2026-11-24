@@ -4,6 +4,7 @@ namespace: data
 resources:
   - rbac.yaml
   - cronjob.yaml
+  - networkpolicy.yaml
 
 # The CronJob runs snapshot.sh from this ConfigMap. The name hash makes a
 # script change roll into the CronJob on the next apply.

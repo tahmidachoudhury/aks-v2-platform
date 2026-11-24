@@ -1,0 +1,93 @@
+# What this service may talk to. default-deny in k8s/namespaces blocks the
+# rest, and allow-dns there lets every pod reach CoreDNS.
+# In: Traefik's pods only, so nothing else can reach the gateway and set
+# X-Forwarded-For. Out: the six services it proxies to, and Redis.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # One rule for the six: each pod listens only on its own port, so the
+    # port list grants nothing beyond the six services.
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - order-service
+                  - inventory-service
+                  - payment-service
+                  - notification-service
+                  - shipping-service
+                  - dashboard-api
+      ports:
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8083
+        - protocol: TCP
+          port: 8084
+        - protocol: TCP
+          port: 8085
+        - protocol: TCP
+          port: 8086
+    # Redis, for the rate-limit counters.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# cert-manager starts its HTTP-01 solver pods in the Ingress's namespace,
+# labelled acme.cert-manager.io/http01-solver, and Let's Encrypt reaches them
+# through Traefik on 8089. Without this, default-deny blocks the challenge
+# and no certificate is ever issued. They need nothing outbound.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acme-http01-solver
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8089

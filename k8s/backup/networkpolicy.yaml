@@ -1,0 +1,23 @@
+# The snapshot CronJob's pod runs kubectl, so it needs the API server and
+# nothing else. On AKS the kubernetes Service forwards to the control plane's
+# address outside the cluster, on 443. A standard NetworkPolicy can't name
+# the API server, so this allows 443 to any address. The pod's only rights
+# are on VolumeSnapshots in data (rbac.yaml). Check it live: README.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-snapshot
+  labels:
+    app.kubernetes.io/name: postgres-snapshot
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-snapshot
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443

@@ -1,0 +1,39 @@
+# Default deny for data, in and out: a pod here talks to nothing until a
+# NetworkPolicy allows it. The allow rules live next to the workloads they
+# cover: Postgres, Redis, the snapshot CronJob and the restore drill.
+# Cilium enforces standard NetworkPolicy on this cluster
+# (network_policy = "cilium", infra/modules/aks).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Every pod may ask CoreDNS for names, and nothing else, from this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

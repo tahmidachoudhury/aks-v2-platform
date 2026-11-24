@@ -1,0 +1,36 @@
+# The migration Job's pod reaches Postgres and nothing else. default-deny in
+# k8s/namespaces blocks the rest, and allow-dns there resolves the name.
+# Postgres's own policy (k8s/data/postgres) lets db-migrate in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-migrate
+  labels:
+    app.kubernetes.io/name: db-migrate
+  annotations:
+    # P7: a PreSync hook one wave before the Job, like the ConfigMap and the
+    # ExternalSecret. ArgoCD runs PreSync hooks before it syncs anything
+    # else, so as a plain resource this would arrive after the Job it lets
+    # out. Ignored by kubectl.
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: db-migrate
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

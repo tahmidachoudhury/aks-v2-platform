@@ -2,7 +2,7 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
 
 ## Layout
 
@@ -10,7 +10,7 @@ Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68) and P6
 k8s/apps/
   components/service/       the pod shape every workload shares (a Kustomize Component)
   <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service,
-                            ExternalSecret, config.env
+                            NetworkPolicy, ExternalSecret, config.env
   <service>/overlays/dev/   image tag and replica count for dev
   dev/                      all nine dev overlays, plus the values from OpenTofu
 ```
@@ -166,6 +166,30 @@ kubectl --context aks-v2-platform -n apps wait secret api-gateway-tls --timeout=
 cert-manager sees the issuer change and orders a production certificate into the same Secret. The next `make apps` puts the annotation back to staging, which orders a staging certificate again, so a forgotten switch costs nothing more.
 
 The client's address survives the trip. Traefik's Service has `externalTrafficPolicy: Local`, so Traefik sees the real client, and it replaces any `X-Forwarded-For` the client sends with the address it saw ([traefik](../traefik/README.md)). The gateway trusts that header only from the pod CIDR in `TRUSTED_PROXIES`, and its NetworkPolicy lets only Traefik connect, so the rate limit counts each client, not Traefik (#128).
+
+## NetworkPolicies
+
+`apps` and `data` deny everything in and out by default (`default-deny` in [namespaces](../namespaces/README.md#networkpolicies)), and every pod may reach CoreDNS (`allow-dns`). Each service's base adds one NetworkPolicy for its own pods, with the calls the code makes and nothing more ([service catalogue](../../docs/service-catalogue.md)). Standard `networking.k8s.io/v1` policies, which Cilium enforces (`network_policy = "cilium"` in [aks](../../infra/modules/aks/README.md)).
+
+| Pods | In from | Out to |
+| --- | --- | --- |
+| api-gateway | Traefik's pods in `platform`, on 8080 | The five backends and dashboard-api, Redis on 6379 |
+| order-service, inventory-service | api-gateway and the scheduler, on their port | Postgres on 5432. order-service also Azure |
+| payment-service, shipping-service | api-gateway, on their port | Postgres, Azure |
+| notification-service, dashboard-api | api-gateway, on their port | Postgres |
+| worker | Nothing | Azure |
+| scheduler | Nothing | Postgres, order-service on 8081, inventory-service on 8082 |
+| HTTP-01 solver (`acme.cert-manager.io/http01-solver`) | Traefik, on 8089 | Nothing |
+
+The other side of each pair is in the same place: Postgres and Redis allow their callers in `data` ([data](../data/README.md#networkpolicies)), the migration Job's policy lets it out to Postgres ([migrations](../migrations/README.md)), and the snapshot CronJob's lets it reach the API server ([backup](../backup/README.md)).
+
+- **Azure** is Entra ID for the workload identity token exchange and Service Bus, on 443, 5671 and 5672. Both are public endpoints, so the rule allows `0.0.0.0/0` on those ports, minus the private ranges. Naming the hosts would need FQDN policies, which on AKS come with Advanced Container Networking Services, a paid add-on.
+- **The solver.** cert-manager starts HTTP-01 solver pods in the Ingress's namespace, `apps`. Without the solver rule, default-deny drops Let's Encrypt's challenge at the pod and no certificate is ever issued.
+- **The worker** calls no service today: its handlers only log. When they start calling services, add an egress rule here and an ingress rule on each service it calls.
+- **Labels are the boundary.** A pod labelled `app.kubernetes.io/name: api-gateway` gets the gateway's access. Only those who can create pods in `apps` can do that, so RBAC on pod creation is the control that backs this up.
+- **`platform` has no policies yet.** Traefik, cert-manager, ExternalDNS, External Secrets and Reloader talk freely. Adding default deny there is a follow-up.
+
+Kubelet probes come from the node, not a pod. Cilium lets a node reach its own pods by default (`allow-localhost`), so default deny leaves the probes working. The live checks below confirm it, since every pod would go unready if it didn't.
 
 ## Quotas
 
@@ -324,6 +348,49 @@ done | sort | uniq -c
 ```
 
 Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), and the host as subject. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Switch back with `make apps` when the window ends.
+
+**P6-08 (#69), criterion 9: default deny in `apps` and `data`. A pod with no allow rule reaches nothing. Only api-gateway reaches the backends and dashboard-api, plus the scheduler to order-service and inventory-service.**
+
+The services' images have no shell, so the tests use `agnhost`, the Kubernetes e2e test image, either as a pod of its own or as a debug container inside a service's pod, sharing that pod's network and its policies. `restricted` Pod Security needs the security context in `np-test.json`.
+
+```bash
+CTX=aks-v2-platform
+K="kubectl --context $CTX"
+IMG=registry.k8s.io/e2e-test-images/agnhost:2.33
+cat > /tmp/np-test.json <<'EOF'
+{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"allowPrivilegeEscalation":false,
+ "capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}}
+EOF
+$K get networkpolicy -n apps; $K get networkpolicy -n data
+
+# 1. A pod with no allow rule, in apps.
+$K -n apps run np-test --image=$IMG --restart=Never --labels=app.kubernetes.io/name=np-test   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
+  "containers":[{"name":"np-test","image":"'$IMG'","args":["pause"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
+$K -n apps wait pod/np-test --for=condition=Ready --timeout=2m
+for t in postgres.data.svc.cluster.local:5432 redis.data.svc.cluster.local:6379 \
+         api-gateway:8080 order-service:8081 dashboard-api:8086; do
+  printf '%s ' "$t"; $K -n apps exec np-test -- /agnhost connect "$t" --timeout=3s --protocol=tcp || true; echo
+done
+$K -n apps delete pod np-test
+
+# 2. From inside a service's pod: what it may and may not reach.
+probe() { # <service> <target> ...
+  pod=$($K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
+  for t in "$@"; do
+    printf '%s -> %s: ' "$pod" "$t"
+    $K -n apps debug "$pod" -q --image=$IMG --profile=restricted --custom=/tmp/np-test.json \
+      --attach -- /agnhost connect "$t" --timeout=3s --protocol=tcp && echo ok
+  done
+}
+probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379
+probe scheduler order-service:8081 inventory-service:8082 payment-service:8083
+probe worker order-service:8081 postgres.data.svc.cluster.local:5432
+probe order-service payment-service:8083 redis.data.svc.cluster.local:6379
+```
+
+Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
+
+Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 

@@ -1,0 +1,37 @@
+# What this service may talk to. default-deny in k8s/namespaces blocks the
+# rest, and allow-dns there lets every pod reach CoreDNS.
+# In: api-gateway only, which proxies the UI page and /api/dashboard.
+# Out: Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard-api
+  labels:
+    app.kubernetes.io/name: dashboard-api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dashboard-api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8086
+  egress:
+    # Postgres, for the orders database.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

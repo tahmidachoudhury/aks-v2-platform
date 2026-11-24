@@ -1,0 +1,37 @@
+# What this service may talk to. default-deny in k8s/namespaces blocks the
+# rest, and allow-dns there lets every pod reach CoreDNS.
+# In: api-gateway only. Out: Postgres. The worker will call /send once its
+# handlers do more than log, and needs a rule here then.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notification-service
+  labels:
+    app.kubernetes.io/name: notification-service
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8084
+  egress:
+    # Postgres, for the orders database.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432

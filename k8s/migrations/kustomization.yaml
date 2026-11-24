@@ -4,6 +4,7 @@ namespace: apps
 resources:
   - external-secret.yaml
   - job.yaml
+  - networkpolicy.yaml
 
 # Every file in sql/ goes into one ConfigMap, mounted into the Job. List each
 # new migration here as well as adding the file: kustomize has no glob. The
