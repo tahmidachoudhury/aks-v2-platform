@@ -316,8 +316,8 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 # first, so every run starts clean. See k8s/loadtest/README.md.
 loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 TARGET_IP= by default
 	set -euo pipefail; \
-	[[ "$(DURATION)" =~ ^([1-9]|[1-5][0-9])m$$ ]] || { echo "DURATION '$(DURATION)' must be 1m to 59m: the Job stops at one hour." >&2; exit 1; }; \
-	[[ "$(RATE)" =~ ^[0-9]+$$ ]] || { echo "RATE '$(RATE)' is not a number." >&2; exit 1; }; \
+	[[ "$(DURATION)" =~ ^([1-9]|[1-4][0-9]|5[0-5])m$$ ]] || { echo "DURATION '$(DURATION)' must be 1m to 55m: the Job stops at one hour, pod start included." >&2; exit 1; }; \
+	[[ "$(RATE)" =~ ^[1-9][0-9]*$$ ]] || { echo "RATE '$(RATE)' must be a whole number from 1." >&2; exit 1; }; \
 	[[ -z "$(TARGET_IP)" || "$(TARGET_IP)" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$ ]] || { echo "TARGET_IP '$(TARGET_IP)' is not an IPv4 address." >&2; exit 1; }; \
 	$(KUBECTL) -n default delete job loadtest --ignore-not-found --cascade=foreground --wait; \
 	$(KUBECTL) -n default create configmap loadtest-settings \
@@ -325,7 +325,22 @@ loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 TARGET_IP
 	  --dry-run=client -o yaml | $(KUBECTL) apply -f -; \
 	$(KUBECTL) apply -k k8s/loadtest; \
 	echo "Waiting for job/loadtest ($(DURATION) of load)"; \
-	until STATE=$$($(KUBECTL) -n default get job loadtest -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}') \
-	  && [[ "$$STATE" == *Complete* || "$$STATE" == *Failed* ]]; do sleep 10; done; \
+	STATE=; \
+	for i in $$(seq 1 390); do \
+	  STATE=$$($(KUBECTL) -n default get job loadtest --ignore-not-found \
+	    -o jsonpath='{.metadata.name} {range .status.conditions[?(@.status=="True")]}{.type} {end}') || STATE=unknown; \
+	  [[ -n "$$STATE" ]] || { echo "job/loadtest is gone before it finished. Something deleted it: run make loadtest again." >&2; exit 1; }; \
+	  [[ "$$STATE" != *Complete* && "$$STATE" != *Failed* ]] || break; \
+	  sleep 10; \
+	done; \
+	[[ "$$STATE" == *Complete* || "$$STATE" == *Failed* ]] \
+	  || { echo "job/loadtest still running after 65m, past its one-hour deadline. Check it with kubectl -n default describe job loadtest." >&2; exit 1; }; \
 	$(KUBECTL) -n default logs -l app.kubernetes.io/name=loadtest --tail=40 --prefix || true; \
-	[[ "$$STATE" == *Complete* ]] || { echo "job/loadtest failed: some requests failed. See the summaries above." >&2; exit 1; }
+	[[ "$$STATE" != *Complete* ]] || exit 0; \
+	REASON=$$($(KUBECTL) -n default get job loadtest -o jsonpath='{.status.conditions[?(@.type=="Failed")].reason}') || REASON=; \
+	if [[ "$$REASON" == DeadlineExceeded ]]; then \
+	  echo "job/loadtest hit its one-hour deadline before k6 finished, so the run was cut short. That is not a failed request: check the pods started in time." >&2; \
+	else \
+	  echo "job/loadtest failed ($${REASON:-no reason given}): some requests failed. See the summaries above." >&2; \
+	fi; \
+	exit 1

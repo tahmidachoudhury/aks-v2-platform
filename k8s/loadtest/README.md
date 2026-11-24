@@ -40,7 +40,7 @@ make loadtest                     # 5 minutes, 10 page loads and logins a second
 make loadtest DURATION=10m RATE=40
 ```
 
-It deletes any earlier `loadtest` Job and its pods, writes `loadtest-settings`, applies this folder and waits for the Job. It then prints the last 40 lines of each pod's log and exits 0 or 1. `DURATION` is whole minutes from `1m` to `59m`: `activeDeadlineSeconds` stops a run at one hour, and the target refuses anything longer. The finished Job stays for an hour, then Kubernetes deletes it.
+It deletes any earlier `loadtest` Job and its pods, writes `loadtest-settings`, applies this folder and waits for the Job. It then prints the last 40 lines of each pod's log and exits 0 or 1. `DURATION` is whole minutes from `1m` to `55m`: `activeDeadlineSeconds` stops a run at one hour, pod start included, and the target refuses anything longer. `RATE` is a whole number from 1. On a failure it says which kind: requests failed (the Job's `Failed` reason is `BackoffLimitExceeded`), or the run hit the one-hour deadline (`DeadlineExceeded`) and was cut short. It also stops with a message if the Job is deleted mid-run, and gives up after 65 minutes. The finished Job stays for an hour, then Kubernetes deletes it.
 
 ### Check each pod is its own client
 
