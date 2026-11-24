@@ -10,17 +10,19 @@ its workload identity's federated credential trusts `system:serviceaccount:apps:
 
 ## Morning apply
 
-ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root applies these folders after the persistent and platform OpenTofu applies, in this order. `make up` runs the platform apply and the kubeconfig step first. Each step is also its own target:
+Argo CD applies these folders. `make up` from the repo root applies platform, fetches a kubeconfig, then applies [`infra/argocd`](../infra/argocd/README.md), which installs Argo CD and the root Application. The root brings up one Application per folder, in sync waves ([argocd](../argocd/README.md#how-the-cluster-comes-up)):
 
-1. [`node-pools`](node-pools/README.md) (`make node-pools`). Nothing outside the system pool schedules without it.
-2. [`namespaces`](namespaces/README.md) (`make namespaces`). The Helm installs below go into `platform` and don't create it.
-3. [`storage`](storage/README.md) (`make storage`).
-4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), [`external-dns`](external-dns/README.md), [`reloader`](reloader/README.md), then [`keda`](keda/README.md), each with `make <folder>`.
-5. [`data`](data/README.md) (`make data`): Postgres and Redis. It needs the ClusterSecretStore from `external-secrets` and the `premium-zrs` class from `storage`. It waits until both pods are Ready. Apps that use them go after it.
-6. [`backup`](backup/README.md) (`make backup`), after `make data` brings up Postgres: the hourly snapshot CronJob in `data`.
-7. [`migrations`](migrations/README.md) (`make migrate`): the Job that builds the schema in the empty database. It fails `make` if a migration fails, so the services never roll out on a broken schema.
-8. [`apps`](apps/README.md) (`make apps`), last: the nine services. It fills in the registry, Service Bus and client IDs from the OpenTofu outputs and waits for every rollout. The images must already be in ACR (`make images`, after a service changes).
+1. [`node-pools`](node-pools/README.md). Nothing outside the system pool schedules without it. Argo CD tolerates the system pool's taint, so it runs first.
+2. [`namespaces`](namespaces/README.md) and [`storage`](storage/README.md). The charts install into `platform` and don't create it.
+3. [`external-secrets`](external-secrets/README.md), then its ClusterSecretStore.
+4. [`traefik`](traefik/README.md), then [`cert-manager`](cert-manager/README.md) with its ClusterIssuers, [`external-dns`](external-dns/README.md), [`reloader`](reloader/README.md) and [`keda`](keda/README.md).
+5. [`data`](data/README.md): Postgres and Redis. It needs the ClusterSecretStore and the `premium-zrs` class.
+6. [`backup`](backup/README.md): the hourly snapshot CronJob in `data`.
+7. [`migrations`](migrations/README.md): the Job that builds the schema in the empty database. If it fails, the services don't start.
+8. [`apps`](apps/README.md), last: the nine services, each its own Application. The images must already be in ACR (`make images`, after a service changes).
 
-Two drills stay out of `make cluster`: `make restore-drill` ([backup](backup/README.md)) and `make loadtest` ([loadtest](loadtest/README.md)).
+Each wave waits until the one before is Healthy, so no step needs a hand. Chart versions are pinned in [`argocd/apps`](../argocd/apps), and the values each chart reads stay in its folder here. Values that must stay out of Git, such as client IDs and the vault URI, come from OpenTofu through the root ([Values that stay out of Git](../argocd/README.md#values-that-stay-out-of-git)).
 
-Every step is safe to run again. The [Makefile](../Makefile) holds the commands and pins the chart versions. Postgres and Redis start empty each morning, since `make down` deletes their disks with the cluster (see [data](data/README.md#the-nightly-destroy)).
+Two drills stay out of Argo CD: `make restore-drill` ([backup](backup/README.md)) and `make loadtest` ([loadtest](loadtest/README.md)).
+
+Postgres and Redis start empty each morning, since `make down` deletes their disks with the cluster (see [data](data/README.md#the-nightly-destroy)).

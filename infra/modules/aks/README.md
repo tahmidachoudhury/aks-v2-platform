@@ -56,7 +56,7 @@ Changing the VM size, OS disk or zones of the system pool on a live cluster rota
 - `network_data_plane = "cilium"` and `network_policy = "cilium"`. Microsoft recommends Overlay with Cilium for Node Auto Provisioning. Cilium also enforces NetworkPolicy without a separate engine.
 - The pod CIDR, service CIDR and DNS service IP come from platform variables: `pod_cidr`, `service_cidr` and `dns_service_ip`. The address plan is in the [network README](../network/README.md#address-plan).
 
-The cluster joins nodes and load balancer frontends to a subnet it doesn't own, so its identity has Network Contributor on `snet-aks-nodes`. The identity is system-assigned, so the role assignment can only be made once the cluster exists. The create doesn't need it. The load balancer for a `LoadBalancer` Service and the first Node Auto Provisioning node do need it, and both come later, after ArgoCD.
+The cluster joins nodes and load balancer frontends to a subnet it doesn't own, so its identity has Network Contributor on `snet-aks-nodes`. The identity is system-assigned, so the role assignment can only be made once the cluster exists. The create doesn't need it. The load balancer for a `LoadBalancer` Service and the first Node Auto Provisioning node do need it, and both come later, after Argo CD.
 
 That role doesn't cover public IPs. Traefik's static IP sits in its own group, and the platform root gives the cluster identity Network Contributor there through the `identity_principal_id` output. See [Ingress public IP](../../platform/README.md#ingress-public-ip).
 
@@ -108,7 +108,7 @@ node_provisioning_profile {
 ```
 
 - `mode = "Auto"` turns NAP on. It is the azurerm 4.81 argument for the AKS `nodeProvisioningProfile.mode` field.
-- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule, ArgoCD included. Each morning, `make up` applies them right after platform. When P7 brings ArgoCD, either its Helm values tolerate `CriticalAddonsOnly` so it can start on the system pool and then apply the NodePools, or the argocd root applies the NodePools before installing ArgoCD.
+- `default_node_pools = "None"` stops AKS creating its `default` and `system-surge` NodePools. Ours are in [`k8s/node-pools`](../../../k8s/node-pools/README.md), with the quota limits these defaults don't have. The system pool only takes critical add-ons, so until a NodePool exists nothing else can schedule. Argo CD's Helm values tolerate `CriticalAddonsOnly`, so it starts on the system pool and applies the NodePools first, at wave 0 ([argocd](../../../argocd/README.md#how-the-cluster-comes-up)).
 
 NAP needs the following, and this cluster meets each one:
 

@@ -1,6 +1,6 @@
 # data
 
-**TL;DR:** Postgres 16 and Redis 7.4 run in the `data` namespace, each as a single-replica StatefulSet on a Premium ZRS disk (20Gi Postgres, 10Gi Redis). Redis writes an append-only file. Both passwords come from Key Vault through ESO. Both pods run as UID 999 under the `restricted` Pod Security Standard. Node affinity keeps them on on-demand NAP nodes. A PodDisruptionBudget blocks voluntary eviction. The `data-critical` priority class lets them preempt app pods when `general` is full. The data does not survive the nightly platform destroy, since the disks live in the node resource group. This is deliberate: the sandbox starts each morning with an empty database that migrations rebuild. `make data` applies the folder after `external-dns`. ArgoCD takes it over in P7.
+**TL;DR:** Postgres 16 and Redis 7.4 run in the `data` namespace, each as a single-replica StatefulSet on a Premium ZRS disk (20Gi Postgres, 10Gi Redis). Redis writes an append-only file. Both passwords come from Key Vault through ESO. Both pods run as UID 999 under the `restricted` Pod Security Standard. Node affinity keeps them on on-demand NAP nodes. A PodDisruptionBudget blocks voluntary eviction. The `data-critical` priority class lets them preempt app pods when `general` is full. The data does not survive the nightly platform destroy, since the disks live in the node resource group. This is deliberate: the sandbox starts each morning with an empty database that migrations rebuild. Argo CD deploys it in its own Application, which never prunes, after the platform components.
 
 Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres in the cluster is in [Postgres](../../docs/architecture-decisions.md#postgres).
 
@@ -13,7 +13,7 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 | `postgres/service.yaml` | `Service` (headless) | `postgres` | `postgres.data.svc.cluster.local:5432` |
 | `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `postgres/pdb.yaml` | `PodDisruptionBudget` | `postgres` | `maxUnavailable: 0` |
-| `postgres/app-role.sql` | `ConfigMap` `postgres-init` | | Creates or updates the `app` role and its password. Run on first start and by every `make data` |
+| `postgres/app-role.sql` | `ConfigMap` `postgres-init` | | Creates or updates the `app` role and its password. Run on first start, and by hand for a rotation or a failed first init |
 | `redis/statefulset.yaml` | `StatefulSet` | `redis` | One replica, volumeClaimTemplate `data`, so the PVC is `data-redis-0` |
 | `redis/service.yaml` | `Service` (headless) | `redis` | `redis.data.svc.cluster.local:6379` |
 | `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password`. Syncs once, then only on `force-sync` |
@@ -23,7 +23,7 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 
 ### Why `k8s/data/<component>`
 
-There is one folder per namespace and one subfolder per component. Postgres and Redis share the namespace, the priority class and the morning step, so `kubectl apply -k k8s/data` applies both. Each subfolder is its own kustomization, so `kubectl apply -k k8s/data/postgres` works alone. We own these manifests, so they are Kustomize, not a chart ([Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling)). The restore drill's second Postgres stays out of this tree, so `make data` never creates it.
+There is one folder per namespace and one subfolder per component. Postgres and Redis share the namespace, the priority class and the morning step, so `kubectl apply -k k8s/data` applies both. Each subfolder is its own kustomization, so `kubectl apply -k k8s/data/postgres` works alone. We own these manifests, so they are Kustomize, not a chart ([Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling)). The restore drill's second Postgres stays out of this tree, so Argo CD never creates it.
 
 ## Connecting
 
@@ -42,7 +42,7 @@ The services and the migration Job run in `apps` and can't read Secrets in `data
 - Postgres: `DATABASE_URL` in each service's config has no password, `postgres://app@postgres.data.svc.cluster.local:5432/orders?sslmode=disable`. The password arrives as `PGPASSWORD` from the Secret `<service>-postgres`, and lib/pq reads it from there. The migration Job does the same with `db-migrate`.
 - Redis: api-gateway's `api-gateway-redis` Secret holds the whole `REDIS_URL`, built with an ESO template, since go-redis has no environment fallback.
 
-Those ExternalSecrets sync once and then only on the `force-sync` annotation (`refreshPolicy: OnChange`), so a rotated password reaches the services only when the server already has it. The server's own copies here, `postgres-credentials` and `redis-credentials`, work the same way. Otherwise a `make data`, a `make cluster` or a `redis-0` restart within the hour after a rotation would move the server to the new password while the services still held the old one. See [Rotating a password](#rotating-a-password). The server has no TLS, so `sslmode=disable` stays.
+Those ExternalSecrets sync once and then only on the `force-sync` annotation (`refreshPolicy: OnChange`), so a rotated password reaches the services only when the server already has it. The server's own copies here, `postgres-credentials` and `redis-credentials`, work the same way. Otherwise a `redis-0` restart within the hour after a rotation would move the server to the new password while the services still held the old one. See [Rotating a password](#rotating-a-password). The server has no TLS, so `sslmode=disable` stays.
 
 Postgres users:
 
@@ -54,7 +54,11 @@ Both use the `postgres-password` value, since the vault holds one Postgres secre
 `app-role.sql` sets both up, and is safe to run any number of times. It creates `app` if it is missing, sets both passwords from the mounted Secret file, and gives `app` the `orders` database. Two callers run it:
 
 - The image, from `/docker-entrypoint-initdb.d`, on the first start against an empty disk.
-- `make data`, through `kubectl exec`, after every rollout. This repairs a first start that failed partway: the image never runs init scripts again once `PGDATA` holds data, so without this the pod could be Ready with no `app` role. It also applies a rotated password, as below.
+- You, through `kubectl exec`, for a rotated password or a failed first init. The image never runs init scripts again once `PGDATA` holds data, so a first start that failed partway could leave the pod Ready with no `app` role. Each morning's empty disk needs nothing, since the image runs it then. From the repo root:
+
+  ```bash
+  kubectl --context aks-v2-platform -n data exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U postgres -d orders < k8s/data/postgres/app-role.sql
+  ```
 
 psql reads the password from `/etc/postgres-credentials/password` inside the pod, so it never appears on a command line.
 
@@ -73,10 +77,10 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    # The kubelet refreshes the mounted file within about a minute. Wait until it matches the Secret.
    until [[ "$(K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
             "$(K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
-   make data
+   kubectl --context aks-v2-platform -n data exec -i postgres-0 -- psql -q -v ON_ERROR_STOP=1 -U postgres -d orders < k8s/data/postgres/app-role.sql
    ```
 
-   `make data` runs `app-role.sql`, which sets the new password on `app` and `postgres` with no restart. From here until step 4 finishes, new connections from the services fail. Open pooled connections carry on.
+   `app-role.sql` sets the new password on `app` and `postgres` with no restart. From here until step 4 finishes, new connections from the services fail. Open pooled connections carry on.
 
 3. **Redis: restart it with the new password.** `requirepass` is read only at startup.
 
@@ -121,7 +125,7 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 
 `data` denies all traffic by default ([namespaces](../namespaces/README.md#networkpolicies)). Postgres lets in only the seven services that use `orders` and the migration Job, all in `apps`, by their `app.kubernetes.io/name`. Redis lets in only api-gateway. Neither connects out.
 
-Nothing else in `data` needs the pod network to reach them. `make data`, the restore drill and the acceptance tests below run `psql` and `redis-cli` through `kubectl exec`, which goes through the kubelet. `psql -h postgres.data.svc.cluster.local` from inside `postgres-0` resolves to the pod's own address and never leaves it. The snapshot CronJob talks only to the API server, through its own policy in [backup](../backup/README.md).
+Nothing else in `data` needs the pod network to reach them. `app-role.sql`, the restore drill and the acceptance tests below run `psql` and `redis-cli` through `kubectl exec`, which goes through the kubelet. `psql -h postgres.data.svc.cluster.local` from inside `postgres-0` resolves to the pod's own address and never leaves it. The snapshot CronJob talks only to the API server, through its own policy in [backup](../backup/README.md).
 
 ## Pod Security
 
@@ -197,7 +201,7 @@ P6-09 (#70) raised it from 300 to 350, so every service can sit at its HPA maxim
 
 That leaves 5 for `psql` sessions as `app`. The superuser keeps its own 3. The worst case holds for one rollout at a time, which is what [apps](../apps/README.md#rollouts) asks for at high replica counts. Each further surge pod of a 25-connection service adds 25.
 
-**Accepted limit: several rollouts at once.** `make apps` applies every changed service together, so their rollouts overlap. At the HPA maximums the `apps` quota admits at most four surge pods at a time ([apps](../apps/README.md#quotas)). The four biggest pools add 25 + 25 + 25 + 15 = 90, so the worst case becomes 315 + 90 + 2 = 407, past the 347 `app` can use. It needs every pool saturated at its HPA maximum during a multi-service rollout. This sandbox accepts that, rather than splitting `make apps` or raising the limit further. The connections that fail get `too many clients`, and those pods turn unready until connections free up. To stay clear, roll one service at a time when replicas are high. A Postgres password rotation also rolls all seven users together, but only when someone force-syncs their Secrets ([Rotating a password](#rotating-a-password)), so it can wait for a quiet moment. The pools open connections only under load, so 315 needs every service saturated at once. Past the limit, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+**Accepted limit: several rollouts at once.** Argo CD syncs every changed service together, so their rollouts overlap. At the HPA maximums the `apps` quota admits at most four surge pods at a time ([apps](../apps/README.md#quotas)). The four biggest pools add 25 + 25 + 25 + 15 = 90, so the worst case becomes 315 + 90 + 2 = 407, past the 347 `app` can use. It needs every pool saturated at its HPA maximum during a multi-service rollout. This sandbox accepts that, rather than splitting the merges or raising the limit further. The connections that fail get `too many clients`, and those pods turn unready until connections free up. To stay clear, roll one service at a time when replicas are high. A Postgres password rotation also rolls all seven users together, but only when someone force-syncs their Secrets ([Rotating a password](#rotating-a-password)), so it can wait for a quiet moment. The pools open connections only under load, so 315 needs every service saturated at once. Past the limit, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
 
 The other options were to lower the maximums for order, inventory and payment to 2, which changes the ADR, or to make the pool size configurable in code. Raising the limit costs memory only, below.
 
@@ -283,28 +287,24 @@ Postgres is the only state that must survive a pod, node or zone failure. Nothin
 
 1. Create an `azurerm_managed_disk`, `Premium_ZRS`, 20 GiB, in the persistent resource group, with `prevent_destroy`.
 2. Give the cluster's control plane identity a role assignment on that disk. The disk CSI driver attaches with that identity, and it has rights only on the node resource group today.
-3. Apply a `PersistentVolume` before the StatefulSet, with `csi.volumeHandle` set to the disk's ID, `persistentVolumeReclaimPolicy: Retain`, and a `claimRef` to `data/data-postgres-0`. Keep the disk ID in a gitignored env file, as the vault URL is.
+3. Apply a `PersistentVolume` before the StatefulSet, with `csi.volumeHandle` set to the disk's ID, `persistentVolumeReclaimPolicy: Retain`, and a `claimRef` to `data/data-postgres-0`. Keep the disk ID out of Git: pass it from OpenTofu through the root Application, as the vault URI is ([argocd](../../argocd/README.md#values-that-stay-out-of-git)).
 
 ## Morning apply
 
-`make cluster` runs `make data` last, after `external-dns`. It needs:
+The `data` Application syncs `k8s/data` at wave 6 ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). The waves before it bring what it needs:
 
-- `make namespaces`, for `data`, its quota and Pod Security.
-- `make storage`, for `premium-zrs`.
-- `make external-secrets`, for the ClusterSecretStore. It already allows `data`.
-- `make node-pools`, so there is an on-demand node.
+- `namespaces`, for `data`, its quota and Pod Security.
+- `storage`, for `premium-zrs`.
+- `external-secrets-store`, for the ClusterSecretStore. It already allows `data`.
+- `node-pools`, so there is an on-demand node.
 
-From the repo root:
+The Application turns Healthy once both ExternalSecrets have synced and both StatefulSets are ready. A first start takes a few minutes: NAP may create a node, the disk must be created and attached, and Postgres runs `initdb`, which runs `app-role.sql`.
 
-```bash
-make data
-```
-
-It applies `k8s/data`, waits up to 2 minutes for both ExternalSecrets to sync, then waits up to 10 minutes for each StatefulSet. Last, it runs `app-role.sql` in `postgres-0`. A first start takes a few minutes: NAP may create a node, the disk must be created and attached, and Postgres runs `initdb`.
+It never prunes. A resource removed from this folder stays in the cluster until you delete it, so a bad commit can't delete Postgres or its disk.
 
 ## Acceptance test
 
-These need a live cluster. Run them from the repo root after `make data`. Each test cleans up its own data. They use `kubectl delete pod`, which the PodDisruptionBudget doesn't block.
+These need a live cluster. Run them from the repo root after `make up`. Each test cleans up its own data. They use `kubectl delete pod`, which the PodDisruptionBudget doesn't block.
 
 The StatefulSet recreates a deleted pod with the same name. This helper waits until that pod is Ready:
 

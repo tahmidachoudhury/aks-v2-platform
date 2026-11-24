@@ -1,6 +1,6 @@
 # reloader
 
-**TL;DR:** [Stakater Reloader](https://github.com/stakater/Reloader) 2.2.20 (Reloader v1.4.24) is installed with Helm into `platform`. It restarts a Deployment, or the scheduler's StatefulSet, when a Secret named in its `secret.reloader.stakater.com/reload` annotation changes. Each service lists only its own Secret, so rotating one Key Vault secret restarts only the services that read it. `make reloader` installs it each morning before `make apps`. ArgoCD takes it over in P7. Filled by P6-06 (#67).
+**TL;DR:** [Stakater Reloader](https://github.com/stakater/Reloader) 2.2.20 (Reloader v1.4.24) runs in `platform`, installed by Argo CD from its Helm chart. It restarts a Deployment, or the scheduler's StatefulSet, when a Secret named in its `secret.reloader.stakater.com/reload` annotation changes. Each service lists only its own Secret, so rotating one Key Vault secret restarts only the services that read it. Argo CD installs it each morning at wave 5, before the services. Filled by P6-06 (#67).
 
 The services read their secrets from environment variables once, at startup. ESO updates the Kubernetes Secret within its one-hour `refreshInterval`, but a running pod keeps the old value until it restarts ([Secrets delivery](../../docs/architecture-decisions.md#secrets-delivery)).
 
@@ -21,7 +21,7 @@ The worker has no Secret, so nothing restarts it. The Postgres and Redis copies 
 | --- | --- | --- |
 | `autoReloadAll` | `false` | Only annotated workloads restart, and only for the Secrets they name |
 | `ignoreConfigMaps` | `true` | Our ConfigMaps have a hash suffix, so an edit rolls the pods without Reloader |
-| `reloadStrategy` | `annotations` | Reloader stamps an annotation on the pod template, not an extra environment variable. The container spec stays as Git has it, which Reloader's docs recommend for ArgoCD |
+| `reloadStrategy` | `annotations` | Reloader stamps an annotation on the pod template, not an extra environment variable. The container spec stays as Git has it, which Reloader's docs recommend for Argo CD. The annotation isn't in Git, so selfHeal leaves it |
 | `readOnlyRootFileSystem` | `true` | The chart then mounts an `emptyDir` at `/tmp` |
 
 There is no `namespaceSelector`, since the chart passes the value to Reloader wrapped in literal quotes. Reloader watches every namespace but acts only on annotated workloads, and only the services in `apps` have the annotation.
@@ -32,17 +32,11 @@ The chart sets a non-root pod (user 65534) with the `RuntimeDefault` seccomp pro
 
 ## Install each morning
 
-`make cluster` runs `make reloader` after `external-dns` and before `make data`. To run it alone:
-
-```bash
-make reloader
-```
-
-The [Makefile](../../Makefile) pins the chart in `RELOADER_VERSION`. To upgrade, read the chart's release notes, then change `RELOADER_VERSION` and the version in the header of `values.yaml`.
+The `reloader` Application installs it at wave 5 [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `reloader` 2.2.20 with `values.yaml`. To upgrade, read the chart's release notes, then change its `targetRevision` in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
 
 ## Proving it
 
-P6-06 (#67): rotating `shipping-webhook-secret` restarts shipping-service and nothing else. This needs a live cluster with `make apps` done. Rotation is a persistent apply, which only Tahmid runs. Bump `shipping-webhook-secret` in `generated_secrets` in `infra/persistent/main.tf`, then plan and apply persistent.
+P6-06 (#67): rotating `shipping-webhook-secret` restarts shipping-service and nothing else. This needs a live cluster after `make up`. Rotation is a persistent apply, which only Tahmid runs. Bump `shipping-webhook-secret` in `generated_secrets` in `infra/persistent/main.tf`, then plan and apply persistent.
 
 ```bash
 CTX=aks-v2-platform

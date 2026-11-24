@@ -107,9 +107,10 @@ tofu -chdir=infra/persistent output workload_identity_client_ids
 
 The ServiceAccount annotations need them. Decided in P4-05 (#52): they are injected at install time, never committed.
 
-- Until ArgoCD (P7), the morning `helm upgrade --install` reads the ID from this output and passes it with `--set-string`, as in the [ExternalDNS install](../../../k8s/external-dns/README.md#install).
-- From P7, the argocd root reads each identity with `data "azurerm_user_assigned_identity"` and sets the annotation as a Helm parameter on its Application. That root's state is private, like this output.
-- Our own services (P6-05, #66) need the same for their ServiceAccounts. A Kustomize overlay can't read OpenTofu, so `make apps` writes the IDs to a gitignored `k8s/apps/dev/azure.env` and a kustomize replacement puts each on its ServiceAccount ([apps](../../../k8s/apps/README.md#values-from-opentofu)). From P7 the argocd root passes them to each Application as a Kustomize patch or parameter.
+- The [argocd root](../../argocd/README.md) reads each identity with `data "azurerm_user_assigned_identity"` and passes the client IDs to the root Application as Helm values, under `azure.clientIds`, keyed by ServiceAccount name. That root's state is private, like this output.
+- ExternalDNS, External Secrets and KEDA get theirs as Helm values on their own Applications (`valuesObject`), as in the [ExternalDNS install](../../../k8s/external-dns/README.md#install).
+- Our own services (P6-05, #66) get theirs as a Kustomize patch on each service's Application, which sets the annotation on its ServiceAccount ([apps](../../../k8s/apps/README.md#values-from-opentofu)). The bases keep the placeholder `CLIENT_ID_FROM_ARGOCD`.
+- The root's chart checks each ID is a GUID before it renders, so a missing identity never reaches a ServiceAccount as `null`.
 
 Why inject rather than commit: ExternalDNS also needs the subscription ID, which must stay out of a public repo, so an injection path is needed anyway. Once it exists, carrying the client ID through it costs nothing, and the rule matches the GitHub identities. Committing would also have been defensible, since a client ID grants nothing on its own.
 
@@ -127,7 +128,7 @@ az identity federated-credential list -g rg-aks-v2-persistent --identity-name id
 tofu -chdir=infra/platform output -raw oidc_issuer_url
 ```
 
-Signing in without a secret needs the ServiceAccounts and pods, so it waits for the component installs (P4-05, P4-06), the service manifests (P6-05) and ArgoCD (P7).
+Signing in without a secret needs the ServiceAccounts and pods, so it waits for the component installs (P4-05, P4-06), the service manifests (P6-05) and Argo CD (P7).
 
 ## Inputs
 

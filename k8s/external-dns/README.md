@@ -1,12 +1,10 @@
 # external-dns
 
-**TL;DR:** ExternalDNS 0.23 from the `external-dns` chart pinned at 1.23.0. It watches Ingresses and Services and writes A records into the Azure DNS zone `azure.order-fulfilment.tahmidchoudhury.uk`. It signs in as `id-external-dns` through workload identity, with no secret. A TXT registry marks the records it owns, and it changes nothing else. The client ID and subscription ID are not in Git: `make external-dns` reads them from the persistent outputs and the platform tfvars, and stops if either is missing. Filled by P4-05 (#52).
+**TL;DR:** ExternalDNS 0.23 from the `external-dns` chart pinned at 1.23.0. It watches Ingresses and Services and writes A records into the Azure DNS zone `azure.order-fulfilment.tahmidchoudhury.uk`. It signs in as `id-external-dns` through workload identity, with no secret. A TXT registry marks the records it owns, and it changes nothing else. The client ID and subscription ID are not in Git: Argo CD sets them from OpenTofu. Filled by P4-05 (#52).
 
 ## Install
 
-You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). From the repo root, run `make external-dns`. The [Makefile](../../Makefile) pins the chart in `EXTERNAL_DNS_VERSION`. It reads the client ID, zone and zone resource group from the persistent outputs, and the subscription ID from `subscription_id` in `infra/platform/terraform.tfvars`, so none of them is committed. It runs under `set -euo pipefail`, the same pattern as the [External Secrets install](../external-secrets/README.md). A failed `tofu output`, a missing key or a value that isn't a GUID stops it before Helm runs, so the ServiceAccount is never annotated with `null`.
-
-For P7, the argocd root can read `id-external-dns` with a `data "azurerm_user_assigned_identity"` and pass the same four values as Helm parameters on the Application. See [Client IDs](../../infra/modules/workload-identity/README.md#client-ids).
+You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). The `external-dns` Application installs it at wave 5 [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `external-dns` 1.23.0, pinned in `argocd/apps/templates/platform.yaml`, with `values.yaml`. `infra/argocd` reads the client ID, the zone and its resource group by name, and takes the subscription ID from its own `subscription_id`. The Application passes the four as Helm values, so none of them is committed. The root's chart refuses a client ID or subscription that isn't a GUID, so the ServiceAccount is never annotated with `null`. See [Client IDs](../../infra/modules/workload-identity/README.md#client-ids).
 
 ## Settings
 

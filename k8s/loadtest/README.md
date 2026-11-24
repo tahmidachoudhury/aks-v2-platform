@@ -1,6 +1,6 @@
 # loadtest
 
-**TL;DR:** A k6 load test for the P6 drills, run with `make loadtest`. It is never part of `make apps` or `make cluster`. Three k6 pods in `default` send page loads, logins and one order a second each to `https://azure.order-fulfilment.tahmidchoudhury.uk`, through Traefik and api-gateway, as a client would. Any failed request fails the Job, and `make loadtest` exits 1. The drills in [apps](../apps/README.md#proving-it) and [keda](../keda/README.md#proving-it) run it alongside. Filled for P6-03 (#64), P6-04 (#65), P6-09 (#70) and P6-10 (#71).
+**TL;DR:** A k6 load test for the P6 drills, run with `make loadtest`. Argo CD never applies it. Three k6 pods in `default` send page loads, logins and one order a second each to `https://azure.order-fulfilment.tahmidchoudhury.uk`, through Traefik and api-gateway, as a client would. Any failed request fails the Job, and `make loadtest` exits 1. The drills in [apps](../apps/README.md#proving-it) and [keda](../keda/README.md#proving-it) run it alongside. Filled for P6-03 (#64), P6-04 (#65), P6-09 (#70) and P6-10 (#71).
 
 ## Files
 
@@ -33,7 +33,7 @@ The day-to-day certificate is the staging one, which k6 doesn't trust, so the sc
 
 ## Run it
 
-Needs `make cluster` done and the Ingress serving. From the repo root:
+Needs `make up` done and the Ingress serving. From the repo root:
 
 ```bash
 # 5 minutes, 10 page loads and logins a second per pod.
