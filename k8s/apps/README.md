@@ -498,7 +498,8 @@ ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
 $K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
 $K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
 $K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}{"\n"}'
-$K get endpointslices -l kubernetes.io/service-name=payment-service -o wide
+$K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
+  | jq -r '.items[].endpoints[] | [.targetRef.name, .addresses[0], "ready=\(.conditions.ready)"] | @tsv'
 $K rollout undo deploy/payment-service
 
 # 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
@@ -510,7 +511,7 @@ az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/
   -n order-events --query countDetails
 ```
 
-Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists only the old pods' addresses, and the load test still sees no errors. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
+Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists the old pods with `ready=true` and the broken pod with `ready=false`, and the load test still sees no errors. The slice holds every pod the Service selects. Traefik and Cilium send traffic only to endpoints marked ready, so the broken pod takes none. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
 
 **P6-04 (#65), criterion 11: the five multi-replica services run in at least two zones, and draining a node never takes one to zero Ready.**
 
