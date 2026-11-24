@@ -224,13 +224,31 @@ sleep 2; curl -s localhost:18081/healthz; kill $PF
 # Send through the gateway, then watch the worker receive it.
 TOKEN=$(curl -s -X POST https://azure.order-fulfilment.tahmidchoudhury.uk/auth/login \
   -H 'Content-Type: application/json' -d '{"email":"p6@example.com","password":"x"}' | jq -r .token)
-curl -s -X POST https://azure.order-fulfilment.tahmidchoudhury.uk/api/orders/ \
+ORDER=$(curl -s -X POST https://azure.order-fulfilment.tahmidchoudhury.uk/api/orders/ \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"items":[{"product_id":"p1","quantity":1,"price":1.5}],"currency":"GBP"}'
+  -d '{"items":[{"product_id":"p1","quantity":1,"price":1.5}],"currency":"GBP"}' | jq -r .id)
+echo "order $ORDER"
+
+# payment-service and shipping-service publish too, but only for role admin or
+# service. The gateway issues neither while ADMIN_EMAILS is unset, so call them
+# directly with the headers an internal caller sends.
+kubectl --context $CTX -n apps port-forward deploy/payment-service 18083:8083 >/dev/null & PF=$!
+sleep 2
+curl -s -X POST localhost:18083/charge -H 'X-User-Role: service' -H 'X-User-Email: p6@example.com' \
+  -H 'Content-Type: application/json' \
+  -d '{"order_id":'"$ORDER"',"customer_id":"p6@example.com","amount":1.5,"currency":"GBP","method":"card"}'; echo
+kill $PF
+kubectl --context $CTX -n apps port-forward deploy/shipping-service 18085:8085 >/dev/null & PF=$!
+sleep 2
+curl -s -X POST localhost:18085/shipments -H 'X-User-Role: service' -H 'X-User-Email: p6@example.com' \
+  -H 'Content-Type: application/json' \
+  -d '{"order_id":'"$ORDER"',"recipient_name":"P6 check","city":"London","postcode":"SW1A 1AA"}'; echo
+kill $PF
+
 kubectl --context $CTX -n apps logs deploy/worker --since=2m | grep -E 'Processing event|Successfully processed'
 ```
 
-Expect `AZURE_AUTHORITY_HOST,AZURE_CLIENT_ID,AZURE_FEDERATED_TOKEN_FILE,AZURE_TENANT_ID` on order, payment, shipping and worker, and nothing on the other five. The mount check shows `/var/run/secrets/azure/tokens` on those four and `/var/run/secrets/kubernetes.io/serviceaccount` on none of the nine. Then expect `own identity` four times, `"servicebus":"ok"` from order-service, and `Processing event: order.created` then `Successfully processed: order.created` in the worker's log. The HTTPS calls need the Ingress from P6-07. Before then, port-forward to api-gateway and use `http://localhost:18080`. The order body follows `createOrder` in `app/services/order-service/main.go`.
+Expect `AZURE_AUTHORITY_HOST,AZURE_CLIENT_ID,AZURE_FEDERATED_TOKEN_FILE,AZURE_TENANT_ID` on order, payment, shipping and worker, and nothing on the other five. The mount check shows `/var/run/secrets/azure/tokens` on those four and `/var/run/secrets/kubernetes.io/serviceaccount` on none of the nine. Then expect `own identity` four times, `"servicebus":"ok"` from order-service, an order number, a payment (`completed`, or `failed` one time in ten, which publishes as well), and a shipment with a tracking number. The worker's log then shows `Processing event` and `Successfully processed` for `order.created`, for `payment.completed` or `payment.failed`, and for `shipment.created`: all three publishers sent with their own identities. The direct calls are needed because `X-User-Role` comes from the token, and the gateway issues only `customer` while `ADMIN_EMAILS` is unset, so no request through it may charge or ship. The HTTPS calls need the Ingress from P6-07. Before then, port-forward to api-gateway and use `http://localhost:18080`. The order body follows `createOrder` in `app/services/order-service/main.go`.
 
 The other five have no token file and no `AZURE_*` variable, so the SDK has nothing to sign in with. The images have no shell, so the check reads the pod spec instead of using exec.
 
