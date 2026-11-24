@@ -73,9 +73,17 @@ up: ## Morning: platform, kubeconfig, then argocd
 	$(MAKE) argocd
 
 # argocd first, so its Helm releases go while the cluster still exists. The
-# Applications have no finalizer, so nothing waits on a cascade.
+# Applications have no finalizer, so nothing waits on a cascade. If the argocd
+# destroy fails or is cancelled, stop with the recovery: the cluster stays up
+# until platform is destroyed. See argocd/README.md, The evening destroy.
 down: ## Evening: destroy argocd, then platform. The cluster goes, with everything in it
-	tofu -chdir=infra/argocd destroy
+	tofu -chdir=infra/argocd destroy || { \
+	  echo "The argocd destroy failed or was cancelled. The platform destroy has NOT run, so the cluster is still up." >&2; \
+	  echo "If it hung on an Application finalizer, strip it, then run make down again:" >&2; \
+	  echo "  kubectl --context $(CTX) -n argocd patch application <name> --type merge -p '{\"metadata\":{\"finalizers\":null}}'" >&2; \
+	  echo "If the cluster can't be reached, drop the argocd resources from state, then run make down again:" >&2; \
+	  echo "  tofu -chdir=infra/argocd state list, then tofu -chdir=infra/argocd state rm <each address>" >&2; \
+	  exit 1; }
 	tofu -chdir=infra/platform destroy
 
 restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up
