@@ -54,7 +54,8 @@ spec:
         - name: app
           # 40m is the per-pod budget in k8s/namespaces/README.md: the HPA
           # maximums add up to 26 pods, and 26 x 40m fits the apps quota with
-          # room for one rollout. No CPU limit, as the namespace README says.
+          # room for four rollout surge pods at once (k8s/apps/README.md,
+          # Quotas). No CPU limit, as the namespace README says.
           resources:
             requests:
               cpu: 40m

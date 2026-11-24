@@ -70,7 +70,8 @@ The repo is public, so nothing deployment-specific is committed ([Client IDs](..
 | --- | --- | --- |
 | `acrLoginServer` | persistent `acr_login_server` | `ACR_LOGIN_SERVER` at the front of every image |
 | `serviceBusNamespace` | platform `servicebus_fqdn` | `SERVICEBUS_NAMESPACE` on order, payment, shipping and worker |
-| `serviceBusQueue` | platform `servicebus_queue_name` | `SERVICEBUS_QUEUE` on the same four |
+| `serviceBusNamespaceName` | platform `servicebus_namespace_name` | `namespace` in the worker's ScaledObject trigger. KEDA adds `.servicebus.windows.net` itself |
+| `serviceBusQueue` | platform `servicebus_queue_name` | `SERVICEBUS_QUEUE` on the same four, and `queueName` in the ScaledObject |
 | `order-service`, `payment-service`, `shipping-service`, `worker` | persistent `workload_identity_client_ids` | `azure.workload.identity/client-id` on each ServiceAccount |
 
 `make apps` checks the shape of every value before it writes the file: a GUID for each client ID, `*.azurecr.io`, `*.servicebus.windows.net`. A failed `tofu output`, a missing key or a malformed value stops it, so it never applies a placeholder or a `null`. If `azure.env` is missing, `kustomize build k8s/apps/dev` fails with an error naming the file. `azure.env.example` shows the shape. Don't copy it into place.
@@ -647,4 +648,4 @@ yq -N -r 'select(.kind == "ConfigMap" and .metadata.name == "api-gateway*") | .d
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 70, Invalid: 0, Errors: 0, Skipped: 0`, then the rows each comment describes, and `10.244.0.0/16`.
+Expect `Valid: 73, Invalid: 0, Errors: 0, Skipped: 0`, then the rows each comment describes, and `10.244.0.0/16`.

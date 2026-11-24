@@ -38,7 +38,7 @@ Until both are applied, `make keda` stops with "No keda client ID in the persist
 | `webhooks.enabled` | `false` | The webhooks only catch ScaledObject mistakes (`failurePolicy: Ignore`) and there is one ScaledObject. AKS's admissions enforcer rewrites every webhook's `namespaceSelector`, which breaks a second `helm upgrade` (as [cert-manager's values](../cert-manager/values.yaml) note), and this chart can't declare the selector. It also saves a pod |
 | CPU limits | `null` | The chart sets 1 CPU by default. No `platform` component has a CPU limit |
 
-The trigger uses KEDA's defaults: it counts active messages only (not dead-lettered or scheduled ones), polls every 30 seconds and scales down after 300 seconds without activity. `minReplicaCount: 1` keeps one worker up, so the first order after a quiet spell needs no cold start.
+The trigger uses KEDA's defaults: it counts active messages only (not dead-lettered or scheduled ones) and polls every 30 seconds. Scaling down from several workers to one follows the HPA's default scale-down stabilisation window, 300 seconds. KEDA's `cooldownPeriod` applies only to scaling to zero, which `minReplicaCount: 1` rules out. `minReplicaCount: 1` keeps one worker up, so the first order after a quiet spell needs no cold start.
 
 KEDA 2.21 is tested against Kubernetes 1.34 to 1.36 ([cluster compatibility](https://keda.sh/docs/latest/operate/cluster/)), and the cluster runs 1.37. 2.21.1 is the newest release. Check the operator's logs after the first install, and move to 2.22 when it ships.
 
@@ -82,7 +82,7 @@ $K -n apps get deploy worker -w
 $K -n platform logs deploy/keda-operator --since=10m | grep -iE 'error|401|403' || echo "no auth errors"
 ```
 
-Expect the ScaledObject `READY True` and `ACTIVE True` once messages wait, and `keda-hpa-worker` with `MAXPODS 5`. With about 360 messages waiting, the worker goes to 5 replicas within a minute or two of the pause lifting. It drains the queue and returns to 1 replica after the 300-second cooldown. `no auth errors` shows `id-keda` read the queue.
+Expect the ScaledObject `READY True` and `ACTIVE True` once messages wait, and `keda-hpa-worker` with `MAXPODS 5`. With about 360 messages waiting, the worker goes to 5 replicas within a minute or two of the pause lifting. It drains the queue and returns to 1 replica after the HPA's 300-second scale-down stabilisation window. `no auth errors` shows `id-keda` read the queue.
 
 ## Validate
 
