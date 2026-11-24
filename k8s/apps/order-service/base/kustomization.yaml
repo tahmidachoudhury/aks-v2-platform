@@ -8,6 +8,7 @@ resources:
   - service.yaml
   - networkpolicy.yaml
   - pdb.yaml
+  - hpa.yaml
 
 components:
   - ../../components/service

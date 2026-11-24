@@ -15,7 +15,7 @@ ArgoCD syncs this folder from P7. Until then, `make cluster` from the repo root 
 1. [`node-pools`](node-pools/README.md) (`make node-pools`). Nothing outside the system pool schedules without it.
 2. [`namespaces`](namespaces/README.md) (`make namespaces`). The Helm installs below go into `platform` and don't create it.
 3. [`storage`](storage/README.md) (`make storage`).
-4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), [`external-dns`](external-dns/README.md), then [`reloader`](reloader/README.md), each with `make <folder>`.
+4. The Helm installs into `platform`: [`external-secrets`](external-secrets/README.md), [`traefik`](traefik/README.md), [`cert-manager`](cert-manager/README.md), [`external-dns`](external-dns/README.md), [`reloader`](reloader/README.md), then [`keda`](keda/README.md), each with `make <folder>`.
 5. [`data`](data/README.md) (`make data`): Postgres and Redis. It needs the ClusterSecretStore from `external-secrets` and the `premium-zrs` class from `storage`. It waits until both pods are Ready. Apps that use them go after it.
 6. [`backup`](backup/README.md) (`make backup`), after `make data` brings up Postgres: the hourly snapshot CronJob in `data`.
 7. [`migrations`](migrations/README.md) (`make migrate`): the Job that builds the schema in the empty database. It fails `make` if a migration fails, so the services never roll out on a broken schema.

@@ -11,6 +11,5 @@ images:
   - name: ACR_LOGIN_SERVER/shipping-service
     newTag: b33be046503f
 
-replicas:
-  - name: shipping-service
-    count: 2
+# No replica count: the HPA in the base owns it, and a count here would reset it on
+# every apply.

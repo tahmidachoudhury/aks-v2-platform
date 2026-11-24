@@ -6,6 +6,7 @@ resources:
   - deployment.yaml
   - networkpolicy.yaml
   - pdb.yaml
+  - scaledobject.yaml
 
 components:
   - ../../components/service

@@ -91,6 +91,22 @@ replacements:
           kind: Deployment
           name: worker
         fieldPaths: *servicebus-queue
+      - select:
+          kind: ScaledObject
+          name: worker
+        fieldPaths:
+          - spec.triggers.[type=azure-servicebus].metadata.queueName
+  # KEDA takes the namespace's name and adds the suffix itself.
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.serviceBusNamespaceName
+    targets:
+      - select:
+          kind: ScaledObject
+          name: worker
+        fieldPaths:
+          - spec.triggers.[type=azure-servicebus].metadata.namespace
   # One client ID per workload identity, keyed in azure.env by the
   # ServiceAccount's name.
   - source:

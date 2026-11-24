@@ -2,16 +2,16 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69), P6-09 (#70) and P6-11 (#72).
 
 ## Layout
 
 ```text
 k8s/apps/
   components/service/       the pod shape every workload shares (a Kustomize Component)
-  <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service,
-                            NetworkPolicy, PodDisruptionBudget, ExternalSecret, config.env
-  <service>/overlays/dev/   image tag and replica count for dev
+  <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service, NetworkPolicy, PodDisruptionBudget,
+                            HorizontalPodAutoscaler, ExternalSecret, config.env
+  <service>/overlays/dev/   image tag for dev (and the scheduler's one replica)
   dev/                      all nine dev overlays, plus the values from OpenTofu
 ```
 
@@ -23,19 +23,19 @@ Each file writes its selectors out. Kustomize's `labels` with `includeSelectors`
 
 ## The services
 
-| Service | Port | Dev replicas | Identity | Secret keys | Postgres |
+| Service | Port | Replicas | Identity | Secret keys | Postgres |
 | --- | --- | --- | --- | --- | --- |
-| api-gateway | 8080 | 2 | none | `JWT_SECRET`; `REDIS_URL` | no |
-| order-service | 8081 | 2 | `id-order-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
-| inventory-service | 8082 | 2 | none | `PGPASSWORD` | yes |
-| payment-service | 8083 | 2 | `id-payment-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
-| notification-service | 8084 | 1 | none | `PGPASSWORD` | yes |
-| shipping-service | 8085 | 2 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`; `SHIPPING_WEBHOOK_SECRET` | yes |
-| dashboard-api | 8086 | 1 | none | `PGPASSWORD` | yes |
-| worker | 8090, health only | 1 | `id-worker`, Service Bus Data Receiver | none | no |
+| api-gateway | 8080 | 2 to 4 | none | `JWT_SECRET`; `REDIS_URL` | no |
+| order-service | 8081 | 2 to 3 | `id-order-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
+| inventory-service | 8082 | 2 to 3 | none | `PGPASSWORD` | yes |
+| payment-service | 8083 | 2 to 3 | `id-payment-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
+| notification-service | 8084 | 1 to 2 | none | `PGPASSWORD` | yes |
+| shipping-service | 8085 | 2 to 3 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`; `SHIPPING_WEBHOOK_SECRET` | yes |
+| dashboard-api | 8086 | 1 to 2 | none | `PGPASSWORD` | yes |
+| worker | 8090, health only | 1 to 5 | `id-worker`, Service Bus Data Receiver | none | no |
 | scheduler | 8091, health only | 1 | none | `PGPASSWORD` | yes |
 
-The replica counts are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums. The worker has no Service, since nothing calls it. The scheduler has a headless one only because a StatefulSet needs a governing Service. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
+The replica ranges are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums and maximums. See [Autoscaling](#autoscaling). The worker has no Service, since nothing calls it. The scheduler has a headless one only because a StatefulSet needs a governing Service. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
 
 `ADMIN_EMAILS` is unset on api-gateway on purpose. Login checks no password, so anyone who knows an admin email would get an admin token ([service catalogue](../../docs/service-catalogue.md#api-gateway)).
 
@@ -122,7 +122,7 @@ Each identity holds one role, on the `order-events` queue only: Data Sender for 
 
 ## Rollouts
 
-P6-03 (#64). Every Deployment but the scheduler rolls one pod at a time, and keeps every old pod until the new one is Ready:
+P6-03 (#64). Every Deployment rolls one pod at a time, and keeps every old pod until the new one is Ready:
 
 1. The Deployment adds one new pod (`maxSurge: 1`). It takes traffic only once `/healthz` passes, so a pod that never turns Ready takes none.
 2. Only then does it remove an old pod (`maxUnavailable: 0`). That pod leaves the Service endpoints straight away. The 5s `preStop` sleep gives Cilium and Traefik time to stop sending it new connections.
@@ -145,6 +145,18 @@ P6-04 (#65). Every service except the scheduler has a PodDisruptionBudget with `
 - The scheduler has no budget. It is one replica, and a budget allowing no disruption would block every drain of its node. A StatefulSet never starts its replacement before it has gone, and a missed tick only delays the next run.
 
 The shared component spreads each service's pods across zones, then across nodes, with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`. A hard rule would make NAP add a node per zone, and `general` is capped at 4 vCPUs. So the spread is a preference, as it is for Traefik, and the budgets are what keep a service up through a drain. `matchLabelKeys` adds the pod's own `app.kubernetes.io/name` and `pod-template-hash` to the selector, so one rule in the component spreads each service, and each revision, on its own. NAP only creates nodes in more than one zone when pods ask for it ([node-pools](../node-pools/README.md#zones)), and this asks.
+
+## Autoscaling
+
+P6-09 (#70), per the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) ADR:
+
+- The seven HTTP services each have a HorizontalPodAutoscaler in their base, on CPU at 70% of the 40m request, so a pod scales out at about 28m. The minimums and maximums are the ADR's, in the table above.
+- The worker scales with [KEDA](../keda/README.md) on the queue's active message count, 5 per replica, from 1 to 5. KEDA creates and owns the HPA `keda-hpa-worker`. The ScaledObject is in the worker's base, and `dev/` fills in the namespace's name and the queue.
+- The scheduler stays at one replica, set in its dev overlay.
+
+Only the scheduler's StatefulSet sets `replicas`, to 1. The eight Deployments leave it out. The autoscaler owns the count, and a count in Git would reset it on every apply. A new Deployment starts at 1 and its HPA raises it to the minimum within a few seconds. One catch on a live cluster: the first apply after a manifest drops `replicas` resets the Deployment to 1 for a moment. The cluster is rebuilt every morning, so this only matters on a cluster that ran an earlier version of these manifests.
+
+Postgres connections set the low maximums, not CPU: each pod opens up to its `SetMaxOpenConns` ([Postgres connections](../data/README.md#postgres-connections)).
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -224,7 +236,18 @@ Kubelet probes come from the node, not a pod. Cilium lets a node reach its own p
 
 ### apps
 
-At the dev replica counts, the nine services run 14 pods. 14 x 40m is 560m of the 1,250m `requests.cpu` quota, and 14 x 64Mi is 896Mi of 4Gi. The migration Job adds 10m and 32Mi while it runs. P6-09 adds the autoscalers and the full arithmetic at their maximums.
+Every service pod requests 40m CPU and 64Mi, with a 256Mi limit. The migration Job requests 10m and 32Mi with a 64Mi limit. cert-manager's HTTP-01 solver pod requests 10m and 64Mi with a 64Mi limit, and runs only while a certificate is ordered.
+
+| | Pods | `requests.cpu` | `requests.memory` | `limits.memory` |
+| --- | --- | --- | --- | --- |
+| Minimums: 2+2+2+2+2+1+1+1+1 | 14 | 560m | 896Mi | 3,584Mi |
+| Maximums: 4+3+3+3+3+2+2+5+1 | 26 | 1,040m | 1,664Mi | 6,656Mi |
+| One rolling-update surge pod | 1 | 40m | 64Mi | 256Mi |
+| Migration Job | 1 | 10m | 32Mi | 64Mi |
+| HTTP-01 solver | 1 | 10m | 64Mi | 64Mi |
+| **At the maximums, with all three** | **29 of 40** | **1,100m of 1,250m** | **1,824Mi of 4Gi** | **7,040Mi of 10Gi** |
+
+It holds. The 150m left is room for three more surge pods, so at the maximums at most four services can roll at once. At the minimums, all eight rolling Deployments can roll together (22 pods, 880m). That is why the [Rollouts](#rollouts) section says to roll one service at a time when replicas are high. The load test runs in `default`, outside this quota.
 
 ### platform quota
 
@@ -235,7 +258,8 @@ At the dev replica counts, the nine services run 14 pods. 14 x 40m is 560m of th
 | External Secrets | 4 | 40m | 160Mi | 640Mi |
 | ExternalDNS | 1 | 10m | 32Mi | 128Mi |
 | Reloader | 1 | 10m | 32Mi | 128Mi |
-| **Total** | **11 of 20** | **190m of 500m** | **512Mi of 2Gi** | **2,048Mi of 4Gi** |
+| KEDA operator and metrics server | 2 | 40m | 160Mi | 512Mi |
+| **Total** | **13 of 20** | **230m of 500m** | **672Mi of 2Gi** | **2,560Mi of 4Gi** |
 
 While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 256Mi limit, from the LimitRange defaults.
 
@@ -486,6 +510,22 @@ $K uncordon "$NODE"
 
 Expect each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. Run the load test at the same time to see no failed requests as well.
 
+**P6-09 (#70), criterion 12: the HPAs match the ADR, load triggers scale-out, and KEDA scales the worker on queue depth.**
+
+Offline, [Validate](#validate) prints each HPA's minimum, maximum and target. Live:
+
+```bash
+CTX=aks-v2-platform
+K="kubectl --context $CTX -n apps"
+$K get hpa
+# In one terminal: the load test, five minutes of logins and page loads through Traefik.
+make loadtest DURATION=5m RATE=40
+# In another: watch the gateway and dashboard-api scale out, then back after it ends.
+$K get hpa api-gateway dashboard-api -w
+```
+
+Expect seven HPAs at the ADR's minimums and maximums, plus `keda-hpa-worker`. During the load test, api-gateway's CPU passes 70% and it scales towards 4 replicas, and dashboard-api towards 2. About five minutes after the test ends, both return to their minimums. The backends sit behind the gateway's rate limit of 100 requests a minute per client, so a load test from a few pods can't push them hard. That limit is doing its job. KEDA's half of the criterion is in [keda](../keda/README.md#proving-it).
+
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
 ```bash
@@ -530,7 +570,8 @@ cp -R k8s/apps "$TMP/"
 cp k8s/apps/dev/azure.env.example "$TMP/apps/dev/azure.env"
 kustomize build "$TMP/apps/dev" > "$TMP/dev.yaml"
 
-# Criterion 1: valid manifests. The CRD catalog covers ExternalSecret, so nothing is skipped.
+# Criterion 1: valid manifests. The CRD catalog covers ExternalSecret, ScaledObject and
+# TriggerAuthentication, so nothing is skipped.
 kubeconform -strict -summary \
   -schema-location default \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
@@ -538,23 +579,31 @@ kubeconform -strict -summary \
 
 # Criteria 1 and 2: one line per workload. Every column after the name must read
 # true 65532 RuntimeDefault true false ALL 40m 3
-yq ea -r '[select(.kind == "Deployment" or .kind == "StatefulSet")] | .[] | .spec.template.spec as $p | $p.containers[] |
+yq -N -r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .spec.template.spec as $p | $p.containers[] |
   [$p.serviceAccountName, $p.securityContext.runAsNonRoot, $p.securityContext.runAsUser,
    $p.securityContext.seccompProfile.type, .securityContext.readOnlyRootFilesystem,
    .securityContext.allowPrivilegeEscalation, (.securityContext.capabilities.drop | join(",")),
-   .resources.requests.cpu, .readinessProbe.timeoutSeconds] | @tsv' "$TMP/dev.yaml"
+   .resources.requests.cpu, .readinessProbe.timeoutSeconds] | @tsv' "$TMP/dev.yaml" | grep .
 
 # Criterion 10: rollout settings for the eight Deployments. Every row reads
 # RollingUpdate 0 1 300 45 5. The scheduler is a StatefulSet and has none of
 # these: its grace period and preStop come from the same patch as the rest.
-yq ea -r '[select(.kind == "Deployment")] | .[] | [.metadata.name, .spec.strategy.type,
+yq -N -r 'select(.kind == "Deployment") | [.metadata.name, .spec.strategy.type,
   .spec.strategy.rollingUpdate.maxUnavailable, .spec.strategy.rollingUpdate.maxSurge,
   .spec.progressDeadlineSeconds, .spec.template.spec.terminationGracePeriodSeconds,
-  .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds] | @tsv' "$TMP/dev.yaml"
+  .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds] | @tsv' "$TMP/dev.yaml" | grep .
+
+# Criterion 12: name, minimum, maximum, CPU target. Expect api-gateway 2 4 70,
+# order, inventory, payment and shipping 2 3 70, notification and dashboard-api
+# 1 2 70, then the worker's ScaledObject: 1 5 5.
+yq -N -r 'select(.kind == "HorizontalPodAutoscaler") | [.metadata.name, .spec.minReplicas,
+  .spec.maxReplicas, .spec.metrics[0].resource.target.averageUtilization] | @tsv' "$TMP/dev.yaml" | grep .
+yq -N -r 'select(.kind == "ScaledObject") | [.metadata.name, .spec.minReplicaCount,
+  .spec.maxReplicaCount, .spec.triggers[0].metadata.messageCount] | @tsv' "$TMP/dev.yaml" | grep .
 
 # Criterion 2: the gateway trusts X-Forwarded-For only from the pod CIDR.
-yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | .[].data.TRUSTED_PROXIES' "$TMP/dev.yaml"
+yq -N -r 'select(.kind == "ConfigMap" and .metadata.name == "api-gateway*") | .data.TRUSTED_PROXIES' "$TMP/dev.yaml" | grep .
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 56, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.
+Expect `Valid: 70, Invalid: 0, Errors: 0, Skipped: 0`, then the rows each comment describes, and `10.244.0.0/16`.

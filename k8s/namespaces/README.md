@@ -25,6 +25,7 @@ The workload identity federated credentials trust these ServiceAccounts, so the 
 | `apps` | `order-service`, `payment-service`, `shipping-service`, `worker` | The service manifests (P6-05) |
 | `platform` | `external-dns` | The ExternalDNS chart, by its default name |
 | `platform` | `external-secrets` | The External Secrets chart, by its default name |
+| `platform` | `keda-operator` | The KEDA chart, by its default name |
 
 This folder creates no ServiceAccounts, since a chart refuses to install over a ServiceAccount it didn't create.
 

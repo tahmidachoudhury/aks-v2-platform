@@ -11,6 +11,5 @@ images:
   - name: ACR_LOGIN_SERVER/worker
     newTag: b33be046503f
 
-replicas:
-  - name: worker
-    count: 1
+# No replica count: KEDA's ScaledObject owns it, and a count here
+# would reset it on every apply.
