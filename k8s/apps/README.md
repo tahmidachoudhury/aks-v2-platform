@@ -192,10 +192,10 @@ Expect nine `<service>:<tag>` lines and no error. Every tag matches `git log -1 
 **Criterion 4: all nine Ready after the migration.**
 
 ```bash
-kubectl --context aks-v2-platform -n apps get deploy,pods -l app.kubernetes.io/part-of=order-fulfilment
+kubectl --context aks-v2-platform -n apps get deploy,sts,pods -l app.kubernetes.io/part-of=order-fulfilment
 ```
 
-Expect nine Deployments at their replica counts, every pod `Running` and `1/1` Ready, with no restarts.
+Expect eight Deployments and the scheduler's StatefulSet at their replica counts, every pod `Running` and `1/1` Ready, with no restarts.
 
 **P6-05 (#66), criterion 5: each publisher sends and the worker receives with its own identity. The rest get no Azure token.**
 
