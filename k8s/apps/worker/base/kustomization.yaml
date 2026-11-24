@@ -5,6 +5,7 @@ resources:
   - serviceaccount.yaml
   - deployment.yaml
   - networkpolicy.yaml
+  - pdb.yaml
 
 components:
   - ../../components/service

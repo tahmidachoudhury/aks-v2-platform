@@ -19,6 +19,30 @@ spec:
       # The scheduler takes 5s, then up to 20s for a running job and 5s for
       # its health server. 45s covers both with room to spare.
       terminationGracePeriodSeconds: 45
+      # Spread each service's pods across zones, then nodes, so losing one
+      # takes out as few as possible. ScheduleAnyway, as for Traefik: a hard
+      # rule would make NAP add a node per zone, and general is capped at 4
+      # vCPUs. matchLabelKeys narrows the selector to this service's pods of
+      # this revision, so one rule fits every service.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: order-fulfilment
+          matchLabelKeys:
+            - app.kubernetes.io/name
+            - pod-template-hash
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: order-fulfilment
+          matchLabelKeys:
+            - app.kubernetes.io/name
+            - pod-template-hash
       # The images are distroless static:nonroot, user and group 65532.
       securityContext:
         runAsNonRoot: true

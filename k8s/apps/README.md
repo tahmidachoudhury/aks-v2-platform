@@ -2,7 +2,7 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
 
 ## Layout
 
@@ -10,7 +10,7 @@ Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-05 (#66), P6-06 (#67), P6-07
 k8s/apps/
   components/service/       the pod shape every workload shares (a Kustomize Component)
   <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service,
-                            NetworkPolicy, ExternalSecret, config.env
+                            NetworkPolicy, PodDisruptionBudget, ExternalSecret, config.env
   <service>/overlays/dev/   image tag and replica count for dev
   dev/                      all nine dev overlays, plus the values from OpenTofu
 ```
@@ -53,6 +53,7 @@ Every Deployment, and the scheduler's StatefulSet, gets these from `components/s
 | Memory | 64Mi request, 256Mi limit | The namespace defaults, set explicitly |
 | `enableServiceLinks` | `false` | Stops `ORDER_SERVICE_PORT` and similar variables being injected for every Service in `apps` |
 | Rollout | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `progressDeadlineSeconds: 300` | Deployments only, from `rollout.yaml`. See [Rollouts](#rollouts) |
+| Spread | Across zones, then nodes, `ScheduleAnyway` | See [Disruption and spread](#disruption-and-spread) |
 | `preStop` | The kubelet's `sleep` action, 5s | Holds SIGTERM back while Cilium and Traefik drop the pod from their endpoints. The images have no shell to exec `sleep` in |
 | `terminationGracePeriodSeconds` | 45 | The 5s preStop, then the HTTP services' 5s drain and 30s shutdown: 40s. The scheduler's 5s, 20s job wait and 5s stop: 30s |
 | Startup probe | `/livez`, every 5s, 30 tries | The Postgres users ping the database for up to 120s before they listen |
@@ -133,6 +134,17 @@ The worker loses no messages in a rollout. It receives in PeekLock mode, so a me
 The scheduler is a StatefulSet, so the rollout fields live in a second component patch, `rollout.yaml`, that targets Deployments only. The StatefulSet's own rolling update deletes `scheduler-0` before it creates the new one, and has no progress deadline: `make apps` gives up on it after its 10-minute `rollout status` timeout (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)).
 
 With replicas near the HPA maximums, roll one service at a time. Each rollout adds a 40m surge pod, and at the maximums the `apps` quota has room for only a few at once ([Quotas](#quotas)). A surge pod the quota refuses holds its rollout until the deadline fails it.
+
+## Disruption and spread
+
+P6-04 (#65). Every service except the scheduler has a PodDisruptionBudget with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`:
+
+- A drain or a NAP consolidation evicts one pod of a service, then waits until its replacement is Ready before evicting the next. A service with two or more replicas always keeps one serving.
+- A service at one replica (notification-service and dashboard-api at their minimum, the worker when the queue is quiet) can still be evicted, so a single replica never blocks a drain. It is down until its replacement is Ready. The ADR accepts that for these three, since none is on the path a customer waits on.
+- `minAvailable: 1` would block every drain of a single-replica service, so it isn't used.
+- The scheduler has no budget. It is one replica, and a budget allowing no disruption would block every drain of its node. A StatefulSet never starts its replacement before it has gone, and a missed tick only delays the next run.
+
+The shared component spreads each service's pods across zones, then across nodes, with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`. A hard rule would make NAP add a node per zone, and `general` is capped at 4 vCPUs. So the spread is a preference, as it is for Traefik, and the budgets are what keep a service up through a drain. `matchLabelKeys` adds the pod's own `app.kubernetes.io/name` and `pod-template-hash` to the selector, so one rule in the component spreads each service, and each revision, on its own. NAP only creates nodes in more than one zone when pods ask for it ([node-pools](../node-pools/README.md#zones)), and this asks.
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -450,6 +462,29 @@ az servicebus queue show -g "$(tofu -chdir=infra/platform output -raw resource_g
 ```
 
 Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists only the old pods' addresses, and the load test still sees no errors. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
+
+**P6-04 (#65), criterion 11: draining a node never takes a multi-replica service to zero Ready.**
+
+Pick a `general` node without `postgres-0` or `redis-0`: their budgets block a drain on purpose ([data](../data/README.md#disruption)).
+
+```bash
+CTX=aks-v2-platform
+K="kubectl --context $CTX"
+$K -n apps get pdb
+$K get pods -A -o wide --field-selector=status.phase=Running | grep -E ' apps | data ' | awk '{print $1, $2, $8}'
+NODE=<a general node with app pods and no data pods>
+# Ready replicas of the five multi-replica services, every second, while the node drains.
+( for i in $(seq 240); do
+    $K -n apps get deploy api-gateway order-service inventory-service payment-service shipping-service \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.status.readyReplicas} {end}{"\n"}'; sleep 1
+  done > /tmp/ready.log ) &
+$K drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=10m
+wait
+grep -E '=0( |$)|=( |$)' /tmp/ready.log || echo "never zero"
+$K uncordon "$NODE"
+```
+
+Expect each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. Run the load test at the same time to see no failed requests as well.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
