@@ -82,13 +82,13 @@ Only the `general` NodePool counts here. `spot` takes only pods that tolerate ev
 | `general` NodePool | CPU |
 | --- | --- |
 | `limits.cpu` | 4 vCPUs |
-| For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, 3,680m on one 4 vCPU node |
+| For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, the only shape since P6-04 |
 | Kept for ArgoCD (P7), outside these namespaces | About 1,000m |
-| Left for `apps`, `data` and `platform` | About 2,440m to 2,680m |
+| Left for `apps`, `data` and `platform` | About 2,440m |
 
-The quotas total 2,500m. If all three namespaces use their full CPU quota, nothing runs on spot and the pool is two 2 vCPU nodes, demand is about 60m more than the nodes hold. The quota admits the last pod or two, but they stay `Pending`. On one 4 vCPU node it fits. A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
+The quotas total 2,500m. If all three namespaces use their full CPU quota and nothing runs on spot, demand is about 60m more than the two nodes hold. The quota admits the last pod or two, but they stay `Pending`. `general` offers no 4 vCPU size, which would have fitted, because the five multi-replica services in `apps` need nodes in two zones ([node-pools](../node-pools/README.md#sizes-and-limits)). A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
 
-Memory depends on the size Karpenter picks. `Standard_D2s_v6` and `Standard_D4s_v6` have 8 GiB per 2 vCPUs and are the cheapest, so Karpenter usually picks them. Then `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. The `nls` sizes have half that memory. If they're all Karpenter can get, as in zone 1, pods go `Pending` on memory before CPU.
+Memory depends on the size Karpenter picks. `Standard_D2s_v6` has 8 GiB per 2 vCPUs. With two of those, `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. `Standard_D2nls_v6` has half that memory and is the only size in zone 1. With one of each, pods go `Pending` on memory before CPU.
 
 ### Sizes
 
