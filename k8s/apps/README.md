@@ -507,6 +507,10 @@ K rollout status deploy/api-gateway --timeout=5m
 K rollout status deploy/order-service --timeout=5m
 
 # 2. A broken image: the new pod never turns Ready, the old ones keep serving.
+# selfHeal would put Git's image back within seconds, so turn auto-sync off
+# for the test, the root first (argocd/README.md, Rollback).
+argocd app set root --sync-policy none
+argocd app set payment-service --sync-policy none
 ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
 K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
 K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
@@ -514,6 +518,8 @@ K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progres
 K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
   | jq -r '.items[].endpoints[] | [.targetRef.name, .addresses[0], "ready=\(.conditions.ready)"] | @tsv'
 K rollout undo deploy/payment-service
+# Back on: the root restores payment-service's own policy from Git.
+argocd app set root --sync-policy automated --auto-prune --self-heal
 
 # 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
 K rollout restart deploy/worker

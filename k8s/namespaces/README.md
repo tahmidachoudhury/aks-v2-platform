@@ -134,18 +134,13 @@ The defaults apply only to a container that sets nothing. If a container sets a 
 
 ## Morning apply
 
-After the platform apply and `kubectl apply -k k8s/node-pools`, and before any Helm install into `platform`:
-
-```bash
-kubectl apply -k k8s/namespaces
-```
+Argo CD's `namespaces` Application applies this folder at wave 1, after the NodePools and before any chart installs into `platform` ([argocd](../../argocd/README.md#how-the-cluster-comes-up)).
 
 ## Acceptance test
 
-This needs a live cluster. After the apply, every test is a server-side dry run, so it creates nothing and needs no node. Run from the repo root.
+This needs a live cluster after `make up`. Every test is a server-side dry run, so it creates nothing and needs no node. Run from the repo root.
 
 ```bash
-kubectl apply -k k8s/namespaces
 kubectl get ns apps data platform --show-labels
 kubectl get resourcequota,limitrange -n apps
 kubectl get resourcequota,limitrange -n data
