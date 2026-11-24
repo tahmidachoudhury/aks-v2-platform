@@ -87,7 +87,7 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 
    The pod comes back with the new password and its keys, from the AOF. The running api-gateway pods still hold the old password, so they lose Redis and rate limiting is off until step 4's roll finishes. The gateway ignores the failed `INCR`s and keeps serving.
 
-4. **Sync the copies in `apps`.** Reloader then rolls only the Deployments that read each Secret.
+4. **Sync the copies in `apps`.** Reloader then rolls only the Deployments, and the scheduler StatefulSet, that read each Secret.
 
    ```bash
    # After a Postgres rotation: the seven services' Secrets and the migration Job's.
@@ -101,7 +101,17 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    $K -n apps get externalsecret
    ```
 
-   A Postgres rotation rolls the seven Postgres users, the scheduler included. A Redis rotation rolls api-gateway only. Watch with `kubectl -n apps rollout status`.
+   A Postgres rotation rolls the seven Postgres users, the scheduler included. A Redis rotation rolls api-gateway only. Wait for them:
+
+   ```bash
+   # After a Postgres rotation.
+   for d in order-service inventory-service payment-service notification-service shipping-service dashboard-api; do
+     $K -n apps rollout status deployment/$d --timeout=10m
+   done
+   $K -n apps rollout status statefulset/scheduler --timeout=10m
+   # After a Redis rotation.
+   $K -n apps rollout status deployment/api-gateway --timeout=10m
+   ```
 
 `jwt-secret` and `shipping-webhook-secret` need none of this. Their ExternalSecrets refresh hourly and Reloader rolls api-gateway or shipping-service on its own ([reloader](../reloader/README.md)).
 

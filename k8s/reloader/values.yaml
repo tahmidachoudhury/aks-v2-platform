@@ -3,8 +3,9 @@
 # namespace. Install command and design: README.md.
 
 reloader:
-  # Only Deployments that name a Secret in the
-  # secret.reloader.stakater.com/reload annotation. autoReloadAll stays off,
+  # Only workloads that name a Secret in the
+  # secret.reloader.stakater.com/reload annotation: the Deployments and the
+  # scheduler StatefulSet. autoReloadAll stays off,
   # so a workload restarts only for the Secrets it lists.
   autoReloadAll: false
   # Our ConfigMaps carry a hash suffix, so an edit already rolls the pods.

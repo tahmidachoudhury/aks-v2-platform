@@ -1,6 +1,6 @@
 # reloader
 
-**TL;DR:** [Stakater Reloader](https://github.com/stakater/Reloader) 2.2.20 (Reloader v1.4.24) is installed with Helm into `platform`. It restarts a Deployment when a Secret named in its `secret.reloader.stakater.com/reload` annotation changes. Each service lists only its own Secret, so rotating one Key Vault secret restarts only the services that read it. `make reloader` installs it each morning before `make apps`. ArgoCD takes it over in P7. Filled by P6-06 (#67).
+**TL;DR:** [Stakater Reloader](https://github.com/stakater/Reloader) 2.2.20 (Reloader v1.4.24) is installed with Helm into `platform`. It restarts a Deployment, or the scheduler's StatefulSet, when a Secret named in its `secret.reloader.stakater.com/reload` annotation changes. Each service lists only its own Secret, so rotating one Key Vault secret restarts only the services that read it. `make reloader` installs it each morning before `make apps`. ArgoCD takes it over in P7. Filled by P6-06 (#67).
 
 The services read their secrets from environment variables once, at startup. ESO updates the Kubernetes Secret within its one-hour `refreshInterval`, but a running pod keeps the old value until it restarts ([Secrets delivery](../../docs/architecture-decisions.md#secrets-delivery)).
 
