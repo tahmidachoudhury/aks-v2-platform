@@ -114,7 +114,7 @@ order-service, payment-service, shipping-service and worker each have:
 - The pod label `azure.workload.identity/use: "true"`. The AKS webhook then injects `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` and the projected token.
 - `SERVICEBUS_NAMESPACE` set to the namespace's FQDN and no `SERVICEBUS_CONNECTION_STRING`, so `DefaultAzureCredential` signs in with that token.
 
-Each identity holds one role, on the `order-events` queue only: Data Sender for the three publishers, Data Receiver for the worker ([role matrix](../../infra/modules/workload-identity/README.md#role-matrix)). The other five services have no label, no annotation and `automountServiceAccountToken: false` on their ServiceAccount. The webhook injects nothing into them and they get no API token. No service reads Key Vault. ESO does that with its own identity.
+Each identity holds one role, on the `order-events` queue only: Data Sender for the three publishers, Data Receiver for the worker ([role matrix](../../infra/modules/workload-identity/README.md#role-matrix)). The other five services have no label and no annotation, so the webhook injects nothing into them. All nine ServiceAccounts set `automountServiceAccountToken: false`, since no service calls the API server. The webhook mounts its own projected token at `/var/run/secrets/azure/tokens`, separate from the API token, so the four callers keep their Azure sign-in. No service reads Key Vault. ESO does that with its own identity.
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -194,6 +194,10 @@ kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
   [.metadata.labels["app.kubernetes.io/name"],
    ([.spec.containers[0].env[]?.name | select(startswith("AZURE_"))] | join(","))] | @tsv' | sort -u
 
+# The Azure token is mounted on the four, and the API token on none.
+kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
+  [.metadata.labels["app.kubernetes.io/name"], ([.spec.containers[0].volumeMounts[]?.mountPath] | join(","))] | @tsv' | sort -u
+
 # Each sees its own client ID (no value printed, only a match per service).
 for svc in order-service payment-service shipping-service worker; do
   want=$(tofu -chdir=infra/persistent output -json workload_identity_client_ids | jq -r --arg s $svc '.[$s]')
@@ -214,7 +218,7 @@ curl -s -X POST https://azure.order-fulfilment.tahmidchoudhury.uk/api/orders/ \
 kubectl --context $CTX -n apps logs deploy/worker --since=2m | grep -E 'Processing event|Successfully processed'
 ```
 
-Expect `AZURE_AUTHORITY_HOST,AZURE_CLIENT_ID,AZURE_FEDERATED_TOKEN_FILE,AZURE_TENANT_ID` on order, payment, shipping and worker, and nothing on the other five. Then expect `own identity` four times, `"servicebus":"ok"` from order-service, and `Processing event: order.created` then `Successfully processed: order.created` in the worker's log. The HTTPS calls need the Ingress from P6-07. Before then, port-forward to api-gateway and use `http://localhost:18080`. The order body follows `createOrder` in `app/services/order-service/main.go`.
+Expect `AZURE_AUTHORITY_HOST,AZURE_CLIENT_ID,AZURE_FEDERATED_TOKEN_FILE,AZURE_TENANT_ID` on order, payment, shipping and worker, and nothing on the other five. The mount check shows `/var/run/secrets/azure/tokens` on those four and `/var/run/secrets/kubernetes.io/serviceaccount` on none of the nine. Then expect `own identity` four times, `"servicebus":"ok"` from order-service, and `Processing event: order.created` then `Successfully processed: order.created` in the worker's log. The HTTPS calls need the Ingress from P6-07. Before then, port-forward to api-gateway and use `http://localhost:18080`. The order body follows `createOrder` in `app/services/order-service/main.go`.
 
 The other five have no token file and no `AZURE_*` variable, so the SDK has nothing to sign in with. The images have no shell, so the check reads the pod spec instead of using exec.
 
