@@ -36,10 +36,15 @@ CERT_MANAGER_VERSION := v1.21.3
 EXTERNAL_DNS_VERSION := 1.23.0
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
+PLATFORM_OUT := tofu -chdir=infra/platform output
+
+# The nine services, by their folder in app/services/ and k8s/apps/.
+SERVICES := api-gateway order-service inventory-service payment-service notification-service \
+	shipping-service dashboard-api worker scheduler
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
-	backup restore-drill
+	backup restore-drill images pin-images apps
 .PHONY: migrate
 
 help: ## List the targets
@@ -71,6 +76,7 @@ up: ## Morning: platform, kubeconfig, then every component
 cluster: ## Install every in-cluster component, in order
 	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data backup
 	$(MAKE) migrate
+	$(MAKE) apps
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
 	tofu -chdir=infra/platform destroy
@@ -143,9 +149,9 @@ backup: ## Hourly Postgres snapshot CronJob in data, keeping six. Needs make dat
 restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up
 	CONTEXT=$(CTX) k8s/backup/restore-drill.sh
 
-# Postgres starts empty every morning, so cluster runs this last, after data,
+# Postgres starts empty every morning, so cluster runs this after data,
 # to rebuild the schema. It needs only the public migrate image, no app image.
-# P6 applies the Deployments after it, so a failed migration stops make
+# make apps applies the Deployments after it, so a failed migration stops make
 # before any rollout. ArgoCD runs the same Job as a PreSync hook from P7.
 # See k8s/migrations/README.md.
 # The old Job goes first: a finished Job of the same name would otherwise
@@ -173,3 +179,63 @@ migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 	  sleep 5; \
 	done; \
 	echo "job/db-migrate still running after 350s." >&2; exit 1
+
+# Each image is tagged with the first 12 characters of the last commit that
+# touched its folder, so the tag names exactly what was built and the dev
+# overlays can pin it in Git. A tag already in ACR is never rebuilt, so tags
+# stay immutable. Uncommitted changes in a service folder stop the build:
+# the tag would name a commit that doesn't hold them. See k8s/apps/README.md.
+images: ## Build each service into ACR with az acr build. Skips tags already there
+	set -euo pipefail; \
+	ACR=$$($(PERSISTENT_OUT) -raw acr_name) \
+	  || { echo "No acr_name in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	[[ "$$ACR" =~ ^[a-z0-9]{5,50}$$ ]] || { echo "ACR name '$$ACR' is not a registry name." >&2; exit 1; }; \
+	for svc in $(SERVICES); do \
+	  DIR=app/services/$$svc; \
+	  if ! git diff --quiet HEAD -- "$$DIR" || [[ -n "$$(git ls-files --others --exclude-standard -- "$$DIR")" ]]; then \
+	    echo "$$DIR has uncommitted changes. Commit them first, so the tag names what is built." >&2; exit 1; \
+	  fi; \
+	  TAG=$$(git log -1 --format=%H -- "$$DIR" | cut -c1-12); \
+	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches $$DIR." >&2; exit 1; }; \
+	  if az acr repository show --name "$$ACR" --image "$$svc:$$TAG" >/dev/null 2>&1; then \
+	    echo "$$svc:$$TAG is already in $$ACR"; continue; \
+	  fi; \
+	  az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
+	done
+
+# Offline. Sets newTag in each dev overlay to the tag make images builds,
+# with sed so the overlay's comments survive (kustomize edit drops them).
+# Commit the result.
+pin-images: ## Pin each dev overlay to its service's current image tag. Edits Git
+	set -euo pipefail; \
+	for svc in $(SERVICES); do \
+	  TAG=$$(git log -1 --format=%H -- "app/services/$$svc" | cut -c1-12); \
+	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches app/services/$$svc." >&2; exit 1; }; \
+	  F=k8s/apps/$$svc/overlays/dev/kustomization.yaml; \
+	  sed -E "s/^(    newTag: ).*/\1$$TAG/" "$$F" > "$$F.tmp"; \
+	  mv "$$F.tmp" "$$F"; \
+	  echo "$$svc: $$TAG"; \
+	done
+
+# The services go in after the migration, so a failed migration stops make
+# before any rollout. azure.env carries the values that stay out of Git:
+# the registry and the Service Bus namespace and queue. Every value is read
+# and checked before anything is written. See k8s/apps/README.md.
+apps: ## The nine services in apps. Values come from tofu output. Waits for every rollout
+	set -euo pipefail; \
+	ACR=$$($(PERSISTENT_OUT) -raw acr_login_server) \
+	  || { echo "No acr_login_server in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	SB=$$($(PLATFORM_OUT) -raw servicebus_fqdn) \
+	  || { echo "No servicebus_fqdn in the platform outputs. Apply platform first." >&2; exit 1; }; \
+	QUEUE=$$($(PLATFORM_OUT) -raw servicebus_queue_name) \
+	  || { echo "No servicebus_queue_name in the platform outputs. Apply platform first." >&2; exit 1; }; \
+	[[ "$$ACR" =~ ^[a-z0-9]+\.azurecr\.io$$ ]] || { echo "Registry '$$ACR' is not an ACR login server." >&2; exit 1; }; \
+	[[ "$$SB" =~ ^[a-z0-9-]+\.servicebus\.windows\.net$$ ]] || { echo "'$$SB' is not a Service Bus namespace FQDN." >&2; exit 1; }; \
+	[[ "$$QUEUE" =~ ^[A-Za-z0-9._-]+$$ ]] || { echo "'$$QUEUE' is not a queue name." >&2; exit 1; }; \
+	ENV="acrLoginServer=$$ACR"$$'\n'"serviceBusNamespace=$$SB"$$'\n'"serviceBusQueue=$$QUEUE"; \
+	printf '%s\n' "$$ENV" > k8s/apps/dev/azure.env; \
+	$(KUBECTL) apply -k k8s/apps/dev; \
+	$(KUBECTL) -n apps wait externalsecret --all --for=condition=Ready --timeout=2m; \
+	for svc in $(SERVICES); do \
+	  $(KUBECTL) -n apps rollout status deployment/$$svc --timeout=10m; \
+	done

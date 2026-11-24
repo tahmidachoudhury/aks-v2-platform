@@ -1,0 +1,16 @@
+# The dev environment's settings for dashboard-api. CI bumps newTag here (P8).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# The tag is the first 12 characters of the last commit that touched
+# app/services/dashboard-api, the tag make images builds. make pin-images sets it.
+# The registry stays a placeholder until k8s/apps/dev fills it in.
+images:
+  - name: ACR_LOGIN_SERVER/dashboard-api
+    newTag: f89fa4777256
+
+replicas:
+  - name: dashboard-api
+    count: 1

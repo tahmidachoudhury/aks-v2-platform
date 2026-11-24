@@ -1,0 +1,16 @@
+# The dev environment's settings for shipping-service. CI bumps newTag here (P8).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# The tag is the first 12 characters of the last commit that touched
+# app/services/shipping-service, the tag make images builds. make pin-images sets it.
+# The registry stays a placeholder until k8s/apps/dev fills it in.
+images:
+  - name: ACR_LOGIN_SERVER/shipping-service
+    newTag: b33be046503f
+
+replicas:
+  - name: shipping-service
+    count: 2
