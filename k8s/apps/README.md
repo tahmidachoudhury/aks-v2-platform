@@ -127,6 +127,13 @@ P6-11 (#72) asked which fits the code. The answer is a StatefulSet with one repl
 - The scheduler keeps no state, so it has no `volumeClaimTemplates`. The headless Service `scheduler` exists only because a StatefulSet requires `serviceName`.
 - CronJobs would need a new entry point per job. `concurrencyPolicy: Forbid` also doesn't stop two Jobs overlapping across a CronJob edit. That change isn't worth making for five short jobs.
 
+**A broken scheduler release needs its pod deleted after the revert.** With one replica, a StatefulSet rolls by deleting `scheduler-0` and creating it from the new template. If that pod never turns Ready, say from a bad image, reverting the tag in Git and applying again doesn't replace it, and neither does `kubectl rollout undo`: the controller waits for the broken pod to turn Ready first, and `rollout status` times out. `make apps` handles this. After it applies, if `scheduler-0` is unready, not already terminating, and from a different revision than the StatefulSet's `updateRevision`, it deletes the pod once and the controller recreates it from the current template. It never deletes a Ready pod or one whose revision matches. By hand, after reverting:
+
+```bash
+kubectl --context aks-v2-platform -n apps delete pod scheduler-0
+kubectl --context aks-v2-platform -n apps rollout status statefulset/scheduler --timeout=5m
+```
+
 The cost: no scheduler copy runs while it rolls out or its node drains, and it has no PodDisruptionBudget or autoscaler. A missed tick only delays the next run, since each job works through whatever is due.
 
 ## Quotas
@@ -157,7 +164,7 @@ make reloader   # before make data, in the first line of make cluster
 make apps
 ```
 
-`make apps` writes `dev/azure.env` and applies `dev/`. It waits up to 2 minutes for every ExternalSecret in `apps`, then up to 10 minutes for each rollout: eight Deployments and `statefulset/scheduler`. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy.
+`make apps` writes `dev/azure.env` and applies `dev/`. It waits up to 2 minutes for every ExternalSecret in `apps`, then up to 10 minutes for each rollout: eight Deployments and `statefulset/scheduler`. Before waiting, it replaces a `scheduler-0` left unready by an earlier broken release (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)). The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy.
 
 ## Proving it
 

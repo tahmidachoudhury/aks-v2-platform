@@ -236,10 +236,15 @@ pin-images: ## Pin each dev overlay to its service's current image tag. Edits Gi
 	done
 
 # The services go in after the migration, so a failed migration stops make
-# before any rollout. azure.env carries the values that stay out of Git:
-# the registry, the Service Bus namespace and queue, and the workload
-# identities' client IDs. Every value is read and checked before anything
-# is written. See k8s/apps/README.md.
+# before any rollout. A StatefulSet whose pod never turned Ready keeps that
+# pod even after the template is fixed, so if scheduler-0 is unready and from
+# an older revision than the StatefulSet wants, apps deletes it once and the
+# controller recreates it from the current template. It never touches a
+# Ready pod, a pod already going, or a pod whose revision matches.
+# azure.env carries the values that stay out of Git: the registry, the
+# Service Bus namespace and queue, and the workload identities' client IDs.
+# Every value is read and checked before anything is written. See
+# k8s/apps/README.md.
 apps: ## The nine services in apps. IDs come from tofu output. Waits for every rollout
 	set -euo pipefail; \
 	IDS=$$($(PERSISTENT_OUT) -json workload_identity_client_ids) \
@@ -263,6 +268,15 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 	printf '%s\n' "$$ENV" > k8s/apps/dev/azure.env; \
 	$(KUBECTL) apply -k k8s/apps/dev; \
 	$(KUBECTL) -n apps wait externalsecret --all --for=condition=Ready --timeout=2m; \
+	GEN=$$($(KUBECTL) -n apps get statefulset scheduler -o jsonpath='{.metadata.generation}'); \
+	$(KUBECTL) -n apps wait statefulset/scheduler --for=jsonpath='{.status.observedGeneration}'="$$GEN" --timeout=1m; \
+	WANT=$$($(KUBECTL) -n apps get statefulset scheduler -o jsonpath='{.status.updateRevision}'); \
+	IFS='|' read -r HAVE READY GOING <<<"$$($(KUBECTL) -n apps get pod scheduler-0 --ignore-not-found \
+	  -o jsonpath='{.metadata.labels.controller-revision-hash}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.deletionTimestamp}')" || true; \
+	if [[ -n "$$WANT" && -n "$$HAVE" && "$$HAVE" != "$$WANT" && "$$READY" != True && -z "$$GOING" ]]; then \
+	  echo "scheduler-0 is an unready pod from an old revision, which a StatefulSet never replaces itself. Deleting it once."; \
+	  $(KUBECTL) -n apps delete pod scheduler-0 --wait=false; \
+	fi; \
 	for svc in $(SERVICES); do \
 	  KIND=deployment; [[ "$$svc" != scheduler ]] || KIND=statefulset; \
 	  $(KUBECTL) -n apps rollout status "$$KIND/$$svc" --timeout=10m; \
