@@ -20,6 +20,26 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: worker
+      # The only service allowed on spot (k8s/node-pools). It loses nothing to
+      # an eviction: a message it hasn't completed stays locked in the queue
+      # and comes back when the lock expires. It prefers a spot node when one
+      # exists, and NAP's spot pool outweighs general when it needs a new node
+      # for a pending worker. It still runs on general when spot has none, so
+      # an empty spot pool never stops the queue being worked.
+      tolerations:
+        - key: kubernetes.azure.com/scalesetpriority
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: karpenter.sh/capacity-type
+                    operator: In
+                    values: ["spot"]
       containers:
         - name: app
           image: ACR_LOGIN_SERVER/worker

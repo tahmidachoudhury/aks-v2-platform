@@ -2,7 +2,7 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69), P6-09 (#70) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69), P6-09 (#70), P6-10 (#71) and P6-11 (#72).
 
 ## Layout
 
@@ -157,6 +157,18 @@ P6-09 (#70), per the [Autoscaling](../../docs/architecture-decisions.md#autoscal
 Only the scheduler's StatefulSet sets `replicas`, to 1. The eight Deployments leave it out. The autoscaler owns the count, and a count in Git would reset it on every apply. A new Deployment starts at 1 and its HPA raises it to the minimum within a few seconds. One catch on a live cluster: the first apply after a manifest drops `replicas` resets the Deployment to 1 for a moment. The cluster is rebuilt every morning, so this only matters on a cluster that ran an earlier version of these manifests.
 
 Postgres connections set the low maximums, not CPU: each pod opens up to its `SetMaxOpenConns` ([Postgres connections](../data/README.md#postgres-connections)).
+
+## Spot
+
+P6-10 (#71). The worker is the only service that tolerates the `spot` NodePool's taint, as [node-pools](../node-pools/README.md#spot) rules. Every other service, payment-service and the scheduler included, has no toleration, so the taint keeps it on `general`'s on-demand nodes. Postgres and Redis also require on-demand nodes by affinity ([data](../data/README.md#spot)).
+
+The worker loses nothing to an eviction. Azure gives 30 seconds' notice, and the worker shuts down in a few: it abandons what it received after SIGTERM, so Service Bus redelivers those at once. A message it was handling when the node went comes back when its one-minute lock expires. Orders never wait on the worker: order-service, payment-service and shipping-service publish and answer straight away, and the queue holds the events until a worker takes them.
+
+The worker prefers spot (`preferredDuringScheduling`, weight 100) but doesn't require it:
+
+- It lands on spot whenever a spot node has room. When NAP needs a new node for a pending worker, the `spot` pool's weight (50 against 10) makes it a spot node.
+- If the scheduler finds room on a `general` node first, the worker runs there until it is next rescheduled. KEDA's scale-outs usually go pending and bring up a spot node.
+- If spot has no capacity, or the subscription's 3 spot vCPUs are used, the worker still runs on `general`. A hard requirement would leave the queue unworked until spot came back.
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -525,6 +537,35 @@ $K get hpa api-gateway dashboard-api -w
 ```
 
 Expect seven HPAs at the ADR's minimums and maximums, plus `keda-hpa-worker`. During the load test, api-gateway's CPU passes 70% and it scales towards 4 replicas, and dashboard-api towards 2. About five minutes after the test ends, both return to their minimums. The backends sit behind the gateway's rate limit of 100 requests a minute per client, so a load test from a few pods can't push them hard. That limit is doing its job. KEDA's half of the criterion is in [keda](../keda/README.md#proving-it).
+
+**P6-10 (#71), criterion 13: a simulated eviction of the spot node causes no failed orders.**
+
+The worker must be on a spot node first. If it is on `general`, cordon the `general` nodes for a moment and roll the worker: the new pod can't fit anywhere, so NAP brings up a node from the higher-weight `spot` pool. The old pod keeps working until the new one is Ready, since `maxUnavailable` is 0. `az vm simulate-eviction` evicts the VM after Azure's 30-second notice. NAP's nodes are VMs in the node resource group, named after the node. Run the `az` command only on the spot node.
+
+```bash
+CTX=aks-v2-platform
+K="kubectl --context $CTX"
+$K get nodes -L karpenter.sh/capacity-type,karpenter.sh/nodepool
+$K -n apps get pods -o wide -l app.kubernetes.io/name=worker
+# Only if no worker runs on a spot node:
+$K cordon -l karpenter.sh/nodepool=general
+$K -n apps rollout restart deploy/worker
+$K -n apps rollout status deploy/worker --timeout=10m
+$K uncordon -l karpenter.sh/nodepool=general
+
+# Orders flowing, then evict the spot node.
+make loadtest DURATION=5m &
+NODE=$($K get nodes -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.name}')
+NRG=$(tofu -chdir=infra/platform output -raw aks_node_resource_group)
+az vm simulate-eviction --resource-group "$NRG" --name "$NODE"
+$K get pods -n apps -o wide -l app.kubernetes.io/name=worker -w
+wait
+az servicebus queue show -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+  --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
+  -n order-events --query countDetails
+```
+
+Expect every other `apps` pod on an on-demand node. After the eviction, the worker pods on that node go, new ones start on another spot node or on `general`, and the load test ends with `http_req_failed` at 0% and exit 0: no order failed. Once the worker catches up, `activeMessageCount` and `deadLetterMessageCount` are 0. A message held by an evicted worker shows a delivery count of 2 in the worker's log when it comes back.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
