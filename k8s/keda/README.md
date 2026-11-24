@@ -82,7 +82,7 @@ $K -n apps get deploy worker -w
 $K -n platform logs deploy/keda-operator --since=10m | grep -iE 'error|401|403' || echo "no auth errors"
 ```
 
-Expect the ScaledObject `READY True` and `ACTIVE True` once messages wait, and `keda-hpa-worker` with `MAXPODS 5`. With about 360 messages waiting, the worker goes to 5 replicas within a minute or two of the pause lifting. It drains the queue and returns to 1 replica after the HPA's 300-second scale-down stabilisation window. `no auth errors` shows `id-keda` read the queue.
+Expect the ScaledObject `READY True` and `ACTIVE True` once messages wait, and `keda-hpa-worker` with `MAXPODS 5`. About 390 messages wait when the pause lifts, and one worker drains them in about 20 seconds, inside KEDA's 30-second polling interval. So the scale-out often arrives after the backlog has gone: the worker may go towards 5 replicas for a few minutes, or stay at 1. What proves the trigger is `ACTIVE True` while messages wait, and `keda-hpa-worker`'s target rising above 5 per replica. If it scaled out, it returns to 1 replica after the HPA's 300-second scale-down stabilisation window. `no auth errors` shows `id-keda` read the queue.
 
 ## Validate
 

@@ -174,12 +174,12 @@ Postgres connections set the low maximums, not CPU: each pod opens up to its `Se
 
 P6-10 (#71). The worker is the only service that tolerates the `spot` NodePool's taint, as [node-pools](../node-pools/README.md#spot) rules. Every other service, payment-service and the scheduler included, has no toleration, so the taint keeps it on `general`'s on-demand nodes. Postgres and Redis also require on-demand nodes by affinity ([data](../data/README.md#spot)).
 
-The worker loses nothing to an eviction. Azure gives 30 seconds' notice, and the worker shuts down in a few: it abandons what it received after SIGTERM, so Service Bus redelivers those at once. A message it was handling when the node went comes back when its one-minute lock expires. Orders never wait on the worker: order-service, payment-service and shipping-service publish and answer straight away, and the queue holds the events until a worker takes them.
+The worker loses nothing to an eviction. Azure promises 30 seconds' notice, but in the P6 live run the pod got about 1 second of its 45-second grace period before the node went. The worker shuts down in a few seconds when it gets the chance: it abandons what it received after SIGTERM, so Service Bus redelivers those at once. A message it was handling when the node went comes back when its one-minute lock expires. Orders never wait on the worker: order-service, payment-service and shipping-service publish and answer straight away, and the queue holds the events until a worker takes them.
 
 The worker prefers spot (`preferredDuringScheduling`, weight 100) but doesn't require it:
 
 - It lands on spot whenever a spot node has room. When NAP needs a new node for a pending worker, the `spot` pool's weight (50 against 10) makes it a spot node.
-- If the scheduler finds room on a `general` node first, the worker runs there until it is next rescheduled. KEDA's scale-outs usually go pending and bring up a spot node.
+- If the scheduler finds room on a `general` node first, the worker runs there until it is next rescheduled. In the P6 live run KEDA's scale-outs landed on `general`, which had room. Spot is preferred, not guaranteed.
 - If spot has no capacity, or the subscription's 3 spot vCPUs are used, the worker still runs on `general`. A hard requirement would leave the queue unworked until spot came back.
 
 ## Scheduler: one StatefulSet, not CronJobs
@@ -567,7 +567,7 @@ Expect seven HPAs at the ADR's minimums and maximums, plus `keda-hpa-worker`. Du
 
 **P6-10 (#71), criterion 13: a simulated eviction of the spot node causes no failed orders.**
 
-The worker must be on a spot node first. If it is on `general`, cordon the `general` nodes for a moment and roll the worker: the new pod can't fit anywhere, so NAP brings up a node from the higher-weight `spot` pool. The old pod keeps working until the new one is Ready, since `maxUnavailable` is 0. `az vm simulate-eviction` evicts the VM after Azure's 30-second notice. NAP's nodes are VMs in the node resource group, named after the node. Run the `az` command only on the spot node.
+The worker must be on a spot node first. If it is on `general`, cordon the `general` nodes for a moment and roll the worker: the new pod can't fit anywhere, so NAP brings up a node from the higher-weight `spot` pool. The old pod keeps working until the new one is Ready, since `maxUnavailable` is 0. `az vm simulate-eviction` evicts the VM. Azure promises 30 seconds' notice, but in the P6 live run the worker pod got about 1 second of its grace period. NAP's nodes are VMs in the node resource group, named after the node. Run the `az` command only on the spot node.
 
 ```bash
 CTX=aks-v2-platform
@@ -592,7 +592,7 @@ az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/
   -n order-events --query countDetails
 ```
 
-Expect every other `apps` pod on an on-demand node. After the eviction, the worker pods on that node go, new ones start on another spot node or on `general`, and the load test ends with `http_req_failed` at 0% and exit 0: no order failed. Once the worker catches up, `activeMessageCount` and `deadLetterMessageCount` are 0. A message held by an evicted worker shows a delivery count of 2 in the worker's log when it comes back.
+Expect every other `apps` pod on an on-demand node. After the eviction, the worker pods on that node go, new ones start on another spot node or on `general`. A message the worker was handling comes back when its lock expires, since the pod had no time to abandon it. The load test ends with `http_req_failed` at 0% and exit 0: no order failed. Once the worker catches up, `activeMessageCount` and `deadLetterMessageCount` are 0. A message held by an evicted worker shows a delivery count of 2 in the worker's log when it comes back.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
