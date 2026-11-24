@@ -23,6 +23,7 @@ targetRevision: {{ .Values.targetRevision }}
 {{/*
 The tail every child shares: the cluster, the namespace for resources that
 name none, and the sync policy.
+- Automated sync with selfHeal everywhere, and prune everywhere but data.
 - Server-side apply: ESO's, KEDA's and cert-manager's CRDs are too large
   for the last-applied annotation, and from Argo CD 3.6 it also selects the
   server-side diff, which leaves out what mutating webhooks add.
@@ -32,13 +33,16 @@ name none, and the sync policy.
   to answer.
 No resources-finalizer: deleting an Application leaves its resources, so
 the evening destroy never waits on a cascade (README.md).
-Takes a dict: namespace, and optionally skipDryRun.
+Takes a dict: namespace, and optionally noPrune, skipDryRun.
 */}}
 {{- define "apps.tail" -}}
 destination:
   server: https://kubernetes.default.svc
   namespace: {{ .namespace }}
 syncPolicy:
+  automated:
+    prune: {{ not .noPrune }}
+    selfHeal: true
   syncOptions:
     - ServerSideApply=true
     {{- if .skipDryRun }}
