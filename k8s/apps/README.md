@@ -329,8 +329,10 @@ dig +short "$HOST"
 tofu -chdir=infra/persistent output -raw ingress_ip_address; echo
 # A trusted certificate: plain curl, no -k.
 curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/"
-echo | openssl s_client -connect "$HOST:443" -servername "$HOST" 2>/dev/null \
-  | openssl x509 -noout -issuer -subject -enddate
+# -text, not -ext: macOS's LibreSSL openssl has no -ext.
+CERT=$(echo | openssl s_client -connect "$HOST:443" -servername "$HOST" 2>/dev/null)
+openssl x509 -noout -issuer -subject -enddate <<<"$CERT"
+openssl x509 -noout -text <<<"$CERT" | grep 'DNS:'
 
 # /api/* reaches the gateway: no token is a 401 from it, a token gets the orders.
 curl -sS -o /dev/null -w '%{http_code}\n' "https://$HOST/api/orders/"
@@ -347,7 +349,7 @@ for i in $(seq 110); do
 done | sort | uniq -c
 ```
 
-Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), and the host as subject. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Switch back with `make apps` when the window ends.
+Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), the host as subject, and `DNS:` followed by the host, the certificate's subject alternative name. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Switch back with `make apps` when the window ends.
 
 **P6-08 (#69), criterion 9: default deny in `apps` and `data`. A pod with no allow rule reaches nothing. Only api-gateway reaches the backends and dashboard-api, plus the scheduler to order-service and inventory-service.**
 
