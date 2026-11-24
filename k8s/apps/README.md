@@ -289,10 +289,11 @@ make apps
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root. The `az` commands name their subscription, so set it first. The registry and the vault are in the persistent root's:
+These need a live cluster after `make cluster`. Run them from the repo root. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
 
 ```bash
 SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
+PLATFORM_SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/platform/terraform.tfvars)
 ```
 
 **P6-02 (#63), criterion 3: nine images in ACR, pinned by the overlays.**
@@ -493,7 +494,7 @@ $K rollout undo deploy/payment-service
 $K rollout restart deploy/worker
 $K rollout status deploy/worker --timeout=5m
 # After the load test ends and the worker drains the queue:
-az servicebus queue show -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
   --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
   -n order-events --query countDetails
 ```
@@ -558,10 +559,10 @@ $K uncordon -l karpenter.sh/nodepool=general
 make loadtest DURATION=5m &
 NODE=$($K get nodes -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.name}')
 NRG=$(tofu -chdir=infra/platform output -raw aks_node_resource_group)
-az vm simulate-eviction --resource-group "$NRG" --name "$NODE"
+az vm simulate-eviction --subscription "$PLATFORM_SUB" --resource-group "$NRG" --name "$NODE"
 $K get pods -n apps -o wide -l app.kubernetes.io/name=worker -w
 wait
-az servicebus queue show -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
   --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
   -n order-events --query countDetails
 ```
