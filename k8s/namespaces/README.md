@@ -1,6 +1,6 @@
 # namespaces
 
-**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD and KEDA, because most of these pods must not run on spot. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. `make namespaces` applies them each morning after the node pools and before any Helm install. ArgoCD takes this over in P7.
+**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD, because most of these pods must not run on spot. KEDA and Reloader run inside `platform`, at 50m between them. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. `make namespaces` applies them each morning after the node pools and before any Helm install. ArgoCD takes this over in P7.
 
 Filled by P4-07 (#54).
 
@@ -83,10 +83,10 @@ Only the `general` NodePool counts here. `spot` takes only pods that tolerate ev
 | --- | --- |
 | `limits.cpu` | 4 vCPUs |
 | For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, 3,680m on one 4 vCPU node |
-| Kept for ArgoCD and KEDA (P7), outside these namespaces | About 1,000m |
+| Kept for ArgoCD (P7), outside these namespaces | About 1,000m |
 | Left for `apps`, `data` and `platform` | About 2,440m to 2,680m |
 
-The quotas total 2,500m. If all three namespaces use their full CPU quota, nothing runs on spot and the pool is two 2 vCPU nodes, demand is about 60m more than the nodes hold. The quota admits the last pod or two, but they stay `Pending`. On one 4 vCPU node it fits. A worker on spot takes its requests off `general`. If ArgoCD and KEDA request more than 1 CPU, the shortfall grows by the difference.
+The quotas total 2,500m. If all three namespaces use their full CPU quota, nothing runs on spot and the pool is two 2 vCPU nodes, demand is about 60m more than the nodes hold. The quota admits the last pod or two, but they stay `Pending`. On one 4 vCPU node it fits. A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
 
 Memory depends on the size Karpenter picks. `Standard_D2s_v6` and `Standard_D4s_v6` have 8 GiB per 2 vCPUs and are the cheapest, so Karpenter usually picks them. Then `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. The `nls` sizes have half that memory. If they're all Karpenter can get, as in zone 1, pods go `Pending` on memory before CPU.
 
@@ -106,7 +106,7 @@ The binding limit is the `general` pool's CPU. The quotas only split it between 
 - `apps`: P6 sets each service pod's CPU request at 40m or less. The [Autoscaling](../../docs/architecture-decisions.md#autoscaling) maximums add up to 26 pods, and 26 x 40m is 1,040m. That leaves 210m for one service's rolling update at a time and cert-manager's HTTP-01 solver pod (10m). The LimitRange default request is 40m to match. HPAs scale at 70% of the request, so at 40m a pod scales out at 28m.
 - If P6 needs larger requests, it lowers the HPA maximums so the sum of `maxReplicas` x request stays at or under about 1,050m. At 60m, for example, 17 pods fit, not 26. The quota refuses pods past its limit and the HPA reports `FailedCreate`, so maximums above the budget never take effect.
 - `data`: Postgres requests up to 250m and Redis up to 100m. The restore drill's second Postgres then fits: 600m of 750m.
-- `platform`: the charts request about 220m: Traefik 2 x 50m, cert-manager 3 x 10m, External Secrets 3 x 10m and ExternalDNS 10m. cert-manager's startupapicheck Job adds 50m while it runs.
+- `platform`: the charts request 230m: Traefik 2 x 50m, cert-manager 3 x 10m, External Secrets 4 x 10m, ExternalDNS 10m, Reloader 10m, and KEDA's operator and metrics server 2 x 20m. That is 13 of 20 pods. cert-manager's startupapicheck Job adds 50m and a pod while it runs. The full table is in [apps](../apps/README.md#platform-quota).
 
 ### Memory and other limits
 
