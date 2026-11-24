@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: apps
 resources:
   - serviceaccount.yaml
+  - external-secret.yaml
   - deployment.yaml
   - service.yaml
 

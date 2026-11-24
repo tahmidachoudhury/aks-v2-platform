@@ -6,6 +6,10 @@ metadata:
   name: scheduler
   labels:
     app.kubernetes.io/name: scheduler
+  annotations:
+    # Reloader rolls this Deployment when the scheduler Secret changes, and
+    # for no other Secret, so rotating one key restarts only its users.
+    secret.reloader.stakater.com/reload: scheduler
 spec:
   selector:
     matchLabels:
@@ -24,4 +28,6 @@ spec:
               containerPort: 8091
           envFrom:
             - configMapRef:
+                name: scheduler
+            - secretRef:
                 name: scheduler

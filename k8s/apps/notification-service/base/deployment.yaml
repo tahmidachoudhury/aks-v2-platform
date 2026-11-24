@@ -5,6 +5,10 @@ metadata:
   name: notification-service
   labels:
     app.kubernetes.io/name: notification-service
+  annotations:
+    # Reloader rolls this Deployment when the notification-service Secret changes, and
+    # for no other Secret, so rotating one key restarts only its users.
+    secret.reloader.stakater.com/reload: notification-service
 spec:
   selector:
     matchLabels:
@@ -23,4 +27,6 @@ spec:
               containerPort: 8084
           envFrom:
             - configMapRef:
+                name: notification-service
+            - secretRef:
                 name: notification-service

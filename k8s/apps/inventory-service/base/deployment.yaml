@@ -5,6 +5,10 @@ metadata:
   name: inventory-service
   labels:
     app.kubernetes.io/name: inventory-service
+  annotations:
+    # Reloader rolls this Deployment when the inventory-service Secret changes, and
+    # for no other Secret, so rotating one key restarts only its users.
+    secret.reloader.stakater.com/reload: inventory-service
 spec:
   selector:
     matchLabels:
@@ -23,4 +27,6 @@ spec:
               containerPort: 8082
           envFrom:
             - configMapRef:
+                name: inventory-service
+            - secretRef:
                 name: inventory-service

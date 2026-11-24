@@ -34,6 +34,7 @@ ESO_VERSION := 2.15.0
 TRAEFIK_VERSION := 42.4.1
 CERT_MANAGER_VERSION := v1.21.3
 EXTERNAL_DNS_VERSION := 1.23.0
+RELOADER_VERSION := 2.2.20
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
 PLATFORM_OUT := tofu -chdir=infra/platform output
@@ -44,7 +45,7 @@ SERVICES := api-gateway order-service inventory-service payment-service notifica
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
-	backup restore-drill images pin-images apps
+	backup restore-drill reloader images pin-images apps
 .PHONY: migrate
 
 help: ## List the targets
@@ -74,7 +75,7 @@ up: ## Morning: platform, kubeconfig, then every component
 	$(MAKE) cluster
 
 cluster: ## Install every in-cluster component, in order
-	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data backup
+	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns reloader data backup
 	$(MAKE) migrate
 	$(MAKE) apps
 
@@ -133,6 +134,10 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string extraArgs.azure-resource-group="$$ZONE_RG" \
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
+
+reloader: ## Reloader: restarts a service when a Secret it names changes
+	$(HELM) upgrade --install reloader reloader --repo https://stakater.github.io/stakater-charts \
+	  --version $(RELOADER_VERSION) --namespace platform -f k8s/reloader/values.yaml --wait --timeout 10m
 
 data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the app role
 	$(KUBECTL) apply -k k8s/data

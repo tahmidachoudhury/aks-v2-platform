@@ -6,6 +6,10 @@ metadata:
   name: order-service
   labels:
     app.kubernetes.io/name: order-service
+  annotations:
+    # Reloader rolls this Deployment when the order-service Secret changes, and
+    # for no other Secret, so rotating one key restarts only its users.
+    secret.reloader.stakater.com/reload: order-service
 spec:
   selector:
     matchLabels:
@@ -27,6 +31,8 @@ spec:
               containerPort: 8081
           envFrom:
             - configMapRef:
+                name: order-service
+            - secretRef:
                 name: order-service
           # Placeholders: k8s/apps/dev fills them in from the platform outputs.
           # No SERVICEBUS_CONNECTION_STRING, so the SDK signs in with
