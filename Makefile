@@ -187,9 +187,12 @@ migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 
 # Each image is tagged with the first 12 characters of the last commit that
 # touched its folder, so the tag names exactly what was built and the dev
-# overlays can pin it in Git. A tag already in ACR is never rebuilt, so tags
-# stay immutable. Uncommitted changes in a service folder stop the build:
-# the tag would name a commit that doesn't hold them. See k8s/apps/README.md.
+# overlays can pin it in Git. Tags are immutable: a tag already in ACR is
+# never rebuilt, and each tag is locked with write-enabled false, so a later
+# push or delete of it fails. Only a not-found answer from ACR means "build
+# it". Any other error, such as no access, stops make. Uncommitted changes in
+# a service folder stop the build too: the tag would name a commit that
+# doesn't hold them. See k8s/apps/README.md.
 images: ## Build each service into ACR with az acr build. Skips tags already there
 	set -euo pipefail; \
 	ACR=$$($(PERSISTENT_OUT) -raw acr_name) \
@@ -202,10 +205,14 @@ images: ## Build each service into ACR with az acr build. Skips tags already the
 	  fi; \
 	  TAG=$$(git log -1 --format=%H -- "$$DIR" | cut -c1-12); \
 	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches $$DIR." >&2; exit 1; }; \
-	  if az acr repository show --name "$$ACR" --image "$$svc:$$TAG" >/dev/null 2>&1; then \
-	    echo "$$svc:$$TAG is already in $$ACR"; continue; \
+	  if OUT=$$(az acr repository show --name "$$ACR" --image "$$svc:$$TAG" 2>&1); then \
+	    echo "$$svc:$$TAG is already in $$ACR"; \
+	  elif grep -qiE 'not found|NAME_UNKNOWN|MANIFEST_UNKNOWN|ManifestUnknown' <<<"$$OUT"; then \
+	    az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
+	  else \
+	    echo "Could not check $$svc:$$TAG in $$ACR:" >&2; echo "$$OUT" >&2; exit 1; \
 	  fi; \
-	  az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
+	  az acr repository update --name "$$ACR" --image "$$svc:$$TAG" --write-enabled false >/dev/null; \
 	done
 
 # Offline. Sets newTag in each dev overlay to the tag make images builds,
