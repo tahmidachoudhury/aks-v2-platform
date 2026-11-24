@@ -48,9 +48,10 @@ spec:
       containers:
         - name: postgres
           image: docker.io/library/postgres:16.16-bookworm@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175
-          # Sized from the services' pool caps (see README, Connections).
-          # The entrypoint passes these flags on to postgres.
-          args: ["-c", "max_connections=300"]
+          # Sized from the services' pool caps at their HPA maximums, plus a
+          # rollout's surge pod and the migration Job (README, Postgres
+          # connections). The entrypoint passes these flags on to postgres.
+          args: ["-c", "max_connections=350"]
           ports:
             - name: postgres
               containerPort: 5432

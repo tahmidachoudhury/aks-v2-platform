@@ -169,7 +169,7 @@ PVCs: three of four with the drill. Storage: 20 + 10 + 20 = 50Gi of 64Gi. These 
 
 ## Postgres connections
 
-Postgres runs with `max_connections=300`, passed as a server flag in the StatefulSet's `args`. The default, 100, is below what the services' pools can open at one replica each.
+Postgres runs with `max_connections=350`, passed as a server flag in the StatefulSet's `args`. The default, 100, is below what the services' pools can open at one replica each.
 
 Each service caps its pool with `SetMaxOpenConns`, hard-coded in `app/services/*/main.go`. The replica counts come from [Autoscaling](../../docs/architecture-decisions.md#autoscaling):
 
@@ -184,9 +184,22 @@ Each service caps its pool with `SetMaxOpenConns`, hard-coded in `app/services/*
 | scheduler | 5 | 1 | 1 | 5 | 5 |
 | **Total** | **115** | | | **205** | **315** |
 
-300 covers the HPA minimums (205), one rolling-update surge pod (25), the migration Job and a few `psql` sessions, with Postgres's 3 reserved superuser slots on top. It doesn't cover every service at its HPA maximum (315). P6 must close that gap. Either lower the maximums for order, inventory and payment to 2 (the total at maximum becomes 240, or 265 with a surge pod), or make the pool size configurable and smaller. The pools open connections only under load, so 315 needs every service saturated at once. Past 300, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+P6-09 (#70) raised it from 300 to 350, so every service can sit at its HPA maximum without running out:
 
-Memory: an idle backend costs about 1.6 MiB. In a local run of this image, 290 open connections took the container from 29 MiB to 502 MiB. Under load, add `shared_buffers` (128 MB) and `work_mem` (4 MB per sort or hash, per query). The limit is 1536Mi so a burst of active queries at a high connection count doesn't hit the OOM killer. The memory request stays at 512Mi, the idle working set.
+| | Connections |
+| --- | --- |
+| Every service at its HPA maximum | 315 |
+| One rolling-update surge pod, of a 25-connection service | 25 |
+| The migration Job (golang-migrate holds one, plus its advisory lock session) | 2 |
+| **Worst case** | **342** |
+| `max_connections` | 350 |
+| Less Postgres's 3 reserved superuser slots | **347 for `app`** |
+
+That leaves 5 for `psql` sessions as `app`. The superuser keeps its own 3. The worst case holds for one rollout at a time, which is what [apps](../apps/README.md#rollouts) asks for at high replica counts. Each further surge pod of a 25-connection service adds 25. The pools open connections only under load, so 315 needs every service saturated at once. Past the limit, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+
+The other options were to lower the maximums for order, inventory and payment to 2, which changes the ADR, or to make the pool size configurable in code. Raising the limit costs memory only, below.
+
+Memory: an idle backend costs about 1.6 MiB. In a local run of this image, 290 open connections took the container from 29 MiB to 502 MiB, so 350 come to roughly 600 MiB. Under load, add `shared_buffers` (128 MB) and `work_mem` (4 MB per sort or hash, per query). The limit is 1536Mi so a burst of active queries at a high connection count doesn't hit the OOM killer. The memory request stays at 512Mi, the idle working set.
 
 ## Redis memory
 
@@ -317,7 +330,7 @@ kubectl -n data exec postgres-0 -- sh -c \
 kubectl -n data exec postgres-0 -- psql -U postgres -Atc "SHOW max_connections"
 ```
 
-Expect `app`, then `300`.
+Expect `app`, then `350`.
 
 ### P5-02 (#56): Redis keys survive a pod delete and the AOF is on the volume
 

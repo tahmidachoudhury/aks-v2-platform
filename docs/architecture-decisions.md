@@ -143,7 +143,7 @@ Behaviour: [KEDA Service Bus scaler](https://keda.sh/docs/latest/scalers/azure-s
 
 **Consequences / trade-offs**
 
-- Postgres connections break first under load. `SetMaxOpenConns` is hard-coded per service: 25 for order, inventory and payment, 15 for shipping, 10 for notification and dashboard, 5 for scheduler. Go opens connections only when needed, but at full load the minimums allow 205 and the maximums 315. Postgres allows 100 by default.
+- Postgres connections break first under load. `SetMaxOpenConns` is hard-coded per service: 25 for order, inventory and payment, 15 for shipping, 10 for notification and dashboard, 5 for scheduler. Go opens connections only when needed, but at full load the minimums allow 205 and the maximums 315. Postgres allows 100 by default, so the StatefulSet sets `max_connections=350`: the maximums, a rollout's surge pod and the migration Job (see [data](../k8s/data/README.md#postgres-connections)).
 - Options for the limit: raise `max_connections` in the StatefulSet and size its memory to match, add PgBouncer, or make the pool size configurable in code.
 - HPA needs CPU requests on every Deployment.
 - KEDA scales the worker on the queue's active message count. The receive loop is real (PeekLock, in `app/services/worker/main.go`), but the handlers only log, so for now more replicas add receive throughput and no downstream work.
