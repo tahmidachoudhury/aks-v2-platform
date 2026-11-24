@@ -15,8 +15,13 @@ import { check, fail } from 'k6';
 const BASE = __ENV.BASE_URL;
 const RATE = parseInt(__ENV.RATE, 10);
 const DURATION = __ENV.DURATION;
+// Empty by default, so the host resolves to Traefik's public IP. Set to
+// Traefik's ClusterIP when that path hides the pods' addresses (README.md).
+const TARGET_IP = __ENV.TARGET_IP;
+const HOST = BASE.replace(/^https:\/\//, '');
 
 export const options = {
+  hosts: TARGET_IP ? { [HOST]: TARGET_IP } : {},
   // The staging certificate isn't trusted. The test checks the services,
   // not the certificate; criterion 8 checks that from outside.
   insecureSkipTLSVerify: true,

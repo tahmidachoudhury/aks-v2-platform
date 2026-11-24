@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | `job.yaml` | `Job` | `loadtest` | Three k6 pods in parallel, run once |
 | `script.js` | `ConfigMap` (generated) | `loadtest` | The k6 script, mounted at `/scripts` |
-| | `ConfigMap` | `loadtest-settings` | `DURATION` and `RATE`, written by `make loadtest` each run |
+| | `ConfigMap` | `loadtest-settings` | `DURATION`, `RATE` and `TARGET_IP`, written by `make loadtest` each run |
 
 ## What it sends
 
@@ -24,7 +24,7 @@ The thresholds are `http_req_failed` at 0 and every check passing. If either fai
 ## Why in `default`
 
 - The `apps` quota is sized for the services at their HPA maximums ([apps](../apps/README.md#quotas)). Three test pods at 50m each would eat into rollout headroom.
-- The pods use the public host and Traefik, as a client does, so they need no NetworkPolicy in `apps`. The host resolves to Traefik's public IP, and Cilium routes it inside the cluster.
+- The pods use the public host and Traefik, as a client does, so they need no NetworkPolicy in `apps`. The host resolves to Traefik's public IP, and Cilium should route it inside the cluster. [Check each pod is its own client](#check-each-pod-is-its-own-client) confirms it.
 - They still meet `restricted`: user 12345 (the image's `k6` user, set by number), read-only root, no capabilities, `RuntimeDefault` seccomp, no ServiceAccount token.
 
 The 150m of requests come from the `general` NodePool, so on a full pool a test pod can wait for room. The k6 image is `grafana/k6:2.3.0`, pinned by digest.
@@ -40,7 +40,25 @@ make loadtest                     # 5 minutes, 10 page loads and logins a second
 make loadtest DURATION=10m RATE=40
 ```
 
-It deletes any earlier `loadtest` Job, writes `loadtest-settings`, applies this folder and waits for the Job. It then prints the last 40 lines of each pod's log and exits 0 or 1. `activeDeadlineSeconds` stops a run after an hour, so keep `DURATION` under that. The finished Job stays for an hour, then Kubernetes deletes it.
+It deletes any earlier `loadtest` Job and its pods, writes `loadtest-settings`, applies this folder and waits for the Job. It then prints the last 40 lines of each pod's log and exits 0 or 1. `DURATION` is whole minutes from `1m` to `59m`: `activeDeadlineSeconds` stops a run at one hour, and the target refuses anything longer. The finished Job stays for an hour, then Kubernetes deletes it.
+
+### Check each pod is its own client
+
+The per-client rate limit only stays out of the way if the gateway sees three addresses. While a run is going, list the counters in Redis and the k6 pods' addresses:
+
+```bash
+K="kubectl --context aks-v2-platform"
+$K -n data exec redis-0 -- redis-cli --scan --pattern 'rate:*'
+$K -n default get pods -l app.kubernetes.io/name=loadtest -o wide
+```
+
+Expect three `rate:<address>` keys, one for each k6 pod's IP. If you see a single address instead, such as a node's IP or Traefik's public IP, the traffic went out through the Azure load balancer and came back source-NATed. Then all three pods share one counter, the orders hit 429 past 100 a minute, and the run is invalid. Run it again aimed at Traefik's in-cluster address. The host name, and so the TLS name and the Ingress rule, stay the same:
+
+```bash
+make loadtest TARGET_IP=$($K -n platform get svc traefik -o jsonpath='{.spec.clusterIP}')
+```
+
+and check the keys again.
 
 To stop a run early: `kubectl --context aks-v2-platform -n default delete job loadtest`.
 

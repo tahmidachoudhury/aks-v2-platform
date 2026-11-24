@@ -39,10 +39,13 @@ KEDA_VERSION := 2.21.1
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
 
-# make loadtest settings: how long, and how many page loads and logins a
-# second each of its three pods sends. Override on the command line.
+# make loadtest settings: how long (whole minutes, under the Job's one-hour
+# deadline), how many page loads and logins a second each of its three pods
+# sends, and an optional address to send the host's traffic to instead of
+# its public one. Override on the command line.
 DURATION ?= 5m
 RATE ?= 10
+TARGET_IP ?=
 PLATFORM_OUT := tofu -chdir=infra/platform output
 
 # The nine services, by their folder in app/services/ and k8s/apps/.
@@ -311,14 +314,15 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 # default send page loads, logins and one order a second each to the public
 # host, then exit. The Job fails if any request fails. The old Job goes
 # first, so every run starts clean. See k8s/loadtest/README.md.
-loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 by default
+loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 TARGET_IP= by default
 	set -euo pipefail; \
-	[[ "$(DURATION)" =~ ^[0-9]+[smh]$$ ]] || { echo "DURATION '$(DURATION)' is not like 5m." >&2; exit 1; }; \
+	[[ "$(DURATION)" =~ ^([1-9]|[1-5][0-9])m$$ ]] || { echo "DURATION '$(DURATION)' must be 1m to 59m: the Job stops at one hour." >&2; exit 1; }; \
 	[[ "$(RATE)" =~ ^[0-9]+$$ ]] || { echo "RATE '$(RATE)' is not a number." >&2; exit 1; }; \
-	$(KUBECTL) -n default delete job loadtest --ignore-not-found --wait; \
+	[[ -z "$(TARGET_IP)" || "$(TARGET_IP)" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$ ]] || { echo "TARGET_IP '$(TARGET_IP)' is not an IPv4 address." >&2; exit 1; }; \
+	$(KUBECTL) -n default delete job loadtest --ignore-not-found --cascade=foreground --wait; \
 	$(KUBECTL) -n default create configmap loadtest-settings \
-	  --from-literal=DURATION=$(DURATION) --from-literal=RATE=$(RATE) --dry-run=client -o yaml \
-	  | $(KUBECTL) apply -f -; \
+	  --from-literal=DURATION=$(DURATION) --from-literal=RATE=$(RATE) --from-literal=TARGET_IP=$(TARGET_IP) \
+	  --dry-run=client -o yaml | $(KUBECTL) apply -f -; \
 	$(KUBECTL) apply -k k8s/loadtest; \
 	echo "Waiting for job/loadtest ($(DURATION) of load)"; \
 	until STATE=$$($(KUBECTL) -n default get job loadtest -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}') \
