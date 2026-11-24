@@ -281,9 +281,11 @@ $K rollout status statefulset/scheduler --timeout=3m
 # 2. A pod delete.
 $K delete pod scheduler-0
 $K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
-# 3. A drain of its node. Pick a node without postgres-0 or redis-0, whose budgets block drains.
+# 3. A drain of its node. The selector leaves postgres-0 and redis-0 where they
+# are, since their budgets refuse every eviction.
 NODE=$($K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
-kubectl --context $CTX drain "$NODE" --ignore-daemonsets --delete-emptydir-data --timeout=5m
+kubectl --context $CTX drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
+  --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=5m
 $K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
 kubectl --context $CTX uncordon "$NODE"
 
@@ -294,6 +296,8 @@ $K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservat
 ```
 
 Expect `StatefulSet 1`. The pod count log shows only `0` and `1`, never `2`, even while an old pod is `Terminating`. Each minute since the drain shows one `expire_reservations` run. Each new pod's first run comes at startup, after the old pod stopped.
+
+The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)), so `kubectl drain` retries their evictions until `--timeout` and exits 1. On a fresh cluster the scheduler often shares the only `general` node with both, so a plain drain always fails there. `--pod-selector` evicts every other pod and leaves those two running on the cordoned node until `uncordon`.
 
 ## Validate
 
