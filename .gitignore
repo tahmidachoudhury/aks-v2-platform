@@ -12,9 +12,8 @@ crash.log
 crash.*.log
 infra/backend.hcl
 
-# Kubernetes: per-deployment values written at install time
+# Written by the Makefile before P7 and no longer used. Still ignored, so a
+# copy left in an old clone, with its IDs, is never committed.
 k8s/external-secrets/store/vault.env
 k8s/apps/dev/azure.env
-
-# Helm repo config used by the Makefile
 .helm/

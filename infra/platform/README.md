@@ -18,7 +18,7 @@
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
-`make up` from the repo root runs this apply, fetches an Entra ID kubeconfig with the `kubeconfig_command` output, then applies the NodePools and the other in-cluster components. See [Daily routine](../README.md#daily-routine).
+`make up` from the repo root runs this apply, fetches an Entra ID kubeconfig with the `kubeconfig_command` output, then applies the argocd root, which installs Argo CD, and Argo CD the rest of the cluster. See [Daily routine](../README.md#daily-routine).
 
 State lives in the `platform.tfstate` blob in the state account.
 
