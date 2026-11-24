@@ -2,7 +2,7 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68) and P6-11 (#72).
 
 ## Layout
 
@@ -137,6 +137,36 @@ kubectl --context aks-v2-platform -n apps rollout status statefulset/scheduler -
 
 The cost: no scheduler copy runs while it rolls out or its node drains, and it has no PodDisruptionBudget or autoscaler. A missed tick only delays the next run, since each job works through whatever is due.
 
+## Ingress
+
+One standard `networking.k8s.io/v1` Ingress, `api-gateway`, in the api-gateway dev overlay, since its host belongs to the environment. It sends every path on `azure.order-fulfilment.tahmidchoudhury.uk`, the zone apex, to api-gateway on 8080 through Traefik (`ingressClassName: traefik`). The gateway does the routing the code expects:
+
+| Path | Served by |
+| --- | --- |
+| `GET /` | dashboard-api's UI page, proxied by the gateway with no JWT check |
+| `/auth/login`, `/auth/register` | The gateway itself |
+| `/api/<service>/*` | The matching backend, after the rate limit and JWT check |
+| `/api/shipping/webhook` | shipping-service, with no JWT check. The service checks `X-Webhook-Secret` |
+
+ExternalDNS writes the A record for the host, pointing at Traefik's persistent IP. cert-manager's ingress-shim reads the `cert-manager.io/cluster-issuer` annotation and orders a certificate into the Secret `api-gateway-tls` with HTTP-01 through Traefik.
+
+**Staging by default.** The overlay uses `letsencrypt-staging`, as the [TLS certificates](../../docs/architecture-decisions.md#tls-certificates) ADR and the [cert-manager rate limits](../cert-manager/README.md#rate-limits) rule. Production allows five certificates for this name in any seven days, and each morning's cluster orders a new one. Browsers distrust the staging certificate, but the whole flow runs.
+
+**Production for a proof window**, a demo or grading run. Each switch uses one of the five:
+
+```bash
+kubectl --context aks-v2-platform -n apps annotate ingress api-gateway \
+  cert-manager.io/cluster-issuer=letsencrypt-production --overwrite
+# The old staging certificate stays Ready while the new one is ordered, so wait
+# for the Secret to name the production issuer instead.
+kubectl --context aks-v2-platform -n apps wait secret api-gateway-tls --timeout=5m \
+  --for=jsonpath='{.metadata.annotations.cert-manager\.io/issuer-name}'=letsencrypt-production
+```
+
+cert-manager sees the issuer change and orders a production certificate into the same Secret. The next `make apps` puts the annotation back to staging, which orders a staging certificate again, so a forgotten switch costs nothing more.
+
+The client's address survives the trip. Traefik's Service has `externalTrafficPolicy: Local`, so Traefik sees the real client, and it replaces any `X-Forwarded-For` the client sends with the address it saw ([traefik](../traefik/README.md)). The gateway trusts that header only from the pod CIDR in `TRUSTED_PROXIES`, and its NetworkPolicy lets only Traefik connect, so the rate limit counts each client, not Traefik (#128).
+
 ## Quotas
 
 ### apps
@@ -264,6 +294,36 @@ diff <(kubectl --context aks-v2-platform -n apps get secret api-gateway -o jsonp
 ```
 
 Expect `no Secret manifests`, eleven ExternalSecrets `SecretSynced` (seven `-postgres`, `api-gateway`, `api-gateway-redis`, `shipping-service` and `db-migrate`), and `match`. Neither value is printed. Run the `az` call from an IP the vault firewall allows. The rotation test is in [reloader](../reloader/README.md#proving-it). It rotates `shipping-webhook-secret` and expects only shipping-service to restart.
+
+**P6-07 (#68), criterion 8: the dashboard over HTTPS with a valid production certificate, `/api/*` through the gateway, and a forged `X-Forwarded-For` doesn't reset the rate limit.**
+
+Switch to production first, as in [Ingress](#ingress). Then:
+
+```bash
+HOST=azure.order-fulfilment.tahmidchoudhury.uk
+dig +short "$HOST"
+tofu -chdir=infra/persistent output -raw ingress_ip_address; echo
+# A trusted certificate: plain curl, no -k.
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' "https://$HOST/"
+echo | openssl s_client -connect "$HOST:443" -servername "$HOST" 2>/dev/null \
+  | openssl x509 -noout -issuer -subject -enddate
+
+# /api/* reaches the gateway: no token is a 401 from it, a token gets the orders.
+curl -sS -o /dev/null -w '%{http_code}\n' "https://$HOST/api/orders/"
+TOKEN=$(curl -s -X POST "https://$HOST/auth/login" -H 'Content-Type: application/json' \
+  -d '{"email":"p6-rate@example.com","password":"x"}' | jq -r .token)
+curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" "https://$HOST/api/orders/"
+
+# 110 requests, each with a different forged X-Forwarded-For. Wait a minute
+# first, so the earlier calls have left the window.
+sleep 60
+for i in $(seq 110); do
+  curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+    -H "X-Forwarded-For: 203.0.113.$((i % 250))" "https://$HOST/api/orders/"
+done | sort | uniq -c
+```
+
+Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), and the host as subject. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Switch back with `make apps` when the window ends.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
