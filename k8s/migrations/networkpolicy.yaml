@@ -7,14 +7,6 @@ metadata:
   name: db-migrate
   labels:
     app.kubernetes.io/name: db-migrate
-  annotations:
-    # P7: a PreSync hook one wave before the Job, like the ConfigMap and the
-    # ExternalSecret. ArgoCD runs PreSync hooks before it syncs anything
-    # else, so as a plain resource this would arrive after the Job it lets
-    # out. Ignored by kubectl.
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "-1"
 spec:
   podSelector:
     matchLabels:

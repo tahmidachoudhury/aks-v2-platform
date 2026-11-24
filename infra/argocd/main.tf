@@ -130,6 +130,10 @@ resource "helm_release" "root" {
         }
         syncPolicy = {
           syncOptions = ["ServerSideApply=true"]
+          retry = {
+            limit   = 5
+            backoff = { duration = "10s", factor = 2, maxDuration = "3m" }
+          }
         }
       }
     }
