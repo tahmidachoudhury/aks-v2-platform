@@ -626,7 +626,7 @@ $K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservat
 
 Expect `StatefulSet 1`. The pod count log shows only `0` and `1`, never `2`, even while an old pod is `Terminating`. Each minute since the drain shows one `expire_reservations` run. Each new pod's first run comes at startup, after the old pod stopped.
 
-The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)), so `kubectl drain` retries their evictions until `--timeout` and exits 1. On a fresh cluster the scheduler often shares the only `general` node with both, so a plain drain always fails there. `--pod-selector` evicts every other pod and leaves those two running on the cordoned node until `uncordon`.
+The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)), so `kubectl drain` retries their evictions until `--timeout` and exits 1. On a fresh cluster the scheduler often shares the only `general` node with both, so a plain drain always fails there. `--pod-selector` evicts every other pod and leaves those two running on the cordoned node until `uncordon`. The five multi-replica services' pods from that node stay `Pending` until then too, since their zone rule needs a second schedulable zone ([Disruption and spread](#disruption-and-spread)).
 
 ## Validate
 
