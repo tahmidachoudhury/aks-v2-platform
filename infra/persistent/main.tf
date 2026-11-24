@@ -50,7 +50,7 @@ module "keyvault" {
   generated_secrets = {
     postgres-password       = 1
     jwt-secret              = 1
-    shipping-webhook-secret = 1
+    shipping-webhook-secret = 2
     redis-password          = 1
   }
 
