@@ -11,12 +11,12 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 | `priorityclass.yaml` | `PriorityClass` | `data-critical` | Lets Postgres and Redis preempt app pods |
 | `postgres/statefulset.yaml` | `StatefulSet` | `postgres` | One replica, volumeClaimTemplate `data`, so the PVC is `data-postgres-0` |
 | `postgres/service.yaml` | `Service` (headless) | `postgres` | `postgres.data.svc.cluster.local:5432` |
-| `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password` |
+| `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `postgres/pdb.yaml` | `PodDisruptionBudget` | `postgres` | `maxUnavailable: 0` |
 | `postgres/app-role.sql` | `ConfigMap` `postgres-init` | | Creates or updates the `app` role and its password. Run on first start and by every `make data` |
 | `redis/statefulset.yaml` | `StatefulSet` | `redis` | One replica, volumeClaimTemplate `data`, so the PVC is `data-redis-0` |
 | `redis/service.yaml` | `Service` (headless) | `redis` | `redis.data.svc.cluster.local:6379` |
-| `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password` |
+| `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `redis/pdb.yaml` | `PodDisruptionBudget` | `redis` | `maxUnavailable: 0` |
 
 ### Why `k8s/data/<component>`
@@ -40,7 +40,7 @@ The services and the migration Job run in `apps` and can't read Secrets in `data
 - Postgres: `DATABASE_URL` in each service's config has no password, `postgres://app@postgres.data.svc.cluster.local:5432/orders?sslmode=disable`. The password arrives as `PGPASSWORD` from the Secret `<service>-postgres`, and lib/pq reads it from there. The migration Job does the same with `db-migrate`.
 - Redis: api-gateway's `api-gateway-redis` Secret holds the whole `REDIS_URL`, built with an ESO template, since go-redis has no environment fallback.
 
-Those ExternalSecrets sync once and then only on the `force-sync` annotation (`refreshPolicy: OnChange`), so a rotated password reaches the services only when the server already has it. See [Rotating a password](#rotating-a-password). The server has no TLS, so `sslmode=disable` stays.
+Those ExternalSecrets sync once and then only on the `force-sync` annotation (`refreshPolicy: OnChange`), so a rotated password reaches the services only when the server already has it. The server's own copies here, `postgres-credentials` and `redis-credentials`, work the same way. Otherwise a `make data`, a `make cluster` or a `redis-0` restart within the hour after a rotation would move the server to the new password while the services still held the old one. See [Rotating a password](#rotating-a-password). The server has no TLS, so `sslmode=disable` stays.
 
 Postgres users:
 
@@ -58,7 +58,7 @@ psql reads the password from `/etc/postgres-credentials/password` inside the pod
 
 ## Rotating a password
 
-Next morning there is nothing to do: the new cluster starts from empty disks and reads the current values. Mid-day, the order matters. The server takes the new password first, then the services. The services' copies in `apps` sync only on `force-sync`, so nothing moves to a new password before the server has it.
+Next morning there is nothing to do: the new cluster starts from empty disks and reads the current values. Mid-day, the order matters. The server takes the new password first, then the services. Every copy, the server's in `data` and the services' in `apps`, syncs only on `force-sync`, so nothing moves to a new password until you say, and in this order.
 
 1. **Change the value in Key Vault.** Bump the secret's number in `generated_secrets` in `infra/persistent/main.tf` and apply persistent ([keyvault](../../infra/modules/keyvault/README.md#rotate-a-secret)). Tahmid runs the apply.
 
