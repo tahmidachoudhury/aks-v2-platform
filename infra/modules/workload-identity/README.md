@@ -1,6 +1,6 @@
 # workload-identity
 
-**TL;DR:** One user-assigned managed identity per workload that signs in to Azure: the four services that use `azidentity`, ExternalDNS and External Secrets. The `persistent` root calls this module, so the client IDs never change. The federated credentials and Service Bus roles live in `platform`, since they name the cluster's OIDC issuer and the queue, both new every morning. No identity holds Contributor, Owner or a client secret. Filled by P3-16 (#42), P3-17 (#43) and P3-18 (#44).
+**TL;DR:** One user-assigned managed identity per workload that signs in to Azure: the four services that use `azidentity`, ExternalDNS, External Secrets and KEDA. The `persistent` root calls this module, so the client IDs never change. The federated credentials and Service Bus roles live in `platform`, since they name the cluster's OIDC issuer and the queue, both new every morning. No identity holds Contributor, Owner or a client secret. Filled by P3-16 (#42), P3-17 (#43) and P3-18 (#44). KEDA added by P6-09 (#70).
 
 ## What it creates
 
@@ -29,6 +29,7 @@ The services are the four in `app/services/` that import `azidentity` and read `
 | `id-worker` | `apps` | `worker` | `system:serviceaccount:apps:worker` |
 | `id-external-dns` | `platform` | `external-dns` | `system:serviceaccount:platform:external-dns` |
 | `id-external-secrets` | `platform` | `external-secrets` | `system:serviceaccount:platform:external-secrets` |
+| `id-keda` | `platform` | `keda-operator` | `system:serviceaccount:platform:keda-operator` |
 
 Every credential uses the cluster's issuer, `module.aks.oidc_issuer_url`, and the audience `api://AzureADTokenExchange`. Each is named after the cluster, `aks-v2-platform`.
 
@@ -38,7 +39,7 @@ Nothing in the repo fixed these names yet, so this is a convention:
 
 - A service's ServiceAccount takes the name of its folder in `app/services/`. [`k8s/README.md`](../../../k8s/README.md) states the same rule for the manifests.
 - The services run in `apps` and the components in `platform`, the namespaces P4-07 (#54) lists.
-- ExternalDNS and External Secrets keep their Helm charts' default ServiceAccount names, `external-dns` and `external-secrets`.
+- ExternalDNS, External Secrets and KEDA keep their Helm charts' default ServiceAccount names, `external-dns`, `external-secrets` and `keda-operator`. The identity is `id-keda`, since the chart's operator is the only KEDA pod that signs in.
 
 If P4-07 or a chart install picks other names, change `local.workload_identities` in `platform/main.tf`. The subjects live only in platform, so a rename recreates nothing in persistent and leaves the client IDs alone.
 
@@ -54,6 +55,7 @@ No identity. P4-04 (#51) chose HTTP-01 through Traefik, which needs no Azure acc
 | `id-payment-service` | Azure Service Bus Data Sender | Queue `order-events` | `platform` |
 | `id-shipping-service` | Azure Service Bus Data Sender | Queue `order-events` | `platform` |
 | `id-worker` | Azure Service Bus Data Receiver | Queue `order-events` | `platform` |
+| `id-keda` | Azure Service Bus Data Owner | Queue `order-events` | `platform` |
 | `id-external-secrets` | Key Vault Secrets User | The Key Vault, `key_vault_name` | `persistent` |
 | `id-external-dns` | DNS Zone Contributor | Zone `azure.order-fulfilment.tahmidchoudhury.uk` | `persistent` |
 | `id-external-dns` | Reader | Group `rg-aks-v2-persistent` | `persistent` |
@@ -61,7 +63,8 @@ No identity. P4-04 (#51) chose HTTP-01 through Traefik, which needs no Azure acc
 Why each one:
 
 - Queue, not namespace: `order-events` is the only entity in the namespace, and a role on the queue also covers its dead-letter queue, so the worker can dead-letter without anything wider.
-- Sender or Receiver, never Owner: publishers can't receive and the worker can't send. Service Bus Data Owner would also let them manage entities.
+- Sender or Receiver for the services, never Owner: publishers can't receive and the worker can't send. Service Bus Data Owner would also let them manage entities.
+- Data Owner for KEDA, on the queue only. Its Service Bus scaler reads the queue's message count from the entity's runtime properties, and [KEDA's docs](https://keda.sh/docs/latest/scalers/azure-service-bus/) say that needs `Manage` rights. Data Owner is the only built-in data role that includes them, and [Microsoft's KEDA workload identity guide](https://learn.microsoft.com/en-us/azure/aks/keda-workload-identity) assigns it. It could also send, receive and change the queue, so it stays on the one queue. If the scaler reports 401 at that scope, widen it to the namespace.
 - No Key Vault role for the services: P4-06 (#53) installs one ClusterSecretStore, so ESO is the only workload that reads Key Vault. The services get secrets as Kubernetes Secrets. A per-namespace SecretStore would need a Key Vault role per service, and the [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) ADR didn't ask for that.
 - Secrets User on the vault, not per secret: ESO serves every secret in the vault, so a per-secret grant would list all four and add nothing. Secrets User reads secret values and changes nothing. It can't use or read keys.
 - Reader for ExternalDNS: it lists the zones in its resource group before it writes, and a role on the zone doesn't cover that list call. The [ExternalDNS Azure guide](https://kubernetes-sigs.github.io/external-dns/latest/docs/tutorials/azure/) asks for Reader on the group. Reader sees resource settings in `rg-aks-v2-persistent`, never secret values or blobs, and changes nothing. A custom role with only `Microsoft.Network/dnszones/read` would be tighter, but a role definition to hide settings that hold no secret isn't worth it.
@@ -83,6 +86,8 @@ The [github-oidc README](../github-oidc/README.md#why-the-identities-have-their-
 `id-gh-infra` may only assign the roles in `infra_assignable_roles` in `persistent/main.tf`, and only to service principals or the operators. Managed identities are service principals. The list already had the two Service Bus roles, DNS Zone Contributor and Key Vault Secrets User. This change adds Reader, for ExternalDNS.
 
 Adding a role rewrites the condition on CI's RBAC Administrator assignment, and azurerm replaces a role assignment rather than updating it. So the persistent plan shows `infra_rbac_admin["persistent"] must be replaced`. The only change inside is Reader's GUID. Apply it by hand, as with every change to CI's own access.
+
+P6-09 (#70) adds Azure Service Bus Data Owner to the list, for KEDA, with the same effect: the persistent plan replaces `infra_rbac_admin` and the only change in the condition is Data Owner's GUID. The plan also adds `id-keda`. Apply persistent by hand before platform, so the identity exists when platform looks it up.
 
 The Service Bus roles are in `rg-aks-v2-platform`, where CI has no RBAC Administrator role yet. This is the [known gap](../github-oidc/README.md#known-gap-the-platform-resource-group): platform is applied by hand until it closes.
 

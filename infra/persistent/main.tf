@@ -165,6 +165,7 @@ module "github_oidc" {
   infra_assignable_roles = [
     "AcrPull",                                     # kubelet, P3-11
     "Azure Kubernetes Service RBAC Cluster Admin", # aks module
+    "Azure Service Bus Data Owner",                # KEDA, P6-09
     "Azure Service Bus Data Receiver",             # worker, P3-17
     "Azure Service Bus Data Sender",               # publishers, P3-17
     "DNS Zone Contributor",                        # ExternalDNS, P3-18
@@ -201,6 +202,7 @@ module "workload_identity" {
     "worker",
     "external-dns",
     "external-secrets",
+    "keda",
   ]
 
   resource_group_name = azurerm_resource_group.persistent.name
