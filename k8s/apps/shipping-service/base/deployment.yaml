@@ -7,9 +7,10 @@ metadata:
   labels:
     app.kubernetes.io/name: shipping-service
   annotations:
-    # Reloader rolls this Deployment when the shipping-service Secret changes, and
-    # for no other Secret, so rotating one key restarts only its users.
-    secret.reloader.stakater.com/reload: shipping-service
+    # Reloader rolls this Deployment when a Secret listed here changes, and
+    # for no other, so rotating one key restarts only the services that
+    # read it.
+    secret.reloader.stakater.com/reload: shipping-service-postgres,shipping-service
 spec:
   selector:
     matchLabels:
@@ -32,6 +33,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: shipping-service
+            - secretRef:
+                name: shipping-service-postgres
             - secretRef:
                 name: shipping-service
           # Placeholders: k8s/apps/dev fills them in from the platform outputs.

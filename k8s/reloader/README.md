@@ -6,14 +6,14 @@ The services read their secrets from environment variables once, at startup. ESO
 
 ## Which rotation restarts what
 
-| Key Vault secret | Kubernetes Secret in `apps` | Restarts |
-| --- | --- | --- |
-| `jwt-secret` | `api-gateway` | api-gateway |
-| `redis-password` | `api-gateway` (inside `REDIS_URL`) | api-gateway |
-| `shipping-webhook-secret` | `shipping-service` | shipping-service |
-| `postgres-password` | One per Postgres user: order, inventory, payment, notification, shipping, dashboard-api, scheduler | All seven |
+| Key Vault secret | Kubernetes Secret in `apps` | Refresh | Restarts |
+| --- | --- | --- | --- |
+| `jwt-secret` | `api-gateway` | Hourly | api-gateway |
+| `shipping-webhook-secret` | `shipping-service` | Hourly | shipping-service |
+| `redis-password` | `api-gateway-redis` (inside `REDIS_URL`) | On `force-sync` only | api-gateway |
+| `postgres-password` | `<service>-postgres`, one per Postgres user: order, inventory, payment, notification, shipping, dashboard-api, scheduler | On `force-sync` only | All seven |
 
-The worker has no Secret, so nothing restarts it. A Postgres or Redis rotation also needs the steps in [data](../data/README.md#rotating-a-password), since the server takes its new password separately.
+The worker has no Secret, so nothing restarts it. The Postgres and Redis copies wait for `force-sync` because the server must take the new password first. The order is in [data](../data/README.md#rotating-a-password).
 
 ## Settings
 

@@ -25,12 +25,12 @@ Each file writes its selectors out. Kustomize's `labels` with `includeSelectors`
 
 | Service | Port | Dev replicas | Identity | Secret keys | Postgres |
 | --- | --- | --- | --- | --- | --- |
-| api-gateway | 8080 | 2 | none | `JWT_SECRET`, `REDIS_URL` | no |
+| api-gateway | 8080 | 2 | none | `JWT_SECRET`; `REDIS_URL` | no |
 | order-service | 8081 | 2 | `id-order-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
 | inventory-service | 8082 | 2 | none | `PGPASSWORD` | yes |
 | payment-service | 8083 | 2 | `id-payment-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
 | notification-service | 8084 | 1 | none | `PGPASSWORD` | yes |
-| shipping-service | 8085 | 2 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`, `SHIPPING_WEBHOOK_SECRET` | yes |
+| shipping-service | 8085 | 2 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`; `SHIPPING_WEBHOOK_SECRET` | yes |
 | dashboard-api | 8086 | 1 | none | `PGPASSWORD` | yes |
 | worker | 8090, health only | 1 | `id-worker`, Service Bus Data Receiver | none | no |
 | scheduler | 8091, health only | 1 | none | `PGPASSWORD` | yes |
@@ -91,11 +91,20 @@ The kubelet identity has AcrPull on the registry (P3-11), so no pod needs a pull
 
 ## Secrets
 
-Each service has one ExternalSecret. It reads only that service's Key Vault secrets, through the `azure-key-vault` ClusterSecretStore ([external-secrets](../external-secrets/README.md)). It makes a Secret named after the service, read with `envFrom`. No Secret manifest is in Git.
+Each service's ExternalSecrets read only the Key Vault secrets it uses, through the `azure-key-vault` ClusterSecretStore ([external-secrets](../external-secrets/README.md)). The pods read the Secrets with `envFrom`. No Secret manifest is in Git. They are split by how they rotate:
+
+| Secret | Keys | Refresh |
+| --- | --- | --- |
+| `<service>-postgres`, for the seven Postgres users | `PGPASSWORD` | On `force-sync` only |
+| `api-gateway-redis` | `REDIS_URL` | On `force-sync` only |
+| `api-gateway` | `JWT_SECRET` | Hourly |
+| `shipping-service` | `SHIPPING_WEBHOOK_SECRET` | Hourly |
+
+The database passwords must reach the server before the services, so their ExternalSecrets use `refreshPolicy: OnChange` with `refreshInterval: "0"`: ESO syncs them once and then only when the object changes, which the `force-sync` annotation does. With the default `Periodic` policy, a zero interval means "never again", and the annotation would do nothing. The order is in [Rotating a password](../data/README.md#rotating-a-password). The JWT key and the webhook secret need nothing else to change first, so they refresh hourly.
 
 - Postgres: `DATABASE_URL` sits in `config.env` with no password: `postgres://app@postgres.data.svc.cluster.local:5432/orders?sslmode=disable`. The ExternalSecret provides `PGPASSWORD` from `postgres-password`. All seven Postgres users import `lib/pq` v1.10.9, which reads `PGPASSWORD` from the environment, then lets the URL override it (`connector.go`, `NewConnector`). A URL with no password keeps the environment's. The migration Job uses the same pattern ([migrations](../migrations/README.md#how-a-run-works)). A password with `@`, `:` or `/` needs no escaping.
 - Redis: go-redis has no environment fallback, so api-gateway's ExternalSecret builds `REDIS_URL` with a template: `redis://:<password>@redis.data.svc.cluster.local:6379/0`. It escapes the password with `urlquery`. The generated secrets are 48 letters and digits today (`infra/modules/keyvault`), so escaping only matters if that changes.
-- Rotation: each Deployment names its own Secret in `secret.reloader.stakater.com/reload`, so [Reloader](../reloader/README.md) restarts only the services that read a changed secret.
+- Rotation: each workload lists exactly the Secrets it reads in `secret.reloader.stakater.com/reload`, such as `shipping-service-postgres,shipping-service`, so [Reloader](../reloader/README.md) restarts only the services that read a changed secret.
 
 ## Workload identity
 
@@ -220,7 +229,7 @@ diff <(kubectl --context aks-v2-platform -n apps get secret api-gateway -o jsonp
   && echo "match"
 ```
 
-Expect `no Secret manifests`, nine ExternalSecrets `SecretSynced` (eight services and `db-migrate`), and `match`. Neither value is printed. Run the `az` call from an IP the vault firewall allows. The rotation test is in [reloader](../reloader/README.md#proving-it). It rotates `shipping-webhook-secret` and expects only shipping-service to restart.
+Expect `no Secret manifests`, eleven ExternalSecrets `SecretSynced` (seven `-postgres`, `api-gateway`, `api-gateway-redis`, `shipping-service` and `db-migrate`), and `match`. Neither value is printed. Run the `az` call from an IP the vault firewall allows. The rotation test is in [reloader](../reloader/README.md#proving-it). It rotates `shipping-webhook-secret` and expects only shipping-service to restart.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
@@ -281,4 +290,4 @@ yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | 
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 43, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.
+Expect `Valid: 45, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.

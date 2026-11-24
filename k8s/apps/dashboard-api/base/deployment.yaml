@@ -7,9 +7,10 @@ metadata:
   labels:
     app.kubernetes.io/name: dashboard-api
   annotations:
-    # Reloader rolls this Deployment when the dashboard-api Secret changes, and
-    # for no other Secret, so rotating one key restarts only its users.
-    secret.reloader.stakater.com/reload: dashboard-api
+    # Reloader rolls this Deployment when a Secret listed here changes, and
+    # for no other, so rotating one key restarts only the services that
+    # read it.
+    secret.reloader.stakater.com/reload: dashboard-api-postgres
 spec:
   selector:
     matchLabels:
@@ -30,4 +31,4 @@ spec:
             - configMapRef:
                 name: dashboard-api
             - secretRef:
-                name: dashboard-api
+                name: dashboard-api-postgres

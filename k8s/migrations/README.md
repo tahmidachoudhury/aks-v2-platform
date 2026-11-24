@@ -8,7 +8,7 @@ Filled by P5-04 (#58) and P5-05 (#59).
 
 | File | Kind | Name | Purpose |
 | --- | --- | --- | --- |
-| `external-secret.yaml` | `ExternalSecret` | `db-migrate` | Copies Key Vault `postgres-password`, the `app` role's password, into the Secret `db-migrate`, key `PGPASSWORD`. Pods in `apps` can't read `postgres-credentials` in `data` |
+| `external-secret.yaml` | `ExternalSecret` | `db-migrate` | Copies Key Vault `postgres-password`, the `app` role's password, into the Secret `db-migrate`, key `PGPASSWORD`. Pods in `apps` can't read `postgres-credentials` in `data`. Syncs once, then only on `force-sync`, like the services' copies ([data](../data/README.md#rotating-a-password)) |
 | `kustomization.yaml` | `ConfigMap` (generated) | `db-migrate` | Every file in `sql/`, mounted into the Job at `/migrations` |
 | `job.yaml` | `Job` | `db-migrate` | Runs `migrate up` once and exits |
 
