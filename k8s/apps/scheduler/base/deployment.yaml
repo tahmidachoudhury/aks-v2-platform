@@ -1,0 +1,27 @@
+# Runs five jobs on in-process tickers: expiring reservations, cancelling
+# abandoned orders and so on. Its port serves only /livez and /healthz.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scheduler
+    spec:
+      serviceAccountName: scheduler
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/scheduler
+          ports:
+            - name: http
+              containerPort: 8091
+          envFrom:
+            - configMapRef:
+                name: scheduler

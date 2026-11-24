@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping-service
+  labels:
+    app.kubernetes.io/name: shipping-service
+spec:
+  selector:
+    app.kubernetes.io/name: shipping-service
+  ports:
+    - name: http
+      port: 8085
+      targetPort: http

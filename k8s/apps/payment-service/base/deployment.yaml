@@ -1,0 +1,33 @@
+# Simulated charges and refunds. Publishes payment events to Service Bus as
+# id-payment-service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  labels:
+    app.kubernetes.io/name: payment-service
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-service
+    spec:
+      serviceAccountName: payment-service
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/payment-service
+          ports:
+            - name: http
+              containerPort: 8083
+          envFrom:
+            - configMapRef:
+                name: payment-service
+          # Placeholders: k8s/apps/dev fills them in from the platform outputs.
+          env:
+            - name: SERVICEBUS_NAMESPACE
+              value: SERVICEBUS_FQDN_FROM_AZURE_ENV
+            - name: SERVICEBUS_QUEUE
+              value: SERVICEBUS_QUEUE_FROM_AZURE_ENV

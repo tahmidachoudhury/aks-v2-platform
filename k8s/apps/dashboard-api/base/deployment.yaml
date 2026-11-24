@@ -1,0 +1,27 @@
+# The admin dashboard: serves the UI page, which api-gateway proxies at /, and
+# the aggregate queries behind it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-api
+  labels:
+    app.kubernetes.io/name: dashboard-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dashboard-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dashboard-api
+    spec:
+      serviceAccountName: dashboard-api
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/dashboard-api
+          ports:
+            - name: http
+              containerPort: 8086
+          envFrom:
+            - configMapRef:
+                name: dashboard-api

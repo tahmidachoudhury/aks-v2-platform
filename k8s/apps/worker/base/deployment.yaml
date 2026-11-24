@@ -1,0 +1,34 @@
+# Receives every event from the queue as id-worker, in PeekLock mode, so a
+# message it doesn't complete goes back to the queue. Its port serves only
+# /livez and /healthz.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+    spec:
+      serviceAccountName: worker
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/worker
+          ports:
+            - name: http
+              containerPort: 8090
+          envFrom:
+            - configMapRef:
+                name: worker
+          # Placeholders: k8s/apps/dev fills them in from the platform outputs.
+          env:
+            - name: SERVICEBUS_NAMESPACE
+              value: SERVICEBUS_FQDN_FROM_AZURE_ENV
+            - name: SERVICEBUS_QUEUE
+              value: SERVICEBUS_QUEUE_FROM_AZURE_ENV

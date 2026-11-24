@@ -1,0 +1,21 @@
+# The pod shape every service shares, so the nine bases hold only what makes
+# each service different: its port, config, Secret and identity. This is the
+# shared component the Manifest tooling ADR asks for once the bases start to
+# repeat themselves. Each base includes it under components:.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# On every resource and pod template, never on selectors: a selector change
+# would recreate the Deployments, and kustomize would also rewrite the
+# podSelectors in other services' NetworkPolicies.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: order-fulfilment
+    includeTemplates: true
+
+# Every Deployment in the base, whatever its name. The container in each base
+# is called app, so this patch merges into it by name.
+patches:
+  - path: deployment.yaml
+    target:
+      kind: Deployment

@@ -1,0 +1,26 @@
+# Products and stock reservations.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  labels:
+    app.kubernetes.io/name: inventory-service
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inventory-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inventory-service
+    spec:
+      serviceAccountName: inventory-service
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/inventory-service
+          ports:
+            - name: http
+              containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: inventory-service
