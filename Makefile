@@ -193,13 +193,17 @@ migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 # repositories and the service's tags, calls that succeed when nothing is
 # there, so any az error stops make rather than starting a build.
 # Uncommitted changes in a service folder stop the build too: the tag would
-# name a commit that doesn't hold them. See k8s/apps/README.md.
+# name a commit that doesn't hold them. Every az call names the persistent
+# root's subscription, which holds the registry, so the az default doesn't
+# matter. See k8s/apps/README.md.
 images: ## Build each service into ACR with az acr build. Skips tags already there
 	set -euo pipefail; \
 	ACR=$$($(PERSISTENT_OUT) -raw acr_name) \
 	  || { echo "No acr_name in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
 	[[ "$$ACR" =~ ^[a-z0-9]{5,50}$$ ]] || { echo "ACR name '$$ACR' is not a registry name." >&2; exit 1; }; \
-	REPOS=$$(az acr repository list --name "$$ACR" -o tsv) \
+	SUB=$$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $$2; exit}' infra/persistent/terraform.tfvars); \
+	[[ "$$SUB" =~ ^[0-9a-f-]{36}$$ ]] || { echo "No subscription_id in infra/persistent/terraform.tfvars, the root that holds the registry." >&2; exit 1; }; \
+	REPOS=$$(az acr repository list --subscription "$$SUB" --name "$$ACR" -o tsv) \
 	  || { echo "Could not list the repositories in $$ACR." >&2; exit 1; }; \
 	for svc in $(SERVICES); do \
 	  DIR=app/services/$$svc; \
@@ -210,15 +214,15 @@ images: ## Build each service into ACR with az acr build. Skips tags already the
 	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches $$DIR." >&2; exit 1; }; \
 	  TAGS=; \
 	  if grep -qx "$$svc" <<<"$$REPOS"; then \
-	    TAGS=$$(az acr repository show-tags --name "$$ACR" --repository "$$svc" -o tsv) \
+	    TAGS=$$(az acr repository show-tags --subscription "$$SUB" --name "$$ACR" --repository "$$svc" -o tsv) \
 	      || { echo "Could not list the tags of $$svc in $$ACR." >&2; exit 1; }; \
 	  fi; \
 	  if grep -qx "$$TAG" <<<"$$TAGS"; then \
 	    echo "$$svc:$$TAG is already in $$ACR"; \
 	  else \
-	    az acr build --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
+	    az acr build --subscription "$$SUB" --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
 	  fi; \
-	  az acr repository update --name "$$ACR" --image "$$svc:$$TAG" --write-enabled false >/dev/null; \
+	  az acr repository update --subscription "$$SUB" --name "$$ACR" --image "$$svc:$$TAG" --write-enabled false >/dev/null; \
 	done
 
 # Offline. Sets newTag in each dev overlay to the tag make images builds,

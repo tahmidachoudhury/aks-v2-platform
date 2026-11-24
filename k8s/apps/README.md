@@ -82,12 +82,13 @@ A per-service overlay applied alone still holds the placeholders. Until P7, appl
 
 - Tag: the first 12 characters of the last commit that touched `app/services/<service>`. A service with unchanged code keeps its tag.
 - Immutable: if the tag is already in ACR, the target skips the build. It finds out by listing the registry's repositories (`az acr repository list`), then the service's tags (`az acr repository show-tags`), and matching the tag exactly. Both calls succeed when there is nothing to list, so a build starts only when the repository or tag is absent. Any error from either, such as no access to the registry, stops `make` with az's message. After each image, built or found, the target locks the tag with `az acr repository update --write-enabled false`, so pushing or deleting that tag again fails.
+- Subscription: every `az` call passes `--subscription` with `subscription_id` from `infra/persistent/terraform.tfvars`, the root that holds the registry, so it works whatever your `az` default is.
 - Clean tree: uncommitted or untracked changes in a service folder stop the target, since the tag would name a commit without them.
 - Pinning: each dev overlay pins its tag under `images`. `make pin-images` sets every overlay to its current tag, offline, with `sed`, so the comments survive. Commit the result. In P8 CI bumps the same line.
 
 The kubelet identity has AcrPull on the registry (P3-11), so no pod needs a pull secret.
 
-`az acr build` needs ACR Tasks. Some subscription types turn Tasks off and fail with `TasksOperationsNotAllowed`. If yours does, build and push from a machine with Docker: `az acr login -n <acr_name>`, then `docker build --platform linux/amd64 -t <acr_login_server>/<service>:<tag> app/services/<service>` and `docker push`.
+`az acr build` needs ACR Tasks. Some subscription types turn Tasks off and fail with `TasksOperationsNotAllowed`. If yours does, build and push from a machine with Docker: `az acr login --subscription <subscription_id> -n <acr_name>`, then `docker build --platform linux/amd64 -t <acr_login_server>/<service>:<tag> app/services/<service>` and `docker push`.
 
 ## Secrets
 
@@ -168,7 +169,11 @@ make apps
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root.
+These need a live cluster after `make cluster`. Run them from the repo root. The `az` commands name their subscription, so set it first. The registry and the vault are in the persistent root's:
+
+```bash
+SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
+```
 
 **P6-02 (#63), criterion 3: nine images in ACR, pinned by the overlays.**
 
@@ -178,7 +183,7 @@ ACR=$(tofu -chdir=infra/persistent output -raw acr_name)
 for svc in api-gateway order-service inventory-service payment-service notification-service \
            shipping-service dashboard-api worker scheduler; do
   tag=$(sed -n 's/^    newTag: //p' k8s/apps/$svc/overlays/dev/kustomization.yaml)
-  az acr repository show --name "$ACR" --image "$svc:$tag" --query name -o tsv
+  az acr repository show --subscription "$SUB" --name "$ACR" --image "$svc:$tag" --query name -o tsv
 done
 ```
 
@@ -236,7 +241,7 @@ git grep -nE '^kind: Secret$' -- k8s || echo "no Secret manifests"
 kubectl --context aks-v2-platform -n apps get externalsecret
 VAULT=$(tofu -chdir=infra/persistent output -raw key_vault_name)
 diff <(kubectl --context aks-v2-platform -n apps get secret api-gateway -o jsonpath='{.data.JWT_SECRET}' | base64 -d | shasum -a 256) \
-     <(az keyvault secret show --vault-name "$VAULT" -n jwt-secret -o json | jq -j .value | shasum -a 256) \
+     <(az keyvault secret show --subscription "$SUB" --vault-name "$VAULT" -n jwt-secret -o json | jq -j .value | shasum -a 256) \
   && echo "match"
 ```
 
