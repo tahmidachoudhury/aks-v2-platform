@@ -12,7 +12,7 @@ resources:
 
 components:
   - ../../components/service
-  - ../../components/zone-spread
+  - ../../components/host-spread
 
 # Settings that are not secret. The hash suffix on the name changes with the
 # content, so an edit here rolls the pods.

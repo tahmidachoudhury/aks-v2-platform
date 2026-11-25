@@ -1,0 +1,15 @@
+# A hard node spread for the five services that run two or more replicas at
+# their minimum: api-gateway and the four backends the gateway and the
+# scheduler call. Their bases list it after components/service, so this patch
+# runs second and turns that component's hostname preference into a rule. The
+# zone entry stays a preference. The other four keep both as preferences:
+# notification-service and dashboard-api idle at one replica, the worker
+# prefers spot, and the scheduler is one pod.
+# See k8s/apps/README.md, Disruption and spread.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - path: host-spread.yaml
+    target:
+      kind: Deployment

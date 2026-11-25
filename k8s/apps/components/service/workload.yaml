@@ -21,10 +21,10 @@ spec:
       terminationGracePeriodSeconds: 45
       # Spread each service's pods across zones, then nodes, so losing one
       # takes out as few as possible. A preference here: the five
-      # multi-replica services also include components/zone-spread, which
-      # makes the zone entry, the first, a hard rule. matchLabelKeys narrows
-      # the selector to this service's pods of this revision, so one rule
-      # fits every service.
+      # multi-replica services also include components/host-spread, which
+      # makes the hostname entry, the second, a hard rule. matchLabelKeys
+      # narrows the selector to this service's pods of this revision, so one
+      # rule fits every service.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone

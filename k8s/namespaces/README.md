@@ -86,7 +86,7 @@ Only the `general` NodePool counts here. `spot` takes only pods that tolerate ev
 | Kept for ArgoCD (P7), outside these namespaces | About 1,000m |
 | Left for `apps`, `data` and `platform` | About 2,440m |
 
-The quotas total 2,500m. If all three namespaces use their full CPU quota and nothing runs on spot, demand is about 60m more than the two nodes hold. The quota admits the last pod or two, but they stay `Pending`. `general` offers no 4 vCPU size, which would have fitted, because the five multi-replica services in `apps` need nodes in two zones ([node-pools](../node-pools/README.md#sizes-and-limits)). A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
+The quotas total 2,500m. If all three namespaces use their full CPU quota and nothing runs on spot, demand is about 60m more than the two nodes hold. The quota admits the last pod or two, but they stay `Pending`. `general` offers no 4 vCPU size, which would have fitted, because the five multi-replica services in `apps` need two nodes ([node-pools](../node-pools/README.md#sizes-and-limits)). A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
 
 Memory depends on the size Karpenter picks. `Standard_D2s_v6` has 8 GiB per 2 vCPUs. With two of those, `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. `Standard_D2nls_v6` has half that memory and is the only size in zone 1. With one of each, pods go `Pending` on memory before CPU.
 

@@ -1,0 +1,45 @@
+# Turns the second constraint from components/service, the hostname spread,
+# into a hard rule. maxSkew stays 1, so a service's pods differ by at most one
+# between nodes. A JSON patch, since a strategic merge keys these entries on
+# topologyKey and whenUnsatisfiable together and would add a second hostname
+# entry instead of changing the existing one. The test op fails the build if
+# that entry ever moves, rather than hardening the wrong one.
+#
+# Why each field:
+# - DoNotSchedule: with ScheduleAnyway the scheduler packed every pod onto
+#   the one general node it had, and NAP never added a second. Karpenter, and
+#   so NAP, starts a node for a pod this rule holds back
+#   (karpenter.sh/docs/concepts/scheduling, Topology Spread). A hard zone
+#   rule did the same, but general's 4 vCPU limit holds two nodes and can't
+#   choose their zones, so it could strand pods. Two nodes are what the limit
+#   can promise, so the node is the rule and the zone stays a preference.
+# - nodeTaintsPolicy Honor: only nodes the pod tolerates count. The default,
+#   Ignore, would count the three aks-system nodes, tainted
+#   CriticalAddonsOnly, and any spot node as nodes with none of the service's
+#   pods. The global minimum would stay 0, and each general node could hold
+#   only one pod of a service, so a third replica would stay Pending.
+#   Cordoned, NotReady and spot nodes drop out too.
+# - minDomains 2: with Honor and a single general node, that node would be
+#   the only domain and the rule would always hold, so every pod would pack
+#   onto it. Below two eligible nodes, the scheduler takes the global minimum
+#   as 0, so the node takes one pod of a service and the next waits Pending,
+#   which makes NAP add the second node
+#   (kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints).
+#   At two or more nodes it has no effect. The cost: while only one general
+#   node is eligible, cordoned, drained, NotReady or being disrupted, each of
+#   the five runs at most one pod on it. Karpenter always takes the global
+#   minimum for hostname as 0, since it can add a node, and honours
+#   nodeTaintsPolicy when it counts.
+# The zone spread, the first entry, stays ScheduleAnyway.
+- op: test
+  path: /spec/template/spec/topologySpreadConstraints/1/topologyKey
+  value: kubernetes.io/hostname
+- op: replace
+  path: /spec/template/spec/topologySpreadConstraints/1/whenUnsatisfiable
+  value: DoNotSchedule
+- op: add
+  path: /spec/template/spec/topologySpreadConstraints/1/minDomains
+  value: 2
+- op: add
+  path: /spec/template/spec/topologySpreadConstraints/1/nodeTaintsPolicy
+  value: Honor

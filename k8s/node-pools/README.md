@@ -23,13 +23,13 @@ The quota sets the limits. UK South allows the subscription 10 standard vCPUs an
 
 All the sizes are D family, which has quota. The subscription can't run D2s_v6 in zone 1, so NAP uses D2nls_v6 there. The DSv4 family is blocked in the region, so it isn't listed. Karpenter picks the cheapest size that fits the pending pods, usually `Standard_D2s_v6`.
 
-`general` offers no 4 vCPU size, so its limit always holds two nodes, and those can be in two zones, which five services in `apps` require ([apps](../apps/README.md#disruption-and-spread)). Karpenter counts a new node against the limit at the largest size it might launch. With `Standard_D4s_v6` on offer, the first node took the whole limit, and a second zone could never come up.
+`general` offers no 4 vCPU size, so its limit always holds two nodes, which five services in `apps` require ([apps](../apps/README.md#disruption-and-spread)). Karpenter counts a new node against the limit at the largest size it might launch. With `Standard_D4s_v6` on offer, the first node took the whole limit, and a second node could never come up.
 
 A system pool upgrade needs 2 spare standard vCPUs for its surge node. With `general` at its limit there are none. See the [quota notes](../../infra/modules/aks/README.md#quota).
 
 ## Zones
 
-Both NodePools allow `uksouth-1`, `uksouth-2` and `uksouth-3`. Karpenter only spreads nodes across zones when the pods require it, so each Deployment that needs zone spread must set a `topologySpreadConstraints` on `topology.kubernetes.io/zone` with `whenUnsatisfiable: DoNotSchedule`. A `ScheduleAnyway` preference is met on whatever nodes exist and never adds one.
+Both NodePools allow `uksouth-1`, `uksouth-2` and `uksouth-3`. Karpenter only spreads nodes across zones when the pods require it, with a `topologySpreadConstraints` on `topology.kubernetes.io/zone` and `whenUnsatisfiable: DoNotSchedule`. Nothing does today. `general`'s limit holds two nodes but can't choose their zones, so a hard zone rule could leave pods `Pending` with no node NAP may add. The five multi-replica services in `apps` require two nodes instead, and only prefer two zones ([apps](../apps/README.md#disruption-and-spread)). A `ScheduleAnyway` preference is met on whatever nodes exist and never adds a node by itself. When NAP adds one for another reason, such as the five's node rule, Karpenter tries the preference first ([Karpenter scheduling](https://karpenter.sh/docs/concepts/scheduling/#preferences)), so the second node usually lands in another zone. Nothing guarantees it.
 
 ## Disruption
 

@@ -1,10 +1,10 @@
 # On-demand nodes for user workloads. 4 vCPUs at most: the system pool uses
 # 6 of the subscription's 10 standard vCPUs in UK South. 2 vCPU sizes only,
-# so the limit always holds two nodes in two zones: the five multi-replica
-# services need two zones (k8s/apps/README.md, Disruption and spread).
+# so the limit always holds two nodes: the five multi-replica services need
+# two nodes (k8s/apps/README.md, Disruption and spread).
 # Karpenter counts a NodeClaim against the limit at the largest size it
 # might launch, so with a 4 vCPU size on offer the first node could take
-# the whole limit and leave the second zone unreachable.
+# the whole limit and leave no room for the second.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
