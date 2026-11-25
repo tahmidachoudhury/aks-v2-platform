@@ -1,0 +1,72 @@
+# Merged into every service workload, the eight Deployments and the
+# scheduler's StatefulSet. The kind and name are ignored: the target in
+# kustomization.yaml picks the workloads by kind. Only fields both kinds have
+# belong here. Each base sets its own port, named http, so the probes here
+# find it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any-service
+spec:
+  revisionHistoryLimit: 3
+  template:
+    spec:
+      # Stops Kubernetes injecting ORDER_SERVICE_PORT and friends for every
+      # Service in apps. The services read only the variables we set.
+      enableServiceLinks: false
+      # The HTTP services wait SHUTDOWN_DRAIN_DELAY (5s) after SIGTERM, then
+      # give in-flight requests up to 30s. The scheduler waits up to 20s for a
+      # running job, then 5s for its health server. 40s covers both.
+      terminationGracePeriodSeconds: 40
+      # The images are distroless static:nonroot, user and group 65532.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # 40m is the per-pod budget in k8s/namespaces/README.md: the HPA
+          # maximums add up to 26 pods, and 26 x 40m fits the apps quota with
+          # room for one rollout. No CPU limit, as the namespace README says.
+          resources:
+            requests:
+              cpu: 40m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The services that use Postgres ping it for up to 120s before they
+          # listen at all, so /livez gets 150s to answer before the kubelet
+          # gives up on a new pod. After that, liveness takes over.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # /livez is always 200 while the process runs. It never checks a
+          # dependency, so a Postgres or Service Bus outage can't restart pods.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # /healthz is readiness: 503 on SIGTERM, for Postgres where a service
+          # uses it, and for Service Bus on the worker. The Postgres ping has
+          # no timeout of its own, so timeoutSeconds is what bounds it.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3

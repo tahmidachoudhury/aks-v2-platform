@@ -1,0 +1,132 @@
+# The dev environment: every service's dev overlay, with the deployment's
+# Azure values filled in. make apps writes azure.env from the OpenTofu
+# outputs and applies this folder. azure.env is gitignored, so no registry,
+# namespace or client ID is committed (see README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../api-gateway/overlays/dev
+  - ../order-service/overlays/dev
+  - ../inventory-service/overlays/dev
+  - ../payment-service/overlays/dev
+  - ../notification-service/overlays/dev
+  - ../shipping-service/overlays/dev
+  - ../dashboard-api/overlays/dev
+  - ../worker/overlays/dev
+  - ../scheduler/overlays/dev
+
+# Feeds the replacements below and never reaches the cluster: the
+# local-config annotation drops it from the output. If azure.env is missing,
+# the build fails naming the file rather than applying placeholders.
+configMapGenerator:
+  - name: azure
+    envs:
+      - azure.env
+    options:
+      disableNameSuffixHash: true
+      annotations:
+        config.kubernetes.io/local-config: "true"
+
+replacements:
+  # ACR_LOGIN_SERVER/<service>:<tag> becomes <registry>/<service>:<tag>. The
+  # overlays have already pinned the tag, so only the first path segment
+  # changes.
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.acrLoginServer
+    targets:
+      - select:
+          kind: Deployment
+        fieldPaths: &image
+          - spec.template.spec.containers.[name=app].image
+        options: &first-segment
+          delimiter: /
+          index: 0
+      - select:
+          kind: StatefulSet
+        fieldPaths: *image
+        options: *first-segment
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.serviceBusNamespace
+    targets:
+      - select:
+          kind: Deployment
+          name: order-service
+        fieldPaths: &servicebus-namespace
+          - spec.template.spec.containers.[name=app].env.[name=SERVICEBUS_NAMESPACE].value
+      - select:
+          kind: Deployment
+          name: payment-service
+        fieldPaths: *servicebus-namespace
+      - select:
+          kind: Deployment
+          name: shipping-service
+        fieldPaths: *servicebus-namespace
+      - select:
+          kind: Deployment
+          name: worker
+        fieldPaths: *servicebus-namespace
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.serviceBusQueue
+    targets:
+      - select:
+          kind: Deployment
+          name: order-service
+        fieldPaths: &servicebus-queue
+          - spec.template.spec.containers.[name=app].env.[name=SERVICEBUS_QUEUE].value
+      - select:
+          kind: Deployment
+          name: payment-service
+        fieldPaths: *servicebus-queue
+      - select:
+          kind: Deployment
+          name: shipping-service
+        fieldPaths: *servicebus-queue
+      - select:
+          kind: Deployment
+          name: worker
+        fieldPaths: *servicebus-queue
+  # One client ID per workload identity, keyed in azure.env by the
+  # ServiceAccount's name.
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.order-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: order-service
+        fieldPaths: &client-id
+          - metadata.annotations.[azure.workload.identity/client-id]
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.payment-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: payment-service
+        fieldPaths: *client-id
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.shipping-service
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: shipping-service
+        fieldPaths: *client-id
+  - source:
+      kind: ConfigMap
+      name: azure
+      fieldPath: data.worker
+    targets:
+      - select:
+          kind: ServiceAccount
+          name: worker
+        fieldPaths: *client-id

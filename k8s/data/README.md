@@ -11,12 +11,12 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 | `priorityclass.yaml` | `PriorityClass` | `data-critical` | Lets Postgres and Redis preempt app pods |
 | `postgres/statefulset.yaml` | `StatefulSet` | `postgres` | One replica, volumeClaimTemplate `data`, so the PVC is `data-postgres-0` |
 | `postgres/service.yaml` | `Service` (headless) | `postgres` | `postgres.data.svc.cluster.local:5432` |
-| `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password` |
+| `postgres/external-secret.yaml` | `ExternalSecret` | `postgres-credentials` | Key Vault `postgres-password` into Secret `postgres-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `postgres/pdb.yaml` | `PodDisruptionBudget` | `postgres` | `maxUnavailable: 0` |
 | `postgres/app-role.sql` | `ConfigMap` `postgres-init` | | Creates or updates the `app` role and its password. Run on first start and by every `make data` |
 | `redis/statefulset.yaml` | `StatefulSet` | `redis` | One replica, volumeClaimTemplate `data`, so the PVC is `data-redis-0` |
 | `redis/service.yaml` | `Service` (headless) | `redis` | `redis.data.svc.cluster.local:6379` |
-| `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password` |
+| `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `redis/pdb.yaml` | `PodDisruptionBudget` | `redis` | `maxUnavailable: 0` |
 
 ### Why `k8s/data/<component>`
@@ -35,7 +35,12 @@ There is one folder per namespace and one subfolder per component. Postgres and 
 | Secret in `data` | `postgres-credentials`, key `password` | `redis-credentials`, key `password` |
 | URL | `postgres://app:<password>@postgres.data.svc.cluster.local:5432/orders?sslmode=disable` | `redis://:<password>@redis.data.svc.cluster.local:6379` |
 
-The services and the migration Job run in `apps` and can't read Secrets in `data`. They build their own `DATABASE_URL` or `REDIS_URL` from the same Key Vault secret, with an ExternalSecret template in `apps` (P6-06). The URL is the [compose](../../app/docker-compose.yml) one with the host and password swapped. The server has no TLS, so `sslmode=disable` stays.
+The services and the migration Job run in `apps` and can't read Secrets in `data`. They read the same Key Vault secrets through their own ExternalSecrets in `apps` (P6-06):
+
+- Postgres: `DATABASE_URL` in each service's config has no password, `postgres://app@postgres.data.svc.cluster.local:5432/orders?sslmode=disable`. The password arrives as `PGPASSWORD` from the Secret `<service>-postgres`, and lib/pq reads it from there. The migration Job does the same with `db-migrate`.
+- Redis: api-gateway's `api-gateway-redis` Secret holds the whole `REDIS_URL`, built with an ESO template, since go-redis has no environment fallback.
+
+Those ExternalSecrets sync once and then only on the `force-sync` annotation (`refreshPolicy: OnChange`), so a rotated password reaches the services only when the server already has it. The server's own copies here, `postgres-credentials` and `redis-credentials`, work the same way. Otherwise a `make data`, a `make cluster` or a `redis-0` restart within the hour after a rotation would move the server to the new password while the services still held the old one. See [Rotating a password](#rotating-a-password). The server has no TLS, so `sslmode=disable` stays.
 
 Postgres users:
 
@@ -53,11 +58,62 @@ psql reads the password from `/etc/postgres-credentials/password` inside the pod
 
 ## Rotating a password
 
-The rotation itself is in [keyvault](../../infra/modules/keyvault/README.md#rotate-a-secret): bump the secret's number in persistent and apply. That is a hard cut. Then:
+Next morning there is nothing to do: the new cluster starts from empty disks and reads the current values. Mid-day, the order matters. The server takes the new password first, then the services. Every copy, the server's in `data` and the services' in `apps`, syncs only on `force-sync`, so nothing moves to a new password until you say, and in this order.
 
-- Next morning: nothing to do. The new cluster starts from empty disks and reads the current values.
-- Mid-day, Postgres: wait for ESO to copy the new value into `postgres-credentials`, which takes up to its one-hour `refreshInterval`. To skip the wait, annotate the ExternalSecret, for example `kubectl -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite`. The kubelet updates the mounted file within about a minute. Then run `make data`, whose last step sets the new password on `app` and `postgres` with no restart. Then restart the services once their own ExternalSecrets in `apps` hold the new `DATABASE_URL`. Between the role change and the restart, new connections from the services fail, while open pooled connections carry on.
-- Mid-day, Redis: `requirepass` is read once at start. After ESO refreshes `redis-credentials`, run `kubectl -n data delete pod redis-0`. The pod comes back with the new password and its keys, from the AOF. Then restart api-gateway once its `REDIS_URL` refreshes. Until then its `INCR`s fail, and the gateway ignores the error, so rate limiting is off.
+1. **Change the value in Key Vault.** Bump the secret's number in `generated_secrets` in `infra/persistent/main.tf` and apply persistent ([keyvault](../../infra/modules/keyvault/README.md#rotate-a-secret)). Tahmid runs the apply.
+
+2. **Postgres: give the role the new password.**
+
+   ```bash
+   K="kubectl --context aks-v2-platform"
+   $K -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite
+   $K -n data wait externalsecret/postgres-credentials --for=condition=Ready --timeout=2m
+   # The kubelet refreshes the mounted file within about a minute. Wait until it matches the Secret.
+   until [[ "$($K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
+            "$($K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
+   make data
+   ```
+
+   `make data` runs `app-role.sql`, which sets the new password on `app` and `postgres` with no restart. From here until step 4 finishes, new connections from the services fail. Open pooled connections carry on.
+
+3. **Redis: restart it with the new password.** `requirepass` is read only at startup.
+
+   ```bash
+   $K -n data annotate externalsecret redis-credentials force-sync=$(date +%s) --overwrite
+   $K -n data wait externalsecret/redis-credentials --for=condition=Ready --timeout=2m
+   $K -n data delete pod redis-0
+   $K -n data wait pod/redis-0 --for=condition=Ready --timeout=5m
+   ```
+
+   The pod comes back with the new password and its keys, from the AOF. The running api-gateway pods still hold the old password, so they lose Redis and rate limiting is off until step 4's roll finishes. The gateway ignores the failed `INCR`s and keeps serving.
+
+4. **Sync the copies in `apps`.** Reloader then rolls only the Deployments, and the scheduler StatefulSet, that read each Secret.
+
+   ```bash
+   # After a Postgres rotation: the seven services' Secrets and the migration Job's.
+   for es in order-service-postgres inventory-service-postgres payment-service-postgres \
+             notification-service-postgres shipping-service-postgres dashboard-api-postgres \
+             scheduler-postgres db-migrate; do
+     $K -n apps annotate externalsecret "$es" force-sync=$(date +%s) --overwrite
+   done
+   # After a Redis rotation: api-gateway's REDIS_URL.
+   $K -n apps annotate externalsecret api-gateway-redis force-sync=$(date +%s) --overwrite
+   $K -n apps get externalsecret
+   ```
+
+   A Postgres rotation rolls the seven Postgres users, the scheduler included. A Redis rotation rolls api-gateway only. Wait for them:
+
+   ```bash
+   # After a Postgres rotation.
+   for d in order-service inventory-service payment-service notification-service shipping-service dashboard-api; do
+     $K -n apps rollout status deployment/$d --timeout=10m
+   done
+   $K -n apps rollout status statefulset/scheduler --timeout=10m
+   # After a Redis rotation.
+   $K -n apps rollout status deployment/api-gateway --timeout=10m
+   ```
+
+`jwt-secret` and `shipping-webhook-secret` need none of this. Their ExternalSecrets refresh hourly and Reloader rolls api-gateway or shipping-service on its own ([reloader](../reloader/README.md)).
 
 ## Pod Security
 

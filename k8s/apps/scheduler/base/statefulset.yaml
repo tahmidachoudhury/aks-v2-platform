@@ -1,0 +1,46 @@
+# Runs five jobs on in-process tickers: expiring reservations, cancelling
+# abandoned orders and so on. Its port serves only /livez and /healthz.
+#
+# A one-replica StatefulSet, not a Deployment, so two copies never run. The
+# jobs take no lock and each runs once at startup, so two copies would run
+# every job twice, and expire_reservations would release the same stock
+# twice (ADR Autoscaling). A StatefulSet creates scheduler-0's replacement
+# only once the old pod has gone, on a rollout, a drain, an eviction or a
+# delete. A Deployment's Recreate covers only rollouts. It keeps no state, so
+# it has no volumeClaimTemplates.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+  annotations:
+    # Reloader rolls this StatefulSet when a Secret listed here changes, and
+    # for no other, so rotating one key restarts only the services that
+    # read it.
+    secret.reloader.stakater.com/reload: scheduler-postgres
+spec:
+  # Required by a StatefulSet: the headless Service in service.yaml.
+  serviceName: scheduler
+  # The default RollingUpdate. With one replica it deletes scheduler-0 and
+  # waits for it to go before it creates the new one.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scheduler
+    spec:
+      serviceAccountName: scheduler
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/scheduler
+          ports:
+            - name: http
+              containerPort: 8091
+          envFrom:
+            - configMapRef:
+                name: scheduler
+            - secretRef:
+                name: scheduler-postgres

@@ -104,7 +104,7 @@ The ServiceAccount annotations need them. Decided in P4-05 (#52): they are injec
 
 - Until ArgoCD (P7), the morning `helm upgrade --install` reads the ID from this output and passes it with `--set-string`, as in the [ExternalDNS install](../../../k8s/external-dns/README.md#install).
 - From P7, the argocd root reads each identity with `data "azurerm_user_assigned_identity"` and sets the annotation as a Helm parameter on its Application. That root's state is private, like this output.
-- Our own services (P6-05, #66) need the same for their ServiceAccounts. A Kustomize overlay can't read OpenTofu, so the argocd root would pass the ID to that Application as a Kustomize patch or parameter.
+- Our own services (P6-05, #66) need the same for their ServiceAccounts. A Kustomize overlay can't read OpenTofu, so `make apps` writes the IDs to a gitignored `k8s/apps/dev/azure.env` and a kustomize replacement puts each on its ServiceAccount ([apps](../../../k8s/apps/README.md#values-from-opentofu)). From P7 the argocd root passes them to each Application as a Kustomize patch or parameter.
 
 Why inject rather than commit: ExternalDNS also needs the subscription ID, which must stay out of a public repo, so an injection path is needed anyway. Once it exists, carrying the client ID through it costs nothing, and the rule matches the GitHub identities. Committing would also have been defensible, since a client ID grants nothing on its own.
 

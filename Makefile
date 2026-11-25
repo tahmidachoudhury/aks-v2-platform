@@ -34,12 +34,18 @@ ESO_VERSION := 2.15.0
 TRAEFIK_VERSION := 42.4.1
 CERT_MANAGER_VERSION := v1.21.3
 EXTERNAL_DNS_VERSION := 1.23.0
+RELOADER_VERSION := 2.2.20
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
+PLATFORM_OUT := tofu -chdir=infra/platform output
+
+# The nine services, by their folder in app/services/ and k8s/apps/.
+SERVICES := api-gateway order-service inventory-service payment-service notification-service \
+	shipping-service dashboard-api worker scheduler
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
-	backup restore-drill
+	backup restore-drill reloader images pin-images apps
 .PHONY: migrate
 
 help: ## List the targets
@@ -69,8 +75,9 @@ up: ## Morning: platform, kubeconfig, then every component
 	$(MAKE) cluster
 
 cluster: ## Install every in-cluster component, in order
-	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns data backup
+	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns reloader data backup
 	$(MAKE) migrate
+	$(MAKE) apps
 
 down: ## Evening: destroy platform. The cluster and everything in it go with it
 	tofu -chdir=infra/platform destroy
@@ -128,6 +135,10 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 	  --set-string "domainFilters[0]=$$ZONE" \
 	  --wait --timeout 10m
 
+reloader: ## Reloader: restarts a service when a Secret it names changes
+	$(HELM) upgrade --install reloader reloader --repo https://stakater.github.io/stakater-charts \
+	  --version $(RELOADER_VERSION) --namespace platform -f k8s/reloader/values.yaml --wait --timeout 10m
+
 data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the app role
 	$(KUBECTL) apply -k k8s/data
 	$(KUBECTL) -n data wait externalsecret --all --for=condition=Ready --timeout=2m
@@ -143,9 +154,9 @@ backup: ## Hourly Postgres snapshot CronJob in data, keeping six. Needs make dat
 restore-drill: ## Snapshot Postgres, restore it to a temporary pod, check the rows, clean up
 	CONTEXT=$(CTX) k8s/backup/restore-drill.sh
 
-# Postgres starts empty every morning, so cluster runs this last, after data,
+# Postgres starts empty every morning, so cluster runs this after data,
 # to rebuild the schema. It needs only the public migrate image, no app image.
-# P6 applies the Deployments after it, so a failed migration stops make
+# make apps applies the Deployments after it, so a failed migration stops make
 # before any rollout. ArgoCD runs the same Job as a PreSync hook from P7.
 # See k8s/migrations/README.md.
 # The old Job goes first: a finished Job of the same name would otherwise
@@ -173,3 +184,105 @@ migrate: ## Run pending DB migrations as a Job and wait. Fails if the Job fails
 	  sleep 5; \
 	done; \
 	echo "job/db-migrate still running after 350s." >&2; exit 1
+
+# Each image is tagged with the first 12 characters of the last commit that
+# touched its folder, so the tag names exactly what was built and the dev
+# overlays can pin it in Git. Tags are immutable: a tag already in ACR is
+# never rebuilt, and each tag is locked with write-enabled false, so a later
+# push or delete of it fails. Whether a tag exists comes from listing the
+# repositories and the service's tags, calls that succeed when nothing is
+# there, so any az error stops make rather than starting a build.
+# Uncommitted changes in a service folder stop the build too: the tag would
+# name a commit that doesn't hold them. Every az call names the persistent
+# root's subscription, which holds the registry, so the az default doesn't
+# matter. See k8s/apps/README.md.
+images: ## Build each service into ACR with az acr build. Skips tags already there
+	set -euo pipefail; \
+	ACR=$$($(PERSISTENT_OUT) -raw acr_name) \
+	  || { echo "No acr_name in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	[[ "$$ACR" =~ ^[a-z0-9]{5,50}$$ ]] || { echo "ACR name '$$ACR' is not a registry name." >&2; exit 1; }; \
+	SUB=$$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $$2; exit}' infra/persistent/terraform.tfvars); \
+	[[ "$$SUB" =~ ^[0-9a-f-]{36}$$ ]] || { echo "No subscription_id in infra/persistent/terraform.tfvars, the root that holds the registry." >&2; exit 1; }; \
+	REPOS=$$(az acr repository list --subscription "$$SUB" --name "$$ACR" -o tsv) \
+	  || { echo "Could not list the repositories in $$ACR." >&2; exit 1; }; \
+	for svc in $(SERVICES); do \
+	  DIR=app/services/$$svc; \
+	  if ! git diff --quiet HEAD -- "$$DIR" || [[ -n "$$(git ls-files --others --exclude-standard -- "$$DIR")" ]]; then \
+	    echo "$$DIR has uncommitted changes. Commit them first, so the tag names what is built." >&2; exit 1; \
+	  fi; \
+	  TAG=$$(git log -1 --format=%H -- "$$DIR" | cut -c1-12); \
+	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches $$DIR." >&2; exit 1; }; \
+	  TAGS=; \
+	  if grep -qx "$$svc" <<<"$$REPOS"; then \
+	    TAGS=$$(az acr repository show-tags --subscription "$$SUB" --name "$$ACR" --repository "$$svc" -o tsv) \
+	      || { echo "Could not list the tags of $$svc in $$ACR." >&2; exit 1; }; \
+	  fi; \
+	  if grep -qx "$$TAG" <<<"$$TAGS"; then \
+	    echo "$$svc:$$TAG is already in $$ACR"; \
+	  else \
+	    az acr build --subscription "$$SUB" --registry "$$ACR" --image "$$svc:$$TAG" --platform linux/amd64 "$$DIR"; \
+	  fi; \
+	  az acr repository update --subscription "$$SUB" --name "$$ACR" --image "$$svc:$$TAG" --write-enabled false >/dev/null; \
+	done
+
+# Offline. Sets newTag in each dev overlay to the tag make images builds,
+# with sed so the overlay's comments survive (kustomize edit drops them).
+# Commit the result.
+pin-images: ## Pin each dev overlay to its service's current image tag. Edits Git
+	set -euo pipefail; \
+	for svc in $(SERVICES); do \
+	  TAG=$$(git log -1 --format=%H -- "app/services/$$svc" | cut -c1-12); \
+	  [[ "$$TAG" =~ ^[0-9a-f]{12}$$ ]] || { echo "No commit touches app/services/$$svc." >&2; exit 1; }; \
+	  F=k8s/apps/$$svc/overlays/dev/kustomization.yaml; \
+	  sed -E "s/^(    newTag: ).*/\1$$TAG/" "$$F" > "$$F.tmp"; \
+	  mv "$$F.tmp" "$$F"; \
+	  grep -qx "    newTag: $$TAG" "$$F" || { echo "$$F has no newTag line to pin. Check its images entry." >&2; exit 1; }; \
+	  echo "$$svc: $$TAG"; \
+	done
+
+# The services go in after the migration, so a failed migration stops make
+# before any rollout. A StatefulSet whose pod never turned Ready keeps that
+# pod even after the template is fixed, so if scheduler-0 is unready and from
+# an older revision than the StatefulSet wants, apps deletes it once and the
+# controller recreates it from the current template. It never touches a
+# Ready pod, a pod already going, or a pod whose revision matches.
+# azure.env carries the values that stay out of Git: the registry, the
+# Service Bus namespace and queue, and the workload identities' client IDs.
+# Every value is read and checked before anything is written. See
+# k8s/apps/README.md.
+apps: ## The nine services in apps. IDs come from tofu output. Waits for every rollout
+	set -euo pipefail; \
+	IDS=$$($(PERSISTENT_OUT) -json workload_identity_client_ids) \
+	  || { echo "No workload_identity_client_ids in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	ACR=$$($(PERSISTENT_OUT) -raw acr_login_server) \
+	  || { echo "No acr_login_server in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	SB=$$($(PLATFORM_OUT) -raw servicebus_fqdn) \
+	  || { echo "No servicebus_fqdn in the platform outputs. Apply platform first." >&2; exit 1; }; \
+	QUEUE=$$($(PLATFORM_OUT) -raw servicebus_queue_name) \
+	  || { echo "No servicebus_queue_name in the platform outputs. Apply platform first." >&2; exit 1; }; \
+	[[ "$$ACR" =~ ^[a-z0-9]+\.azurecr\.io$$ ]] || { echo "Registry '$$ACR' is not an ACR login server." >&2; exit 1; }; \
+	[[ "$$SB" =~ ^[a-z0-9-]+\.servicebus\.windows\.net$$ ]] || { echo "'$$SB' is not a Service Bus namespace FQDN." >&2; exit 1; }; \
+	[[ "$$QUEUE" =~ ^[A-Za-z0-9._-]+$$ ]] || { echo "'$$QUEUE' is not a queue name." >&2; exit 1; }; \
+	ENV="acrLoginServer=$$ACR"$$'\n'"serviceBusNamespace=$$SB"$$'\n'"serviceBusQueue=$$QUEUE"; \
+	for id in order-service payment-service shipping-service worker; do \
+	  CLIENT_ID=$$(jq -er --arg k "$$id" '.[$$k]' <<<"$$IDS") \
+	    || { echo "No $$id client ID in the persistent outputs." >&2; exit 1; }; \
+	  [[ "$$CLIENT_ID" =~ ^[0-9a-f-]{36}$$ ]] || { echo "Client ID '$$CLIENT_ID' for $$id is not a GUID." >&2; exit 1; }; \
+	  ENV="$$ENV"$$'\n'"$$id=$$CLIENT_ID"; \
+	done; \
+	printf '%s\n' "$$ENV" > k8s/apps/dev/azure.env; \
+	$(KUBECTL) apply -k k8s/apps/dev; \
+	$(KUBECTL) -n apps wait externalsecret --all --for=condition=Ready --timeout=2m; \
+	GEN=$$($(KUBECTL) -n apps get statefulset scheduler -o jsonpath='{.metadata.generation}'); \
+	$(KUBECTL) -n apps wait statefulset/scheduler --for=jsonpath='{.status.observedGeneration}'="$$GEN" --timeout=1m; \
+	WANT=$$($(KUBECTL) -n apps get statefulset scheduler -o jsonpath='{.status.updateRevision}'); \
+	IFS='|' read -r HAVE READY GOING <<<"$$($(KUBECTL) -n apps get pod scheduler-0 --ignore-not-found \
+	  -o jsonpath='{.metadata.labels.controller-revision-hash}|{.status.conditions[?(@.type=="Ready")].status}|{.metadata.deletionTimestamp}')" || true; \
+	if [[ -n "$$WANT" && -n "$$HAVE" && "$$HAVE" != "$$WANT" && "$$READY" != True && -z "$$GOING" ]]; then \
+	  echo "scheduler-0 is an unready pod from an old revision, which a StatefulSet never replaces itself. Deleting it once."; \
+	  $(KUBECTL) -n apps delete pod scheduler-0 --wait=false; \
+	fi; \
+	for svc in $(SERVICES); do \
+	  KIND=deployment; [[ "$$svc" != scheduler ]] || KIND=statefulset; \
+	  $(KUBECTL) -n apps rollout status "$$KIND/$$svc" --timeout=10m; \
+	done

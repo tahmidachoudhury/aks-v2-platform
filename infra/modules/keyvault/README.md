@@ -18,7 +18,7 @@ The list comes from the environment variables in `app/services/` and the [servic
 
 | Secret | Read by | Generated |
 | --- | --- | --- |
-| `postgres-password` | The Postgres StatefulSet, as the `app` user's password. order-service, inventory-service, payment-service, notification-service, shipping-service, scheduler and dashboard-api, inside `DATABASE_URL`, which ESO will build from this value with a template (P6-06) | OpenTofu, ephemeral `random_password` |
+| `postgres-password` | The Postgres StatefulSet, as the `app` user's password. order-service, inventory-service, payment-service, notification-service, shipping-service, scheduler and dashboard-api, and the migration Job, as `PGPASSWORD` beside a `DATABASE_URL` with no password (P6-06) | OpenTofu, ephemeral `random_password` |
 | `jwt-secret` | api-gateway, as `JWT_SECRET`, the HS256 signing key | OpenTofu, ephemeral `random_password` |
 | `shipping-webhook-secret` | shipping-service, as `SHIPPING_WEBHOOK_SECRET`. Carriers send it in `X-Webhook-Secret`, so give them this value | OpenTofu, ephemeral `random_password` |
 | `redis-password` | The Redis StatefulSet, as its `requirepass`. api-gateway, inside `REDIS_URL` | OpenTofu, ephemeral `random_password` |
@@ -47,11 +47,11 @@ az keyvault secret show --vault-name <vault> -n jwt-secret --query value -o tsv
 
 ## Rotate a secret
 
-Bump its number in `generated_secrets` in [`../../persistent/main.tf`](../../persistent/main.tf) and apply. The vault gets a new version of that secret with a fresh random value straight away, and ESO picks it up on its next refresh.
+Bump its number in `generated_secrets` in [`../../persistent/main.tf`](../../persistent/main.tf) and apply. The vault gets a new version of that secret with a fresh random value straight away. ESO picks up `jwt-secret` and `shipping-webhook-secret` within the hour, and Reloader restarts the one service that reads each. `postgres-password` and `redis-password` move only when you force-sync them, server first: follow [Rotating a password](../../../k8s/data/README.md#rotating-a-password).
 
 That is a hard cut, not a zero-downtime rotation. It is fine for `jwt-secret`, which only invalidates sessions. It breaks anything that holds the old value until it changes too:
 
-- `postgres-password` and `redis-password`: the services restart with the new value before the database role has it, and fail auth until someone runs `ALTER ROLE` or `CONFIG SET requirepass`.
+- `postgres-password` and `redis-password`: between the server taking the new password and the services restarting with it, new connections fail. The data runbook keeps that window to a few minutes.
 - `shipping-webhook-secret`: carriers keep sending the old value.
 
 A zero-downtime rotation, as [Secrets delivery](../../../docs/architecture-decisions.md#secrets-delivery) describes, needs two secrets at once (for example `postgres-password-a` and `-b` with a second DB role). This module generates one value per name, so add the second name to `generated_secrets`, move the consumers over, then remove the old one. P9-08 tests this.

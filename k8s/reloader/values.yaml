@@ -1,0 +1,34 @@
+# Stakater Reloader, chart reloader 2.2.20 (Reloader v1.4.24) from
+# https://stakater.github.io/stakater-charts, installed into the platform
+# namespace. Install command and design: README.md.
+
+reloader:
+  # Only workloads that name a Secret in the
+  # secret.reloader.stakater.com/reload annotation: the Deployments and the
+  # scheduler StatefulSet. autoReloadAll stays off,
+  # so a workload restarts only for the Secrets it lists.
+  autoReloadAll: false
+  # Our ConfigMaps carry a hash suffix, so an edit already rolls the pods.
+  ignoreConfigMaps: true
+  # No namespaceSelector: the chart passes it to Reloader wrapped in literal
+  # quotes. Reloader watches every namespace but acts only on workloads that
+  # carry the annotation, and only the services in apps do.
+  # A restart stamps an annotation on the pod template, not an environment
+  # variable, so the container spec stays as Git has it. Reloader's docs
+  # suggest this strategy for GitOps tools such as ArgoCD (P7).
+  reloadStrategy: annotations
+  readOnlyRootFileSystem: true
+  deployment:
+    # The chart sets the pod's securityContext (non-root, RuntimeDefault
+    # seccomp). restricted Pod Security also needs these on the container.
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+    # Small, because the general NodePool is capped at 4 vCPUs.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi

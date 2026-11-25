@@ -1,0 +1,36 @@
+# The public entry point: issues JWTs, rate limits through Redis and proxies
+# to the six HTTP services. Traefik is its only caller.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+  annotations:
+    # Reloader rolls this Deployment when a Secret listed here changes, and
+    # for no other, so rotating one key restarts only the services that
+    # read it.
+    secret.reloader.stakater.com/reload: api-gateway,api-gateway-redis
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway
+    spec:
+      serviceAccountName: api-gateway
+      containers:
+        - name: app
+          image: ACR_LOGIN_SERVER/api-gateway
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: api-gateway
+            - secretRef:
+                name: api-gateway
+            - secretRef:
+                name: api-gateway-redis
