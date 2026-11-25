@@ -304,7 +304,7 @@ make apps
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
+These need a live cluster after `make cluster`. Run them from the repo root. The commands work in bash and zsh. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
 
 ```bash
 SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
@@ -439,37 +439,37 @@ The services' images have no shell, so the tests use `agnhost`, the Kubernetes e
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX"
+K() { kubectl --context "$CTX" "$@"; }
 IMG=registry.k8s.io/e2e-test-images/agnhost:2.33
 cat > /tmp/np-test.json <<'EOF'
 {"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"allowPrivilegeEscalation":false,
  "capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}}
 EOF
-$K get networkpolicy -n apps; $K get networkpolicy -n data
+K get networkpolicy -n apps; K get networkpolicy -n data
 
 # 1. A pod with no allow rule, in apps.
-$K -n apps run np-test --image=$IMG --restart=Never --labels=app.kubernetes.io/name=np-test   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
+K -n apps run np-test --image=$IMG --restart=Never --labels=app.kubernetes.io/name=np-test   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
   "containers":[{"name":"np-test","image":"'$IMG'","args":["pause"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
-$K -n apps wait pod/np-test --for=condition=Ready --timeout=2m
+K -n apps wait pod/np-test --for=condition=Ready --timeout=2m
 for t in postgres.data.svc.cluster.local:5432 redis.data.svc.cluster.local:6379 \
          api-gateway:8080 order-service:8081 dashboard-api:8086; do
-  printf '%s ' "$t"; $K -n apps exec np-test -- /agnhost connect "$t" --timeout=3s --protocol=tcp || true; echo
+  printf '%s ' "$t"; K -n apps exec np-test -- /agnhost connect "$t" --timeout=3s --protocol=tcp || true; echo
 done
-$K -n apps delete pod np-test
+K -n apps delete pod np-test
 
 # 2. From inside a service's pod: what it may and may not reach.
 probe() { # <service> <target> ...
   local rc=0
-  pod=$($K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
+  pod=$(K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
   for t in "$@"; do
     c=np-$RANDOM
     printf '%s -> %s: ' "$pod" "$t"
-    $K -n apps debug "$pod" -q -c "$c" --image=$IMG --profile=restricted --custom=/tmp/np-test.json \
+    K -n apps debug "$pod" -q -c "$c" --image=$IMG --profile=restricted --custom=/tmp/np-test.json \
       --attach -- /agnhost connect "$t" --timeout=3s --protocol=tcp
     # kubectl debug --attach exits 0 whatever the container did. Its exit code is in the pod status.
     code=
     for i in $(seq 20); do
-      code=$($K -n apps get "$pod" -o json | jq -er --arg c "$c" \
+      code=$(K -n apps get "$pod" -o json | jq -er --arg c "$c" \
         '.status.ephemeralContainerStatuses[] | select(.name == $c) | .state.terminated.exitCode') && break
       sleep 1
     done
@@ -483,13 +483,17 @@ probe() { # <service> <target> ...
   done
   return $rc
 }
-probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379
-probe scheduler order-service:8081 inventory-service:8082 payment-service:8083
-probe worker order-service:8081 postgres.data.svc.cluster.local:5432
-probe order-service payment-service:8083 redis.data.svc.cluster.local:6379
+# Each probe returns 1 if any of its targets printed unknown. Collect them, so
+# one failure early on isn't hidden by later probes that pass.
+bad=0
+probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379 || bad=1
+probe scheduler order-service:8081 inventory-service:8082 payment-service:8083 || bad=1
+probe worker order-service:8081 postgres.data.svc.cluster.local:5432 || bad=1
+probe order-service payment-service:8083 redis.data.svc.cluster.local:6379 || bad=1
+[[ $bad == 0 ]] && echo "every probe ran" || echo "FAILED: a target printed unknown and wasn't tested"
 ```
 
-Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. No line may read `unknown`: that means the debug container never ran or never finished within 20 seconds, for example on an image pull failure, and the target wasn't tested. `probe` then returns 1. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
+Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. No line may read `unknown`: that means the debug container never ran or never finished within 20 seconds, for example on an image pull failure, and the target wasn't tested. `probe` then returns 1, and the block ends with `FAILED` instead of `every probe ran`. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
 
 Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
 
@@ -499,24 +503,24 @@ Offline, the settings render as described: run [Validate](#validate) and check t
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX -n apps"
+K() { kubectl --context "$CTX" -n apps "$@"; }
 # 1. Roll two services under load.
-$K rollout restart deploy/api-gateway deploy/order-service
-$K rollout status deploy/api-gateway --timeout=5m
-$K rollout status deploy/order-service --timeout=5m
+K rollout restart deploy/api-gateway deploy/order-service
+K rollout status deploy/api-gateway --timeout=5m
+K rollout status deploy/order-service --timeout=5m
 
 # 2. A broken image: the new pod never turns Ready, the old ones keep serving.
 ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
-$K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
-$K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
-$K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}{"\n"}'
-$K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
+K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
+K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
+K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}{"\n"}'
+K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
   | jq -r '.items[].endpoints[] | [.targetRef.name, .addresses[0], "ready=\(.conditions.ready)"] | @tsv'
-$K rollout undo deploy/payment-service
+K rollout undo deploy/payment-service
 
 # 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
-$K rollout restart deploy/worker
-$K rollout status deploy/worker --timeout=5m
+K rollout restart deploy/worker
+K rollout status deploy/worker --timeout=5m
 # After the load test ends and the worker drains the queue:
 az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
   --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
@@ -529,35 +533,35 @@ Expect the load test to finish with `http_req_failed` at 0% and exit 0 through s
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX"
+K() { kubectl --context "$CTX" "$@"; }
 FIVE='app.kubernetes.io/name in (api-gateway,order-service,inventory-service,payment-service,shipping-service)'
 # 1. Two general nodes, and each of the five on both. Zones are reported, not required.
-$K get nodes -l karpenter.sh/nodepool=general -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
-$K get nodes -o json > /tmp/nodes.json
-$K -n apps get pods -l "$FIVE" -o json | jq -r --slurpfile n /tmp/nodes.json '
+K get nodes -l karpenter.sh/nodepool=general -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
+K get nodes -o json > /tmp/nodes.json
+K -n apps get pods -l "$FIVE" -o json | jq -r --slurpfile n /tmp/nodes.json '
   ($n[0].items | map({key: .metadata.name, value: .metadata.labels["topology.kubernetes.io/zone"]}) | from_entries) as $zone
   | [.items[] | select(.spec.nodeName) | {svc: .metadata.labels["app.kubernetes.io/name"], node: .spec.nodeName, zone: $zone[.spec.nodeName]}]
   | group_by(.svc)[] | ([.[].node] | unique | length) as $h | ([.[].zone] | unique) as $z
   | "\(.[0].svc) nodes: \($h), zones: \($z | length) (\($z | join(" ")))"'
-$K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
+K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
 
 # 2. Drain one general node. The selector leaves postgres-0 and redis-0 in
 # place: their budgets refuse every eviction, so a plain drain would retry
 # them until it timed out.
-$K -n apps get pdb
-NODE=$($K get nodes -l karpenter.sh/nodepool=general -o jsonpath='{.items[0].metadata.name}')
+K -n apps get pdb
+NODE=$(K get nodes -l karpenter.sh/nodepool=general -o jsonpath='{.items[0].metadata.name}')
 # Ready replicas of the five multi-replica services, every second, while the node drains.
 ( for i in $(seq 240); do
-    $K -n apps get deploy api-gateway order-service inventory-service payment-service shipping-service \
+    K -n apps get deploy api-gateway order-service inventory-service payment-service shipping-service \
       -o jsonpath='{range .items[*]}{.metadata.name}={.status.readyReplicas} {end}{"\n"}'; sleep 1
   done > /tmp/ready.log ) &
-$K drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
+K drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
   --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=10m
-$K -n apps get pods -l "$FIVE" -o wide --field-selector=status.phase=Pending
+K -n apps get pods -l "$FIVE" -o wide --field-selector=status.phase=Pending
 wait
 grep -E '=0( |$)|=( |$)' /tmp/ready.log || echo "never zero"
-$K uncordon "$NODE"
-$K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
+K uncordon "$NODE"
+K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
 ```
 
 Expect two `general` nodes, `Standard_D2s_v6` or `Standard_D2nls_v6`, usually in different zones. Each of the five shows `nodes: 2`, and none is `Pending`. It usually shows `zones: 2` too, but `zones: 1` is allowed under the host rule: note which you got. Then each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. While the node is cordoned, the five's pods from it are `Pending`: the cordoned node no longer counts, the node left takes one pod of each, and there is no room for a third ([Disruption and spread](#disruption-and-spread)). After `uncordon` they schedule back and nothing is `Pending`. If the drained node held no data pod, NAP may remove it as empty first. Then the `Pending` pods get a new node within a few minutes, and `uncordon` reports the node not found. Run this with the five at their minimums. Under the load test api-gateway scales to 3 or 4, puts two pods on a node, and the drain waits on its budget.
@@ -570,12 +574,12 @@ Offline, [Validate](#validate) prints each HPA's minimum, maximum and target. Li
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX -n apps"
-$K get hpa
+K() { kubectl --context "$CTX" -n apps "$@"; }
+K get hpa
 # In one terminal: the load test, five minutes of logins and page loads through Traefik.
 make loadtest DURATION=5m RATE=40
 # In another: watch the gateway and dashboard-api scale out, then back after it ends.
-$K get hpa api-gateway dashboard-api -w
+K get hpa api-gateway dashboard-api -w
 ```
 
 Expect seven HPAs at the ADR's minimums and maximums, plus `keda-hpa-worker`. During the load test, api-gateway's CPU passes 70% and it scales towards 4 replicas, and dashboard-api towards 2. About five minutes after the test ends, both return to their minimums. The backends sit behind the gateway's rate limit of 100 requests a minute per client, so a load test from a few pods can't push them hard. That limit is doing its job. KEDA's half of the criterion is in [keda](../keda/README.md#proving-it).
@@ -586,21 +590,21 @@ The worker must be on a spot node first. If it is on `general`, cordon the `gene
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX"
-$K get nodes -L karpenter.sh/capacity-type,karpenter.sh/nodepool
-$K -n apps get pods -o wide -l app.kubernetes.io/name=worker
+K() { kubectl --context "$CTX" "$@"; }
+K get nodes -L karpenter.sh/capacity-type,karpenter.sh/nodepool
+K -n apps get pods -o wide -l app.kubernetes.io/name=worker
 # Only if no worker runs on a spot node:
-$K cordon -l karpenter.sh/nodepool=general
-$K -n apps rollout restart deploy/worker
-$K -n apps rollout status deploy/worker --timeout=10m
-$K uncordon -l karpenter.sh/nodepool=general
+K cordon -l karpenter.sh/nodepool=general
+K -n apps rollout restart deploy/worker
+K -n apps rollout status deploy/worker --timeout=10m
+K uncordon -l karpenter.sh/nodepool=general
 
 # Orders flowing, then evict the spot node.
 make loadtest DURATION=5m &
-NODE=$($K get nodes -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.name}')
+NODE=$(K get nodes -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.name}')
 NRG=$(tofu -chdir=infra/platform output -raw aks_node_resource_group)
 az vm simulate-eviction --subscription "$PLATFORM_SUB" --resource-group "$NRG" --name "$NODE"
-$K get pods -n apps -o wide -l app.kubernetes.io/name=worker -w
+K get pods -n apps -o wide -l app.kubernetes.io/name=worker -w
 wait
 az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
   --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
@@ -613,30 +617,30 @@ Expect every other `apps` pod on an on-demand node. After the eviction, the work
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX -n apps"
-$K get statefulset scheduler -o jsonpath='{.kind} {.spec.replicas}{"\n"}'
+K() { kubectl --context "$CTX" -n apps "$@"; }
+K get statefulset scheduler -o jsonpath='{.kind} {.spec.replicas}{"\n"}'
 # Count scheduler pods that exist, Terminating included, every second, in the background.
-( for i in $(seq 600); do $K get pods -l app.kubernetes.io/name=scheduler --no-headers 2>/dev/null | wc -l; sleep 1; done \
+( for i in $(seq 600); do K get pods -l app.kubernetes.io/name=scheduler --no-headers 2>/dev/null | wc -l; sleep 1; done \
   | sort | uniq -c > /tmp/scheduler-pods.log ) &
 
 # 1. A rollout.
-$K rollout restart statefulset/scheduler
-$K rollout status statefulset/scheduler --timeout=3m
+K rollout restart statefulset/scheduler
+K rollout status statefulset/scheduler --timeout=3m
 # 2. A pod delete.
-$K delete pod scheduler-0
-$K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
+K delete pod scheduler-0
+K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
 # 3. A drain of its node. The selector leaves postgres-0 and redis-0 where they
 # are, since their budgets refuse every eviction.
-NODE=$($K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
+NODE=$(K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
 kubectl --context $CTX drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
   --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=5m
-$K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
+K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
 kubectl --context $CTX uncordon "$NODE"
 
 wait; cat /tmp/scheduler-pods.log
 # One expire_reservations run a minute since the drain.
 sleep 300
-$K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
+K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
 ```
 
 Expect `StatefulSet 1`. The pod count log shows only `0` and `1`, never `2`, even while an old pod is `Terminating`. Each minute since the drain shows one `expire_reservations` run. Each new pod's first run comes at startup, after the old pod stopped.
