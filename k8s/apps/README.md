@@ -459,6 +459,7 @@ $K -n apps delete pod np-test
 
 # 2. From inside a service's pod: what it may and may not reach.
 probe() { # <service> <target> ...
+  local rc=0
   pod=$($K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
   for t in "$@"; do
     c=np-$RANDOM
@@ -472,8 +473,15 @@ probe() { # <service> <target> ...
         '.status.ephemeralContainerStatuses[] | select(.name == $c) | .state.terminated.exitCode') && break
       sleep 1
     done
-    [[ "$code" == 0 ]] && echo ok || echo "blocked (exit $code)"
+    # Only a numeric exit code is a verdict. Empty or null means the container
+    # never ran or never finished, so the target wasn't tested.
+    case "$code" in
+      0) echo ok ;;
+      '' | *[!0-9]*) echo "unknown (exit ${code:-none})"; rc=1 ;;
+      *) echo "blocked (exit $code)" ;;
+    esac
   done
+  return $rc
 }
 probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379
 probe scheduler order-service:8081 inventory-service:8082 payment-service:8083
@@ -481,7 +489,7 @@ probe worker order-service:8081 postgres.data.svc.cluster.local:5432
 probe order-service payment-service:8083 redis.data.svc.cluster.local:6379
 ```
 
-Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
+Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. No line may read `unknown`: that means the debug container never ran or never finished within 20 seconds, for example on an image pull failure, and the target wasn't tested. `probe` then returns 1. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
 
 Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
 
