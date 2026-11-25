@@ -240,7 +240,8 @@ The budget blocks every planned move of these pods, not just consolidation:
 The cluster lives for one day, so upgrades and drift rarely meet it, and an unplanned restart of the only database costs more. When one of them is stuck on a `data` pod, move the pod by hand:
 
 ```bash
-kubectl -n data delete pod postgres-0   # or redis-0
+# Or redis-0, if that is the pod the drain waits on.
+kubectl -n data delete pod postgres-0
 ```
 
 The node is already cordoned, so the StatefulSet recreates the pod on another node and the drain completes. For a planned drain, delete the pod first and then drain the node.

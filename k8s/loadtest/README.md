@@ -36,7 +36,8 @@ The day-to-day certificate is the staging one, which k6 doesn't trust, so the sc
 Needs `make cluster` done and the Ingress serving. From the repo root:
 
 ```bash
-make loadtest                     # 5 minutes, 10 page loads and logins a second per pod
+# 5 minutes, 10 page loads and logins a second per pod.
+make loadtest
 make loadtest DURATION=10m RATE=40
 ```
 

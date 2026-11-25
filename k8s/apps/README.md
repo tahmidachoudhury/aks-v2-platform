@@ -170,7 +170,7 @@ The same case can meet `make apps` at bring-up. If `platform` and `data` fill no
 
 This works only if B has room for what moves, which it does whenever `ScheduleAnyway` would have fitted the five there. If the two nodes can't hold the requests between them, no placement helps: lower a request or a quota. Deleting node A instead should also end with room, but it moves Postgres and Redis too, and NAP's drain waits on their budgets ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)). Neither path has been tried on a live cluster yet.
 
-NAP drift also can't replace a `general` node while both exist, as far as upstream Karpenter's source shows. Drift plans a replacement before it drains, and leaves the drifted node out of that plan, so a 2 vCPU replacement fits the limit on paper ([disruption/helpers.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/helpers.go#L62-L70)). The launch then checks only that the pool isn't already over its limit, and 4 of 4 isn't ([provisioner.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/provisioning/provisioner.go#L495-L504), [nodepool.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/apis/v1/nodepool.go#L196-L208)). So NAP asks Azure for a third 2 vCPU node while all 10 of the subscription's standard vCPUs are in use: 6 on the system pool, 4 on `general`. Expect the launch to fail on quota. When the failed replacement is deleted, NAP untaints the drifted node and backs off drift before it tries again ([queue.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L240-L246), [L163-L187](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L163-L187)). It can't drift the node out without a replacement either, since the five's pods on it can't move to a node that already has one of theirs. Drift comes from a change to the NodePool or AKSNodeClass, including a new node image. To move a node onto the new spec by hand, one at a time, `kubectl cordon` it and `kubectl delete nodeclaim` its NodeClaim. NAP drains it, the five's pods from it wait `Pending`, and once the VM is gone the limit has room and NAP starts a new node under the current spec for them. If the drain waits on `postgres-0` or `redis-0`, delete that pod as [data](../data/README.md#scheduling-off-spot-and-safe-to-move) describes. This is from the source, not yet seen live.
+NAP drift also can't replace a `general` node while both exist, as far as upstream Karpenter's source shows. Drift plans a replacement before it drains, and leaves the drifted node out of that plan, so a 2 vCPU replacement fits the limit on paper ([disruption/helpers.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/helpers.go#L62-L70)). The launch then checks only that the pool isn't already over its limit, and 4 of 4 isn't ([provisioner.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/provisioning/provisioner.go#L495-L504), [nodepool.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/apis/v1/nodepool.go#L196-L208)). So NAP asks Azure for a third 2 vCPU node while all 10 of the subscription's standard vCPUs are in use: 6 on the system pool, 4 on `general`. Expect the launch to fail on quota. When the failed replacement is deleted, NAP untaints the drifted node and tries again on a later disruption pass ([queue.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L240-L246), [L163-L187](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L163-L187)), with at most a short pause while the failed offering is marked unavailable. Upstream's drift back-off sits behind the `NodePoolDriftBackoff` feature gate, Alpha and off by default ([options.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/operator/options/options.go#L161-L168)). While each attempt is in flight, the drifted node carries the `karpenter.sh/disrupted:NoSchedule` taint, so under `nodeTaintsPolicy: Honor` it drops out as a domain. The other node is then the only one, and new pods of the five, from an HPA scale-out or a rollout surge, wait `Pending` as they do during a drain. It can't drift the node out without a replacement either, since the five's pods on it can't move to a node that already has one of theirs. Drift comes from a change to the NodePool or AKSNodeClass, including a new node image. To move a node onto the new spec by hand, one at a time, `kubectl cordon` it and `kubectl delete nodeclaim` its NodeClaim. NAP drains it, the five's pods from it wait `Pending`, and once the VM is gone the limit has room and NAP starts a new node under the current spec for them. If the drain waits on `postgres-0` or `redis-0`, delete that pod as [data](../data/README.md#scheduling-off-spot-and-safe-to-move) describes. This is from the source, not yet seen live.
 
 ## Autoscaling
 
@@ -306,7 +306,8 @@ While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 
 `make cluster` runs these after `make migrate`, so a failed migration stops `make` before any service rolls out:
 
 ```bash
-make reloader   # before make data, in the first line of make cluster
+# make reloader runs before make data, in the first line of make cluster.
+make reloader
 make apps
 ```
 
@@ -314,7 +315,7 @@ make apps
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root. The commands work in bash and zsh. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
+These need a live cluster after `make cluster`. Run them from the repo root. The commands work in bash, and in zsh with `setopt interactivecomments`, which oh-my-zsh sets. Without it, zsh reads each `#` line as a command, and an apostrophe in a comment opens a quote that swallows the lines after it. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
 
 ```bash
 SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
@@ -356,7 +357,7 @@ kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
 kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
   [.metadata.labels["app.kubernetes.io/name"], ([.spec.containers[0].volumeMounts[]?.mountPath] | join(","))] | @tsv' | sort -u
 
-# Each sees its own client ID (no value printed, only a match per service).
+# Each sees its own client ID. No value is printed, only a match per service.
 for svc in order-service payment-service shipping-service worker; do
   want=$(tofu -chdir=infra/persistent output -json workload_identity_client_ids | jq -r --arg s $svc '.[$s]')
   got=$(kubectl --context $CTX -n apps get pod -l app.kubernetes.io/name=$svc -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="AZURE_CLIENT_ID")].value}')
@@ -468,7 +469,8 @@ done
 K -n apps delete pod np-test
 
 # 2. From inside a service's pod: what it may and may not reach.
-probe() { # <service> <target> ...
+# Usage: probe SERVICE TARGET...
+probe() {
   local rc=0
   pod=$(K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
   for t in "$@"; do
@@ -487,7 +489,7 @@ probe() { # <service> <target> ...
     # never ran or never finished, so the target wasn't tested.
     case "$code" in
       0) echo ok ;;
-      '' | *[!0-9]*) echo "unknown (exit ${code:-none})"; rc=1 ;;
+      '' | *[^0-9]*) echo "unknown (exit ${code:-none})"; rc=1 ;;
       *) echo "blocked (exit $code)" ;;
     esac
   done
