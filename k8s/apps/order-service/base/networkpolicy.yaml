@@ -1,0 +1,59 @@
+# What this service may talk to. default-deny in k8s/namespaces blocks the
+# rest, and allow-dns there lets every pod reach CoreDNS.
+# In: api-gateway, and the scheduler, which cancels abandoned orders here.
+# Out: Postgres, and Azure for its identity and Service Bus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-service
+  labels:
+    app.kubernetes.io/name: order-service
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: order-service
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: scheduler
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    # Postgres, for the orders database.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Entra ID for the workload identity token exchange, and Service Bus over
+    # AMQP (5671, 5672) or WebSockets (443). Both are public Azure endpoints,
+    # so this allows the internet on those ports, minus private ranges. FQDN
+    # rules would need Advanced Container Networking Services, a paid add-on.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 5671
+        - protocol: TCP
+          port: 5672

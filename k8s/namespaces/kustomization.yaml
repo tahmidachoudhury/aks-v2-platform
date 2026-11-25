@@ -7,3 +7,5 @@ resources:
   - quota-apps.yaml
   - quota-data.yaml
   - quota-platform.yaml
+  - networkpolicy-apps.yaml
+  - networkpolicy-data.yaml

@@ -18,6 +18,8 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 | `redis/service.yaml` | `Service` (headless) | `redis` | `redis.data.svc.cluster.local:6379` |
 | `redis/external-secret.yaml` | `ExternalSecret` | `redis-credentials` | Key Vault `redis-password` into Secret `redis-credentials`, key `password`. Syncs once, then only on `force-sync` |
 | `redis/pdb.yaml` | `PodDisruptionBudget` | `redis` | `maxUnavailable: 0` |
+| `postgres/networkpolicy.yaml` | `NetworkPolicy` | `postgres` | In: the seven Postgres users and `db-migrate` from `apps`, on 5432. Out: nothing |
+| `redis/networkpolicy.yaml` | `NetworkPolicy` | `redis` | In: api-gateway from `apps`, on 6379. Out: nothing |
 
 ### Why `k8s/data/<component>`
 
@@ -114,6 +116,12 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    ```
 
 `jwt-secret` and `shipping-webhook-secret` need none of this. Their ExternalSecrets refresh hourly and Reloader rolls api-gateway or shipping-service on its own ([reloader](../reloader/README.md)).
+
+## NetworkPolicies
+
+`data` denies all traffic by default ([namespaces](../namespaces/README.md#networkpolicies)). Postgres lets in only the seven services that use `orders` and the migration Job, all in `apps`, by their `app.kubernetes.io/name`. Redis lets in only api-gateway. Neither connects out.
+
+Nothing else in `data` needs the pod network to reach them. `make data`, the restore drill and the acceptance tests below run `psql` and `redis-cli` through `kubectl exec`, which goes through the kubelet. `psql -h postgres.data.svc.cluster.local` from inside `postgres-0` resolves to the pod's own address and never leaves it. The snapshot CronJob talks only to the API server, through its own policy in [backup](../backup/README.md).
 
 ## Pod Security
 

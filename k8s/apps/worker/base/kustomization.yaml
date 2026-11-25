@@ -4,6 +4,7 @@ namespace: apps
 resources:
   - serviceaccount.yaml
   - deployment.yaml
+  - networkpolicy.yaml
 
 components:
   - ../../components/service

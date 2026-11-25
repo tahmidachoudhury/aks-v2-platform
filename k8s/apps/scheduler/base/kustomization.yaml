@@ -6,6 +6,7 @@ resources:
   - external-secret.yaml
   - statefulset.yaml
   - service.yaml
+  - networkpolicy.yaml
 
 components:
   - ../../components/service

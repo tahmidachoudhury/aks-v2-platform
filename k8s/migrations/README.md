@@ -11,6 +11,7 @@ Filled by P5-04 (#58) and P5-05 (#59).
 | `external-secret.yaml` | `ExternalSecret` | `db-migrate` | Copies Key Vault `postgres-password`, the `app` role's password, into the Secret `db-migrate`, key `PGPASSWORD`. Pods in `apps` can't read `postgres-credentials` in `data`. Syncs once, then only on `force-sync`, like the services' copies ([data](../data/README.md#rotating-a-password)) |
 | `kustomization.yaml` | `ConfigMap` (generated) | `db-migrate` | Every file in `sql/`, mounted into the Job at `/migrations` |
 | `job.yaml` | `Job` | `db-migrate` | Runs `migrate up` once and exits |
+| `networkpolicy.yaml` | `NetworkPolicy` | `db-migrate` | Out to Postgres on 5432 only. `apps` denies everything else ([namespaces](../namespaces/README.md#networkpolicies)). A PreSync hook in P7, a wave before the Job, so it exists before the Job's pod starts |
 
 The SQL ships in a ConfigMap, not an image, so a migration needs no CI build or registry push. A ConfigMap holds up to 1 MiB, far more than this schema needs. The ConfigMap's name has no hash suffix. The Job is recreated on every run, so it always mounts the current SQL. From P7, hashed names would pile up, since ArgoCD never prunes hook resources.
 

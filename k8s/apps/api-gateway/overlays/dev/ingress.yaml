@@ -1,0 +1,34 @@
+# The one public way in: every path on the zone apex goes to api-gateway,
+# which serves the dashboard page at / (proxied from dashboard-api), /auth/*,
+# /api/* and the carriers' /api/shipping/webhook. ExternalDNS writes the A
+# record from this host, and cert-manager orders the certificate.
+#
+# letsencrypt-staging day to day, as the TLS ADR and k8s/cert-manager rule:
+# production allows five certificates for this name a week, and every
+# morning's cluster orders a new one. Switch to production only for a demo
+# or grading run (README.md, Ingress). The next make apps switches back.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - azure.order-fulfilment.tahmidchoudhury.uk
+      secretName: api-gateway-tls
+  rules:
+    - host: azure.order-fulfilment.tahmidchoudhury.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  name: http

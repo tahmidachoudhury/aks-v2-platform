@@ -1,0 +1,44 @@
+# Who may connect to Postgres: the seven services that use the orders
+# database and the migration Job, all in apps. default-deny in
+# k8s/namespaces blocks everyone else, including apps pods without one of
+# these names. Postgres itself connects to nothing.
+#
+# Nothing in data needs a rule here: the snapshot CronJob talks only to the
+# API server, and make data, the restore drill and the acceptance tests reach
+# Postgres through kubectl exec, which doesn't cross the pod network. psql -h
+# from inside postgres-0 stays inside the pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: apps
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - order-service
+                  - inventory-service
+                  - payment-service
+                  - notification-service
+                  - shipping-service
+                  - dashboard-api
+                  - scheduler
+                  - db-migrate
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress: []

@@ -12,6 +12,7 @@ Filled by P4-07 (#54).
 | `namespace-data.yaml` | `Namespace` | `data` | Postgres and Redis |
 | `namespace-platform.yaml` | `Namespace` | `platform` | Traefik, cert-manager, ExternalDNS and External Secrets |
 | `quota-<namespace>.yaml` | `ResourceQuota`, `LimitRange` | The namespace's name | Caps the namespace and gives containers default requests |
+| `networkpolicy-<namespace>.yaml` | `NetworkPolicy` | `default-deny`, `allow-dns` | `apps` and `data` only. Blocks all traffic in and out, then lets every pod reach CoreDNS |
 
 ## Who owns the namespaces
 
@@ -60,6 +61,14 @@ helm template <release> <chart> -n platform -f <values> \
 ```
 
 Pods that break `restricted` fail with `violates PodSecurity "restricted:latest"`. Workload objects only warn. If a chart can't comply, set its security context values. Lower a namespace to `baseline` only if that fails, and record why here.
+
+## NetworkPolicies
+
+`apps` and `data` start from default deny, added by P6-08 (#69). `default-deny` selects every pod and lists both directions with no rules, so nothing gets in or out. `allow-dns` lets every pod reach CoreDNS (`k8s-app: kube-dns` in `kube-system`) on 53, UDP and TCP. Every other path is an allow rule next to the workload that needs it: each service's base in [apps](../apps/README.md#networkpolicies), Postgres and Redis in [data](../data/README.md#networkpolicies), the snapshot CronJob in [backup](../backup/README.md) and the migration Job in [migrations](../migrations/README.md).
+
+`platform` has no policy yet, so its components talk freely. That is a follow-up.
+
+They live here, not with the workloads, because they belong to the namespace: `make namespaces` applies them each morning before anything runs in it. Cilium enforces them.
 
 ## Quotas
 

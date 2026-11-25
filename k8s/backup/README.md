@@ -10,6 +10,7 @@ Filled by P5-06 (#60) and P5-07 (#61). It builds on the `csi-azuredisk-vsc` Volu
 | --- | --- | --- | --- |
 | `rbac.yaml` | `ServiceAccount`, `Role`, `RoleBinding` | `postgres-snapshot` | Create, get, list, watch and delete VolumeSnapshots in `data`. Nothing else |
 | `cronjob.yaml` | `CronJob` | `postgres-snapshot` | Runs `snapshot.sh` on the hour |
+| `networkpolicy.yaml` | `NetworkPolicy` | `postgres-snapshot` | Out to 443 only, for the API server. `data` denies everything else ([namespaces](../namespaces/README.md#networkpolicies)) |
 | `snapshot.sh` | `ConfigMap` (generated) | `postgres-snapshot-<hash>` | Snapshot `data-postgres-0`, wait until it is ready, prune to the newest six ready snapshots |
 | `restore-drill.sh` | Script, run locally | | The P5-06 restore drill, run by `make restore-drill` |
 
