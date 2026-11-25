@@ -307,7 +307,7 @@ Prices checked on 19 November 2026, UK South, from the [Azure Retail Prices API]
 
 **Encryption at host on our sizes**
 
-`az vm list-skus` reports `EncryptionAtHostSupported = True` in UK South for every size the cluster uses: `Standard_D2nls_v6` on the system pool, and `Standard_D2s_v6`, `Standard_D4s_v6`, `Standard_D2nls_v6` and `Standard_D4nls_v6` in the Node Auto Provisioning pools. Node Auto Provisioning has supported both encryption at host and DES since February 2026. The `EncryptionAtHost` feature shows `NotRegistered` on this subscription. Registering it is a one-off, subscription-wide step, in the same spirit as `resource_provider_registrations = "none"`, so it stays manual.
+`az vm list-skus` reports `EncryptionAtHostSupported = True` in UK South for every size the cluster uses: `Standard_D2nls_v6` on the system pool, and `Standard_D2s_v6` and `Standard_D2nls_v6` in the Node Auto Provisioning pools. `Standard_D4s_v6` and `Standard_D4nls_v6` reported the same, but `general` no longer offers them since P6-04. Node Auto Provisioning has supported both encryption at host and DES since February 2026. The `EncryptionAtHost` feature shows `NotRegistered` on this subscription. Registering it is a one-off, subscription-wide step, in the same spirit as `resource_provider_registrations = "none"`, so it stays manual.
 
 **Consequences / trade-offs**
 

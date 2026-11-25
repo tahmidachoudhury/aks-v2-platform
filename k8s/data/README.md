@@ -261,7 +261,7 @@ There is one replica of each, so a zone spread constraint has nothing to spread.
 | --- | --- | --- |
 | Where the disk lives | Copied synchronously across the three zones | One zone |
 | PV node affinity | No single-zone term | `topology.disk.csi.azure.com/zone In [uksouth-N]` |
-| The pod moves to another zone | The disk detaches and attaches to the new node. The pod starts with its data after about a minute | The scheduler places the pod only in the disk's zone. NAP creates a node there if none has room. If the zone is down, or NAP can't get the size there (zone 1 lacks `D2s_v6` and `D4s_v6`), the pod stays `Pending` |
+| The pod moves to another zone | The disk detaches and attaches to the new node. The pod starts with its data after about a minute | The scheduler places the pod only in the disk's zone. NAP creates a node there if none has room. If the zone is down, or NAP can't get the size there (zone 1 lacks `D2s_v6`), the pod stays `Pending` |
 | A zone outage | The disk is still readable from the other two zones | The data is out of reach until the zone returns |
 | Cost, 20Gi billed as 32 GiB | About $9.58 a month | About $6.39 a month |
 
