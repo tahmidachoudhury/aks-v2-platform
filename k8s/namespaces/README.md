@@ -88,7 +88,11 @@ Only the `general` NodePool counts here. `spot` takes only pods that tolerate ev
 
 The quotas total 2,500m. If all three namespaces use their full CPU quota and nothing runs on spot, demand is about 60m more than the two nodes hold. The quota admits the last pod or two, but they stay `Pending`. `general` offers no 4 vCPU size, which would have fitted, because the five multi-replica services in `apps` need two nodes ([node-pools](../node-pools/README.md#sizes-and-limits)). A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
 
-Memory depends on the size Karpenter picks. `Standard_D2s_v6` has 8 GiB per 2 vCPUs. With two of those, `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. `Standard_D2nls_v6` has half that memory and is the only size in zone 1. With one of each, pods go `Pending` on memory before CPU.
+Memory depends on the sizes Karpenter picks. `Standard_D2s_v6` has 8 GiB and `Standard_D2nls_v6` 4 GiB. AKS keeps a quarter of each node's memory and a 100Mi eviction threshold ([node resource reservations](https://learn.microsoft.com/en-us/azure/aks/node-resource-reservations)), and the DaemonSets take a little more. So `general` holds about 11 GiB for pods on two `Standard_D2s_v6`, about 8 GiB on one of each, and roughly 5.5 GiB on two `Standard_D2nls_v6`.
+
+Today's requests come to about 3 GiB with every service at its HPA maximum: 1,824Mi in `apps` ([apps](../apps/README.md#quotas)), 576Mi in `data` for Postgres and Redis, and 672Mi in `platform`. That fits all three shapes, and leaves about 2.5 GiB for ArgoCD even on two `Standard_D2nls_v6`. The quotas admit 8 GiB of requests plus ArgoCD's, though, and only two `Standard_D2s_v6` hold that. On one of each, or two `Standard_D2nls_v6`, pods go `Pending` on memory before CPU as the namespaces fill towards their quotas.
+
+Karpenter takes `Standard_D2s_v6` where it can, since it is cheaper, but zone 1 offers only `Standard_D2nls_v6` ([node-pools](../node-pools/README.md#sizes-and-limits)). One of each is common, since the zone preference can steer the second node into zone 1. Two `Standard_D2nls_v6` needs both nodes in zone 1, or no `Standard_D2s_v6` capacity in zones 2 and 3.
 
 ### Sizes
 

@@ -21,7 +21,7 @@ The quota sets the limits. UK South allows the subscription 10 standard vCPUs an
 | `general` | On-demand | `Standard_D2s_v6`, `Standard_D2nls_v6` | 4 | Two 2 vCPU nodes |
 | `spot` | Spot | `Standard_D2s_v6`, `Standard_D2nls_v6` | 3 | One 2 vCPU node |
 
-All the sizes are D family, which has quota. The subscription can't run D2s_v6 in zone 1, so NAP uses D2nls_v6 there. The DSv4 family is blocked in the region, so it isn't listed. Karpenter picks the cheapest size that fits the pending pods, usually `Standard_D2s_v6`.
+All the sizes are D family, which has quota. The subscription can't run D2s_v6 in zone 1, so NAP uses D2nls_v6 there. The DSv4 family is blocked in the region, so it isn't listed. Karpenter picks the cheapest size that fits the pending pods. That is `Standard_D2s_v6` in zones 2 and 3, at £0.088 an hour on demand against £0.1007 for `Standard_D2nls_v6`, and £0.0155 against £0.0177 on spot (Linux retail prices for UK South, checked 25 November 2026). In zone 1 it is `Standard_D2nls_v6`, the only size there.
 
 `general` offers no 4 vCPU size, so its limit always holds two nodes, which five services in `apps` require ([apps](../apps/README.md#disruption-and-spread)). A 4 vCPU node uses the whole limit by itself, so with one there can never be a second `general` node. With `Standard_D4s_v6` on offer, the first node in the P6 live run took the whole limit, and a second node never came up. Offering a 4 vCPU size next to the 2 vCPU ones isn't the problem in itself: Karpenter subtracts the largest size on offer from the remaining limit only while it plans NodeClaims within one scheduling pass, and counts a node at its real size once it launches.
 
