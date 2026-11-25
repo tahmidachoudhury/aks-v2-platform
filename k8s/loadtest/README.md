@@ -47,15 +47,15 @@ It deletes any earlier `loadtest` Job and its pods, writes `loadtest-settings`, 
 The per-client rate limit only stays out of the way if the gateway sees three addresses. While a run is going, list the counters in Redis and the k6 pods' addresses:
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K -n data exec redis-0 -- redis-cli --scan --pattern 'rate:*'
-$K -n default get pods -l app.kubernetes.io/name=loadtest -o wide
+K() { kubectl --context aks-v2-platform "$@"; }
+K -n data exec redis-0 -- redis-cli --scan --pattern 'rate:*'
+K -n default get pods -l app.kubernetes.io/name=loadtest -o wide
 ```
 
 Expect three `rate:<address>` keys, one for each k6 pod's IP. If you see a single address instead, such as a node's IP or Traefik's public IP, the traffic went out through the Azure load balancer and came back source-NATed. Then all three pods share one counter, the orders hit 429 past 100 a minute, and the run is invalid. Run it again aimed at Traefik's in-cluster address. The host name, and so the TLS name and the Ingress rule, stay the same:
 
 ```bash
-make loadtest TARGET_IP=$($K -n platform get svc traefik -o jsonpath='{.spec.clusterIP}')
+make loadtest TARGET_IP=$(K -n platform get svc traefik -o jsonpath='{.spec.clusterIP}')
 ```
 
 and check the keys again.

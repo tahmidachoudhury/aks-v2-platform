@@ -69,17 +69,17 @@ P6-09 (#70): KEDA scales the worker on queue depth. This needs a live cluster af
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX"
-$K -n platform get pods -l app.kubernetes.io/name=keda-operator
-$K -n apps get scaledobject worker
-$K -n apps get hpa keda-hpa-worker
+K() { kubectl --context "$CTX" "$@"; }
+K -n platform get pods -l app.kubernetes.io/name=keda-operator
+K -n apps get scaledobject worker
+K -n apps get hpa keda-hpa-worker
 
 # Hold the worker at zero so a backlog builds, then let KEDA see it.
-$K -n apps annotate scaledobject worker autoscaling.keda.sh/paused-replicas=0 --overwrite
+K -n apps annotate scaledobject worker autoscaling.keda.sh/paused-replicas=0 --overwrite
 make loadtest DURATION=2m
-$K -n apps annotate scaledobject worker autoscaling.keda.sh/paused-replicas-
-$K -n apps get deploy worker -w
-$K -n platform logs deploy/keda-operator --since=10m | grep -iE 'unauthorized|forbidden|AADSTS|401|403' || echo "no auth errors"
+K -n apps annotate scaledobject worker autoscaling.keda.sh/paused-replicas-
+K -n apps get deploy worker -w
+K -n platform logs deploy/keda-operator --since=10m | grep -iE 'unauthorized|forbidden|AADSTS|401|403' || echo "no auth errors"
 ```
 
 Expect the ScaledObject `READY True` and `ACTIVE True` once messages wait, and `keda-hpa-worker` with `MAXPODS 5`. About 390 messages wait when the pause lifts, and one worker drains them in about 20 seconds, inside KEDA's 30-second polling interval. So the scale-out often arrives after the backlog has gone: the worker may go towards 5 replicas for a few minutes, or stay at 1. What proves the trigger is `ACTIVE True` while messages wait, and `keda-hpa-worker`'s target rising above 5 per replica. If it scaled out, it returns to 1 replica after the HPA's 300-second scale-down stabilisation window. `no auth errors` shows `id-keda` read the queue.

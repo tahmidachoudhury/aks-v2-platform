@@ -67,12 +67,12 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 2. **Postgres: give the role the new password.**
 
    ```bash
-   K="kubectl --context aks-v2-platform"
-   $K -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite
-   $K -n data wait externalsecret/postgres-credentials --for=condition=Ready --timeout=2m
+   K() { kubectl --context aks-v2-platform "$@"; }
+   K -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite
+   K -n data wait externalsecret/postgres-credentials --for=condition=Ready --timeout=2m
    # The kubelet refreshes the mounted file within about a minute. Wait until it matches the Secret.
-   until [[ "$($K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
-            "$($K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
+   until [[ "$(K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
+            "$(K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
    make data
    ```
 
@@ -81,10 +81,10 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 3. **Redis: restart it with the new password.** `requirepass` is read only at startup.
 
    ```bash
-   $K -n data annotate externalsecret redis-credentials force-sync=$(date +%s) --overwrite
-   $K -n data wait externalsecret/redis-credentials --for=condition=Ready --timeout=2m
-   $K -n data delete pod redis-0
-   $K -n data wait pod/redis-0 --for=condition=Ready --timeout=5m
+   K -n data annotate externalsecret redis-credentials force-sync=$(date +%s) --overwrite
+   K -n data wait externalsecret/redis-credentials --for=condition=Ready --timeout=2m
+   K -n data delete pod redis-0
+   K -n data wait pod/redis-0 --for=condition=Ready --timeout=5m
    ```
 
    The pod comes back with the new password and its keys, from the AOF. The running api-gateway pods still hold the old password, so they lose Redis and rate limiting is off until step 4's roll finishes. The gateway ignores the failed `INCR`s and keeps serving.
@@ -96,11 +96,11 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    for es in order-service-postgres inventory-service-postgres payment-service-postgres \
              notification-service-postgres shipping-service-postgres dashboard-api-postgres \
              scheduler-postgres db-migrate; do
-     $K -n apps annotate externalsecret "$es" force-sync=$(date +%s) --overwrite
+     K -n apps annotate externalsecret "$es" force-sync=$(date +%s) --overwrite
    done
    # After a Redis rotation: api-gateway's REDIS_URL.
-   $K -n apps annotate externalsecret api-gateway-redis force-sync=$(date +%s) --overwrite
-   $K -n apps get externalsecret
+   K -n apps annotate externalsecret api-gateway-redis force-sync=$(date +%s) --overwrite
+   K -n apps get externalsecret
    ```
 
    A Postgres rotation rolls the seven Postgres users, the scheduler included. A Redis rotation rolls api-gateway only. Wait for them:
@@ -108,11 +108,11 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    ```bash
    # After a Postgres rotation.
    for d in order-service inventory-service payment-service notification-service shipping-service dashboard-api; do
-     $K -n apps rollout status deployment/$d --timeout=10m
+     K -n apps rollout status deployment/$d --timeout=10m
    done
-   $K -n apps rollout status statefulset/scheduler --timeout=10m
+   K -n apps rollout status statefulset/scheduler --timeout=10m
    # After a Redis rotation.
-   $K -n apps rollout status deployment/api-gateway --timeout=10m
+   K -n apps rollout status deployment/api-gateway --timeout=10m
    ```
 
 `jwt-secret` and `shipping-webhook-secret` need none of this. Their ExternalSecrets refresh hourly and Reloader rolls api-gateway or shipping-service on its own ([reloader](../reloader/README.md)).
