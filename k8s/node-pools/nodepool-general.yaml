@@ -1,5 +1,10 @@
 # On-demand nodes for user workloads. 4 vCPUs at most: the system pool uses
-# 6 of the subscription's 10 standard vCPUs in UK South.
+# 6 of the subscription's 10 standard vCPUs in UK South. 2 vCPU sizes only,
+# so the limit always holds two nodes: the five multi-replica services need
+# two nodes (k8s/apps/README.md, Disruption and spread). A 4 vCPU node
+# would use the whole limit by itself, so there could never be a second.
+# Karpenter weighs the largest size on offer against the limit only while
+# it plans one scheduling pass; a launched node counts at its real size.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -38,15 +43,13 @@ spec:
         - key: karpenter.sh/capacity-type
           operator: In
           values: ["on-demand"]
-        # D family sizes this subscription can run. D2s_v6 and D4s_v6 are
-        # offered in zones 2 and 3 only, the nls sizes in all three.
+        # D family sizes this subscription can run. D2s_v6 is offered in
+        # zones 2 and 3 only, D2nls_v6 in all three.
         - key: karpenter.azure.com/sku-name
           operator: In
           values:
             - Standard_D2s_v6
-            - Standard_D4s_v6
             - Standard_D2nls_v6
-            - Standard_D4nls_v6
         - key: topology.kubernetes.io/zone
           operator: In
           values: ["uksouth-1", "uksouth-2", "uksouth-3"]

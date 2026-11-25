@@ -1,0 +1,40 @@
+# KEDA scales the worker on the queue's active message count, 5 messages per
+# replica, from 1 to 5 (ADR Autoscaling). CPU says nothing about a backlog.
+# KEDA creates and owns the HPA, keda-hpa-worker. One idle pod stays, so the
+# first order after a quiet spell needs no cold start.
+#
+# The namespace and queue are placeholders that k8s/apps/dev fills in. KEDA
+# wants the namespace's name, not its FQDN: it adds servicebus.windows.net.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  triggers:
+    - type: azure-servicebus
+      metadata:
+        namespace: SERVICEBUS_NAMESPACE_NAME_FROM_AZURE_ENV
+        queueName: SERVICEBUS_QUEUE_FROM_AZURE_ENV
+        messageCount: "5"
+      authenticationRef:
+        name: worker-servicebus
+---
+# The KEDA operator reads the queue's message count as its own workload
+# identity, id-keda, which holds Azure Service Bus Data Owner on the queue
+# (the role KEDA's Manage requirement maps to). Not the worker's identity:
+# the worker can only receive.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: worker-servicebus
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  podIdentity:
+    provider: azure-workload

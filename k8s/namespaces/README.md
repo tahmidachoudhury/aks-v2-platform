@@ -1,6 +1,6 @@
 # namespaces
 
-**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD and KEDA, because most of these pods must not run on spot. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. `make namespaces` applies them each morning after the node pools and before any Helm install. ArgoCD takes this over in P7.
+**TL;DR:** Three namespaces, `apps`, `data` and `platform`, all enforce the `restricted` Pod Security Standard, so each rejects a privileged pod. Each has a ResourceQuota and a LimitRange. The quotas request 2.5 CPUs and 8 GiB in total. That is sized against the `general` NodePool alone, after the AKS DaemonSets and about 1 CPU for ArgoCD, because most of these pods must not run on spot. KEDA and Reloader run inside `platform`, at 50m between them. The general pool's CPU is the binding limit: P6 keeps each service pod's CPU request at or under 40m, or lowers the HPA maxima. `make namespaces` applies them each morning after the node pools and before any Helm install. ArgoCD takes this over in P7.
 
 Filled by P4-07 (#54).
 
@@ -25,6 +25,7 @@ The workload identity federated credentials trust these ServiceAccounts, so the 
 | `apps` | `order-service`, `payment-service`, `shipping-service`, `worker` | The service manifests (P6-05) |
 | `platform` | `external-dns` | The ExternalDNS chart, by its default name |
 | `platform` | `external-secrets` | The External Secrets chart, by its default name |
+| `platform` | `keda-operator` | The KEDA chart, by its default name |
 
 This folder creates no ServiceAccounts, since a chart refuses to install over a ServiceAccount it didn't create.
 
@@ -81,13 +82,17 @@ Only the `general` NodePool counts here. `spot` takes only pods that tolerate ev
 | `general` NodePool | CPU |
 | --- | --- |
 | `limits.cpu` | 4 vCPUs |
-| For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, 3,680m on one 4 vCPU node |
-| Kept for ArgoCD and KEDA (P7), outside these namespaces | About 1,000m |
-| Left for `apps`, `data` and `platform` | About 2,440m to 2,680m |
+| For pods, after the AKS DaemonSets (about 180m a node) | 3,440m on two 2 vCPU nodes, the only shape since P6-04 |
+| Kept for ArgoCD (P7), outside these namespaces | About 1,000m |
+| Left for `apps`, `data` and `platform` | About 2,440m |
 
-The quotas total 2,500m. If all three namespaces use their full CPU quota, nothing runs on spot and the pool is two 2 vCPU nodes, demand is about 60m more than the nodes hold. The quota admits the last pod or two, but they stay `Pending`. On one 4 vCPU node it fits. A worker on spot takes its requests off `general`. If ArgoCD and KEDA request more than 1 CPU, the shortfall grows by the difference.
+The quotas total 2,500m. If all three namespaces use their full CPU quota and nothing runs on spot, demand is about 60m more than the two nodes hold. The quota admits the last pod or two, but they stay `Pending`. `general` offers no 4 vCPU size, which would have fitted, because the five multi-replica services in `apps` need two nodes ([node-pools](../node-pools/README.md#sizes-and-limits)). A worker on spot takes its requests off `general`. If ArgoCD requests more than 1 CPU, the shortfall grows by the difference.
 
-Memory depends on the size Karpenter picks. `Standard_D2s_v6` and `Standard_D4s_v6` have 8 GiB per 2 vCPUs and are the cheapest, so Karpenter usually picks them. Then `general` holds about 11 GiB for pods, against 8 GiB of quota requests plus ArgoCD's. The `nls` sizes have half that memory. If they're all Karpenter can get, as in zone 1, pods go `Pending` on memory before CPU.
+Memory depends on the sizes Karpenter picks. `Standard_D2s_v6` has 8 GiB and `Standard_D2nls_v6` 4 GiB. AKS keeps a quarter of each node's memory and a 100Mi eviction threshold ([node resource reservations](https://learn.microsoft.com/en-us/azure/aks/node-resource-reservations)), and the DaemonSets take a little more. So `general` holds about 11 GiB for pods on two `Standard_D2s_v6`, about 8 GiB on one of each, and roughly 5.5 GiB on two `Standard_D2nls_v6`.
+
+Today's requests come to about 3 GiB with every service at its HPA maximum: 1,824Mi in `apps` ([apps](../apps/README.md#quotas)), 576Mi in `data` for Postgres and Redis, and 672Mi in `platform`. That fits all three shapes, and leaves about 2.5 GiB for ArgoCD even on two `Standard_D2nls_v6`. The quotas admit 8 GiB of requests plus ArgoCD's, though, and only two `Standard_D2s_v6` hold that. On one of each, or two `Standard_D2nls_v6`, pods go `Pending` on memory before CPU as the namespaces fill towards their quotas.
+
+Karpenter takes `Standard_D2s_v6` where it can, since it is cheaper, but zone 1 offers only `Standard_D2nls_v6` ([node-pools](../node-pools/README.md#sizes-and-limits)). Nothing else ties a node to a zone: the data disks are ZRS. So the pair depends on why the second node starts. Started only for pods with no zone preference, such as Postgres or Redis, it is the cheapest offering, a `Standard_D2s_v6` in zone 2 or 3. Pods that prefer a zone spread steer it too, since Karpenter tries a preference as a requirement first. Traefik's two replicas in `platform` have one ([traefik](../traefik/values.yaml)), and so does every app pod, so a node started for them can also land in zone 1. Started for the five's second replicas, their zone preference narrows it to one zone with the fewest of their pods. Upstream Karpenter picks that zone from the tied ones in no fixed order, not by price ([topologygroup.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/provisioning/scheduling/topologygroup.go#L273-L296), [topology.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/provisioning/scheduling/topology.go#L237-L245)), so when the first node is in zone 2 or 3 the second can land in zone 1, on a `Standard_D2nls_v6`. On 25 Nov 2026 the first came up as a `Standard_D2s_v6` in `uksouth-3` during the `platform` installs, and the second as a `Standard_D2nls_v6` in `uksouth-1` when the five's second replicas were held back. Either pair occurs. Two `Standard_D2nls_v6` needs both nodes in zone 1, or no `Standard_D2s_v6` capacity in zones 2 and 3.
 
 ### Sizes
 
@@ -105,7 +110,7 @@ The binding limit is the `general` pool's CPU. The quotas only split it between 
 - `apps`: P6 sets each service pod's CPU request at 40m or less. The [Autoscaling](../../docs/architecture-decisions.md#autoscaling) maximums add up to 26 pods, and 26 x 40m is 1,040m. That leaves 210m for one service's rolling update at a time and cert-manager's HTTP-01 solver pod (10m). The LimitRange default request is 40m to match. HPAs scale at 70% of the request, so at 40m a pod scales out at 28m.
 - If P6 needs larger requests, it lowers the HPA maximums so the sum of `maxReplicas` x request stays at or under about 1,050m. At 60m, for example, 17 pods fit, not 26. The quota refuses pods past its limit and the HPA reports `FailedCreate`, so maximums above the budget never take effect.
 - `data`: Postgres requests up to 250m and Redis up to 100m. The restore drill's second Postgres then fits: 600m of 750m.
-- `platform`: the charts request about 220m: Traefik 2 x 50m, cert-manager 3 x 10m, External Secrets 3 x 10m and ExternalDNS 10m. cert-manager's startupapicheck Job adds 50m while it runs.
+- `platform`: the charts request 230m: Traefik 2 x 50m, cert-manager 3 x 10m, External Secrets 4 x 10m, ExternalDNS 10m, Reloader 10m, and KEDA's operator and metrics server 2 x 20m. That is 13 of 20 pods. cert-manager's startupapicheck Job adds 50m and a pod while it runs. The full table is in [apps](../apps/README.md#platform-quota).
 
 ### Memory and other limits
 

@@ -1,5 +1,6 @@
-# Traefik, cert-manager, ExternalDNS and External Secrets: about ten small
-# pods requesting about 250m CPU in all. One LoadBalancer Service, Traefik's. No PVCs: cert-manager keeps
+# Traefik, cert-manager, ExternalDNS, External Secrets, Reloader and KEDA:
+# 13 small pods requesting 230m CPU in all (k8s/apps/README.md, platform
+# quota). One LoadBalancer Service, Traefik's. No PVCs: cert-manager keeps
 # certificates in Secrets.
 apiVersion: v1
 kind: ResourceQuota

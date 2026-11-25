@@ -35,8 +35,17 @@ TRAEFIK_VERSION := 42.4.1
 CERT_MANAGER_VERSION := v1.21.3
 EXTERNAL_DNS_VERSION := 1.23.0
 RELOADER_VERSION := 2.2.20
+KEDA_VERSION := 2.21.1
 
 PERSISTENT_OUT := tofu -chdir=infra/persistent output
+
+# make loadtest settings: how long (whole minutes, under the Job's one-hour
+# deadline), how many page loads and logins a second each of its three pods
+# sends, and an optional address to send the host's traffic to instead of
+# its public one. Override on the command line.
+DURATION ?= 5m
+RATE ?= 10
+TARGET_IP ?=
 PLATFORM_OUT := tofu -chdir=infra/platform output
 
 # The nine services, by their folder in app/services/ and k8s/apps/.
@@ -45,7 +54,7 @@ SERVICES := api-gateway order-service inventory-service payment-service notifica
 
 .PHONY: help init plan persistent platform kubeconfig up down cluster \
 	node-pools namespaces storage external-secrets traefik cert-manager external-dns data \
-	backup restore-drill reloader images pin-images apps
+	backup restore-drill reloader keda images pin-images apps loadtest
 .PHONY: migrate
 
 help: ## List the targets
@@ -75,7 +84,7 @@ up: ## Morning: platform, kubeconfig, then every component
 	$(MAKE) cluster
 
 cluster: ## Install every in-cluster component, in order
-	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns reloader data backup
+	$(MAKE) node-pools namespaces storage external-secrets traefik cert-manager external-dns reloader keda data backup
 	$(MAKE) migrate
 	$(MAKE) apps
 
@@ -138,6 +147,17 @@ external-dns: ## ExternalDNS for the public zone. IDs come from tofu output and 
 reloader: ## Reloader: restarts a service when a Secret it names changes
 	$(HELM) upgrade --install reloader reloader --repo https://stakater.github.io/stakater-charts \
 	  --version $(RELOADER_VERSION) --namespace platform -f k8s/reloader/values.yaml --wait --timeout 10m
+
+# The worker's ScaledObject needs KEDA's CRDs, so this goes before apps.
+keda: ## KEDA, which scales the worker on queue depth. Client ID comes from tofu output
+	set -euo pipefail; \
+	CLIENT_ID=$$($(PERSISTENT_OUT) -json workload_identity_client_ids | jq -er '.keda') \
+	  || { echo "No keda client ID in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
+	[[ "$$CLIENT_ID" =~ ^[0-9a-f-]{36}$$ ]] || { echo "Client ID '$$CLIENT_ID' is not a GUID." >&2; exit 1; }; \
+	$(HELM) upgrade --install keda keda --repo https://kedacore.github.io/charts \
+	  --version $(KEDA_VERSION) --namespace platform -f k8s/keda/values.yaml \
+	  --set-string podIdentity.azureWorkload.clientId="$$CLIENT_ID" \
+	  --wait --timeout 10m
 
 data: ## Postgres and Redis in data. Waits for both pods, then (re)applies the app role
 	$(KUBECTL) apply -k k8s/data
@@ -247,9 +267,9 @@ pin-images: ## Pin each dev overlay to its service's current image tag. Edits Gi
 # controller recreates it from the current template. It never touches a
 # Ready pod, a pod already going, or a pod whose revision matches.
 # azure.env carries the values that stay out of Git: the registry, the
-# Service Bus namespace and queue, and the workload identities' client IDs.
-# Every value is read and checked before anything is written. See
-# k8s/apps/README.md.
+# Service Bus namespace (FQDN for the services, name for KEDA) and queue,
+# and the workload identities' client IDs. Every value is read and checked
+# before anything is written. See k8s/apps/README.md.
 apps: ## The nine services in apps. IDs come from tofu output. Waits for every rollout
 	set -euo pipefail; \
 	IDS=$$($(PERSISTENT_OUT) -json workload_identity_client_ids) \
@@ -258,12 +278,15 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 	  || { echo "No acr_login_server in the persistent outputs. Apply persistent first." >&2; exit 1; }; \
 	SB=$$($(PLATFORM_OUT) -raw servicebus_fqdn) \
 	  || { echo "No servicebus_fqdn in the platform outputs. Apply platform first." >&2; exit 1; }; \
+	SB_NAME=$$($(PLATFORM_OUT) -raw servicebus_namespace_name) \
+	  || { echo "No servicebus_namespace_name in the platform outputs. Apply platform first." >&2; exit 1; }; \
 	QUEUE=$$($(PLATFORM_OUT) -raw servicebus_queue_name) \
 	  || { echo "No servicebus_queue_name in the platform outputs. Apply platform first." >&2; exit 1; }; \
 	[[ "$$ACR" =~ ^[a-z0-9]+\.azurecr\.io$$ ]] || { echo "Registry '$$ACR' is not an ACR login server." >&2; exit 1; }; \
 	[[ "$$SB" =~ ^[a-z0-9-]+\.servicebus\.windows\.net$$ ]] || { echo "'$$SB' is not a Service Bus namespace FQDN." >&2; exit 1; }; \
+	[[ "$$SB" == "$$SB_NAME.servicebus.windows.net" ]] || { echo "'$$SB' is not the FQDN of '$$SB_NAME'." >&2; exit 1; }; \
 	[[ "$$QUEUE" =~ ^[A-Za-z0-9._-]+$$ ]] || { echo "'$$QUEUE' is not a queue name." >&2; exit 1; }; \
-	ENV="acrLoginServer=$$ACR"$$'\n'"serviceBusNamespace=$$SB"$$'\n'"serviceBusQueue=$$QUEUE"; \
+	ENV="acrLoginServer=$$ACR"$$'\n'"serviceBusNamespace=$$SB"$$'\n'"serviceBusNamespaceName=$$SB_NAME"$$'\n'"serviceBusQueue=$$QUEUE"; \
 	for id in order-service payment-service shipping-service worker; do \
 	  CLIENT_ID=$$(jq -er --arg k "$$id" '.[$$k]' <<<"$$IDS") \
 	    || { echo "No $$id client ID in the persistent outputs." >&2; exit 1; }; \
@@ -286,3 +309,38 @@ apps: ## The nine services in apps. IDs come from tofu output. Waits for every r
 	  KIND=deployment; [[ "$$svc" != scheduler ]] || KIND=statefulset; \
 	  $(KUBECTL) -n apps rollout status "$$KIND/$$svc" --timeout=10m; \
 	done
+
+# Not part of cluster or apps: a drill, like restore-drill. Three k6 pods in
+# default send page loads, logins and one order a second each to the public
+# host, then exit. The Job fails if any request fails. The old Job goes
+# first, so every run starts clean. See k8s/loadtest/README.md.
+loadtest: ## k6 load test against the public host. DURATION=5m RATE=10 TARGET_IP= by default
+	set -euo pipefail; \
+	[[ "$(DURATION)" =~ ^([1-9]|[1-4][0-9]|5[0-5])m$$ ]] || { echo "DURATION '$(DURATION)' must be 1m to 55m: the Job stops at one hour, pod start included." >&2; exit 1; }; \
+	[[ "$(RATE)" =~ ^[1-9][0-9]*$$ ]] || { echo "RATE '$(RATE)' must be a whole number from 1." >&2; exit 1; }; \
+	[[ -z "$(TARGET_IP)" || "$(TARGET_IP)" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$ ]] || { echo "TARGET_IP '$(TARGET_IP)' is not an IPv4 address." >&2; exit 1; }; \
+	$(KUBECTL) -n default delete job loadtest --ignore-not-found --cascade=foreground --wait; \
+	$(KUBECTL) -n default create configmap loadtest-settings \
+	  --from-literal=DURATION=$(DURATION) --from-literal=RATE=$(RATE) --from-literal=TARGET_IP=$(TARGET_IP) \
+	  --dry-run=client -o yaml | $(KUBECTL) apply -f -; \
+	$(KUBECTL) apply -k k8s/loadtest; \
+	echo "Waiting for job/loadtest ($(DURATION) of load)"; \
+	STATE=; \
+	for i in $$(seq 1 390); do \
+	  STATE=$$($(KUBECTL) -n default get job loadtest --ignore-not-found \
+	    -o jsonpath='{.metadata.name} {range .status.conditions[?(@.status=="True")]}{.type} {end}') || STATE=unknown; \
+	  [[ -n "$$STATE" ]] || { echo "job/loadtest is gone before it finished. Something deleted it: run make loadtest again." >&2; exit 1; }; \
+	  [[ "$$STATE" != *Complete* && "$$STATE" != *Failed* ]] || break; \
+	  sleep 10; \
+	done; \
+	[[ "$$STATE" == *Complete* || "$$STATE" == *Failed* ]] \
+	  || { echo "job/loadtest still running after 65m, past its one-hour deadline. Check it with kubectl -n default describe job loadtest." >&2; exit 1; }; \
+	$(KUBECTL) -n default logs -l app.kubernetes.io/name=loadtest --tail=40 --prefix || true; \
+	[[ "$$STATE" != *Complete* ]] || exit 0; \
+	REASON=$$($(KUBECTL) -n default get job loadtest -o jsonpath='{.status.conditions[?(@.type=="Failed")].reason}') || REASON=; \
+	if [[ "$$REASON" == DeadlineExceeded ]]; then \
+	  echo "job/loadtest hit its one-hour deadline before k6 finished, so the run was cut short. That is not a failed request: check the pods started in time." >&2; \
+	else \
+	  echo "job/loadtest failed ($${REASON:-no reason given}): some requests failed. See the summaries above." >&2; \
+	fi; \
+	exit 1

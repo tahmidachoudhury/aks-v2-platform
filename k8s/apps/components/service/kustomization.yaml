@@ -20,3 +20,7 @@ patches:
   - path: workload.yaml
     target:
       kind: Deployment|StatefulSet
+  # Rollout fields only Deployments have.
+  - path: rollout.yaml
+    target:
+      kind: Deployment

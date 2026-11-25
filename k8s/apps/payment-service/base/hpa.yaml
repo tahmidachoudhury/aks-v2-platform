@@ -1,0 +1,22 @@
+# Scales on CPU at 70% of the 40m request, per the Autoscaling ADR. On the order
+# path. 25 Postgres connections a pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-service
+  labels:
+    app.kubernetes.io/name: payment-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-service
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

@@ -1,0 +1,16 @@
+# A drain or a NAP consolidation evicts at most one worker pod at a time,
+# and waits for its replacement to be Ready before the next. With two or
+# more replicas, one always serves. With one, the eviction goes ahead, so a
+# single replica never blocks a drain. Unready pods can always be evicted.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker

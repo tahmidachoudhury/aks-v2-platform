@@ -121,7 +121,7 @@ Ticket: [#8](https://github.com/tahmidachoudhury/aks-v2-platform/issues/8)
 
 | Service              | Scaler | Metric                                              | Min | Max | Reason                                                                                                     |
 | -------------------- | ------ | --------------------------------------------------- | --- | --- | ---------------------------------------------------------------------------------------------------------- |
-| api-gateway          | HPA    | CPU, 70% of request                                 | 2   | 4   | Stateless. Rate-limit counters live in Redis, so replicas share them. Public entry point, so two for zone spread |
+| api-gateway          | HPA    | CPU, 70% of request                                 | 2   | 4   | Stateless. Rate-limit counters live in Redis, so replicas share them. Public entry point, so two, one per node, in two zones where possible |
 | order-service        | HPA    | CPU, 70% of request                                 | 2   | 3   | On the order path. Each pod can open 25 Postgres connections                                               |
 | inventory-service    | HPA    | CPU, 70% of request                                 | 2   | 3   | Reservations take row locks, so more pods mostly add lock waits. 25 connections a pod                      |
 | payment-service      | HPA    | CPU, 70% of request                                 | 2   | 3   | On the order path. 25 connections a pod                                                                    |
@@ -143,7 +143,7 @@ Behaviour: [KEDA Service Bus scaler](https://keda.sh/docs/latest/scalers/azure-s
 
 **Consequences / trade-offs**
 
-- Postgres connections break first under load. `SetMaxOpenConns` is hard-coded per service: 25 for order, inventory and payment, 15 for shipping, 10 for notification and dashboard, 5 for scheduler. Go opens connections only when needed, but at full load the minimums allow 205 and the maximums 315. Postgres allows 100 by default.
+- Postgres connections break first under load. `SetMaxOpenConns` is hard-coded per service: 25 for order, inventory and payment, 15 for shipping, 10 for notification and dashboard, 5 for scheduler. Go opens connections only when needed, but at full load the minimums allow 205 and the maximums 315. Postgres allows 100 by default, so the StatefulSet sets `max_connections=350`: the maximums, a rollout's surge pod and the migration Job (see [data](../k8s/data/README.md#postgres-connections)).
 - Options for the limit: raise `max_connections` in the StatefulSet and size its memory to match, add PgBouncer, or make the pool size configurable in code.
 - HPA needs CPU requests on every Deployment.
 - KEDA scales the worker on the queue's active message count. The receive loop is real (PeekLock, in `app/services/worker/main.go`), but the handlers only log, so for now more replicas add receive throughput and no downstream work.
@@ -307,7 +307,7 @@ Prices checked on 19 November 2026, UK South, from the [Azure Retail Prices API]
 
 **Encryption at host on our sizes**
 
-`az vm list-skus` reports `EncryptionAtHostSupported = True` in UK South for every size the cluster uses: `Standard_D2nls_v6` on the system pool, and `Standard_D2s_v6`, `Standard_D4s_v6`, `Standard_D2nls_v6` and `Standard_D4nls_v6` in the Node Auto Provisioning pools. Node Auto Provisioning has supported both encryption at host and DES since February 2026. The `EncryptionAtHost` feature shows `NotRegistered` on this subscription. Registering it is a one-off, subscription-wide step, in the same spirit as `resource_provider_registrations = "none"`, so it stays manual.
+`az vm list-skus` reports `EncryptionAtHostSupported = True` in UK South for every size the cluster uses: `Standard_D2nls_v6` on the system pool, and `Standard_D2s_v6` and `Standard_D2nls_v6` in the Node Auto Provisioning pools. `Standard_D4s_v6` and `Standard_D4nls_v6` reported the same, but `general` no longer offers them since P6-04. Node Auto Provisioning has supported both encryption at host and DES since February 2026. The `EncryptionAtHost` feature shows `NotRegistered` on this subscription. Registering it is a one-off, subscription-wide step, in the same spirit as `resource_provider_registrations = "none"`, so it stays manual.
 
 **Consequences / trade-offs**
 

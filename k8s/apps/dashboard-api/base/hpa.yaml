@@ -1,0 +1,22 @@
+# Scales on CPU at 70% of the 40m request, per the Autoscaling ADR. Admin traffic,
+# whose aggregate queries load Postgres more than the pod. 10 connections a pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: dashboard-api
+  labels:
+    app.kubernetes.io/name: dashboard-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: dashboard-api
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

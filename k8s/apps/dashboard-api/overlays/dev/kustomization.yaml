@@ -11,6 +11,5 @@ images:
   - name: ACR_LOGIN_SERVER/dashboard-api
     newTag: f89fa4777256
 
-replicas:
-  - name: dashboard-api
-    count: 1
+# No replica count: the HPA in the base owns it, and a count here would reset it on
+# every apply.

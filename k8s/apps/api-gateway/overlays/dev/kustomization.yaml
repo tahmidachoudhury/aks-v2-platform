@@ -14,6 +14,5 @@ images:
   - name: ACR_LOGIN_SERVER/api-gateway
     newTag: b33be046503f
 
-replicas:
-  - name: api-gateway
-    count: 2
+# No replica count: the HPA in the base owns it, and a count here would reset it on
+# every apply.

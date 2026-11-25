@@ -67,12 +67,12 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 2. **Postgres: give the role the new password.**
 
    ```bash
-   K="kubectl --context aks-v2-platform"
-   $K -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite
-   $K -n data wait externalsecret/postgres-credentials --for=condition=Ready --timeout=2m
+   K() { kubectl --context aks-v2-platform "$@"; }
+   K -n data annotate externalsecret postgres-credentials force-sync=$(date +%s) --overwrite
+   K -n data wait externalsecret/postgres-credentials --for=condition=Ready --timeout=2m
    # The kubelet refreshes the mounted file within about a minute. Wait until it matches the Secret.
-   until [[ "$($K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
-            "$($K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
+   until [[ "$(K -n data exec postgres-0 -- sha256sum /etc/postgres-credentials/password | cut -d' ' -f1)" == \
+            "$(K -n data get secret postgres-credentials -o jsonpath='{.data.password}' | base64 -d | shasum -a 256 | cut -d' ' -f1)" ]]; do sleep 10; done
    make data
    ```
 
@@ -81,10 +81,10 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
 3. **Redis: restart it with the new password.** `requirepass` is read only at startup.
 
    ```bash
-   $K -n data annotate externalsecret redis-credentials force-sync=$(date +%s) --overwrite
-   $K -n data wait externalsecret/redis-credentials --for=condition=Ready --timeout=2m
-   $K -n data delete pod redis-0
-   $K -n data wait pod/redis-0 --for=condition=Ready --timeout=5m
+   K -n data annotate externalsecret redis-credentials force-sync=$(date +%s) --overwrite
+   K -n data wait externalsecret/redis-credentials --for=condition=Ready --timeout=2m
+   K -n data delete pod redis-0
+   K -n data wait pod/redis-0 --for=condition=Ready --timeout=5m
    ```
 
    The pod comes back with the new password and its keys, from the AOF. The running api-gateway pods still hold the old password, so they lose Redis and rate limiting is off until step 4's roll finishes. The gateway ignores the failed `INCR`s and keeps serving.
@@ -96,11 +96,11 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    for es in order-service-postgres inventory-service-postgres payment-service-postgres \
              notification-service-postgres shipping-service-postgres dashboard-api-postgres \
              scheduler-postgres db-migrate; do
-     $K -n apps annotate externalsecret "$es" force-sync=$(date +%s) --overwrite
+     K -n apps annotate externalsecret "$es" force-sync=$(date +%s) --overwrite
    done
    # After a Redis rotation: api-gateway's REDIS_URL.
-   $K -n apps annotate externalsecret api-gateway-redis force-sync=$(date +%s) --overwrite
-   $K -n apps get externalsecret
+   K -n apps annotate externalsecret api-gateway-redis force-sync=$(date +%s) --overwrite
+   K -n apps get externalsecret
    ```
 
    A Postgres rotation rolls the seven Postgres users, the scheduler included. A Redis rotation rolls api-gateway only. Wait for them:
@@ -108,11 +108,11 @@ Next morning there is nothing to do: the new cluster starts from empty disks and
    ```bash
    # After a Postgres rotation.
    for d in order-service inventory-service payment-service notification-service shipping-service dashboard-api; do
-     $K -n apps rollout status deployment/$d --timeout=10m
+     K -n apps rollout status deployment/$d --timeout=10m
    done
-   $K -n apps rollout status statefulset/scheduler --timeout=10m
+   K -n apps rollout status statefulset/scheduler --timeout=10m
    # After a Redis rotation.
-   $K -n apps rollout status deployment/api-gateway --timeout=10m
+   K -n apps rollout status deployment/api-gateway --timeout=10m
    ```
 
 `jwt-secret` and `shipping-webhook-secret` need none of this. Their ExternalSecrets refresh hourly and Reloader rolls api-gateway or shipping-service on its own ([reloader](../reloader/README.md)).
@@ -169,7 +169,7 @@ PVCs: three of four with the drill. Storage: 20 + 10 + 20 = 50Gi of 64Gi. These 
 
 ## Postgres connections
 
-Postgres runs with `max_connections=300`, passed as a server flag in the StatefulSet's `args`. The default, 100, is below what the services' pools can open at one replica each.
+Postgres runs with `max_connections=350`, passed as a server flag in the StatefulSet's `args`. The default, 100, is below what the services' pools can open at one replica each.
 
 Each service caps its pool with `SetMaxOpenConns`, hard-coded in `app/services/*/main.go`. The replica counts come from [Autoscaling](../../docs/architecture-decisions.md#autoscaling):
 
@@ -184,9 +184,24 @@ Each service caps its pool with `SetMaxOpenConns`, hard-coded in `app/services/*
 | scheduler | 5 | 1 | 1 | 5 | 5 |
 | **Total** | **115** | | | **205** | **315** |
 
-300 covers the HPA minimums (205), one rolling-update surge pod (25), the migration Job and a few `psql` sessions, with Postgres's 3 reserved superuser slots on top. It doesn't cover every service at its HPA maximum (315). P6 must close that gap. Either lower the maximums for order, inventory and payment to 2 (the total at maximum becomes 240, or 265 with a surge pod), or make the pool size configurable and smaller. The pools open connections only under load, so 315 needs every service saturated at once. Past 300, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+P6-09 (#70) raised it from 300 to 350, so every service can sit at its HPA maximum without running out:
 
-Memory: an idle backend costs about 1.6 MiB. In a local run of this image, 290 open connections took the container from 29 MiB to 502 MiB. Under load, add `shared_buffers` (128 MB) and `work_mem` (4 MB per sort or hash, per query). The limit is 1536Mi so a burst of active queries at a high connection count doesn't hit the OOM killer. The memory request stays at 512Mi, the idle working set.
+| | Connections |
+| --- | --- |
+| Every service at its HPA maximum | 315 |
+| One rolling-update surge pod, of a 25-connection service | 25 |
+| The migration Job (golang-migrate holds one, plus its advisory lock session) | 2 |
+| **Worst case** | **342** |
+| `max_connections` | 350 |
+| Less Postgres's 3 reserved superuser slots | **347 for `app`** |
+
+That leaves 5 for `psql` sessions as `app`. The superuser keeps its own 3. The worst case holds for one rollout at a time, which is what [apps](../apps/README.md#rollouts) asks for at high replica counts. Each further surge pod of a 25-connection service adds 25.
+
+**Accepted limit: several rollouts at once.** `make apps` applies every changed service together, so their rollouts overlap. At the HPA maximums the `apps` quota admits at most four surge pods at a time ([apps](../apps/README.md#quotas)). The four biggest pools add 25 + 25 + 25 + 15 = 90, so the worst case becomes 315 + 90 + 2 = 407, past the 347 `app` can use. It needs every pool saturated at its HPA maximum during a multi-service rollout. This sandbox accepts that, rather than splitting `make apps` or raising the limit further. The connections that fail get `too many clients`, and those pods turn unready until connections free up. To stay clear, roll one service at a time when replicas are high. A Postgres password rotation also rolls all seven users together, but only when someone force-syncs their Secrets ([Rotating a password](#rotating-a-password)), so it can wait for a quiet moment. The pools open connections only under load, so 315 needs every service saturated at once. Past the limit, a service gets `too many clients` on new connections and its readiness check fails until connections free up.
+
+The other options were to lower the maximums for order, inventory and payment to 2, which changes the ADR, or to make the pool size configurable in code. Raising the limit costs memory only, below.
+
+Memory: an idle backend costs about 1.6 MiB. In a local run of this image, 290 open connections took the container from 29 MiB to 502 MiB, so 350 come to roughly 600 MiB. Under load, add `shared_buffers` (128 MB) and `work_mem` (4 MB per sort or hash, per query). The limit is 1536Mi so a burst of active queries at a high connection count doesn't hit the OOM killer. The memory request stays at 512Mi, the idle working set.
 
 ## Redis memory
 
@@ -225,7 +240,8 @@ The budget blocks every planned move of these pods, not just consolidation:
 The cluster lives for one day, so upgrades and drift rarely meet it, and an unplanned restart of the only database costs more. When one of them is stuck on a `data` pod, move the pod by hand:
 
 ```bash
-kubectl -n data delete pod postgres-0   # or redis-0
+# Or redis-0, if that is the pod the drain waits on.
+kubectl -n data delete pod postgres-0
 ```
 
 The node is already cordoned, so the StatefulSet recreates the pod on another node and the drain completes. For a planned drain, delete the pod first and then drain the node.
@@ -246,7 +262,7 @@ There is one replica of each, so a zone spread constraint has nothing to spread.
 | --- | --- | --- |
 | Where the disk lives | Copied synchronously across the three zones | One zone |
 | PV node affinity | No single-zone term | `topology.disk.csi.azure.com/zone In [uksouth-N]` |
-| The pod moves to another zone | The disk detaches and attaches to the new node. The pod starts with its data after about a minute | The scheduler places the pod only in the disk's zone. NAP creates a node there if none has room. If the zone is down, or NAP can't get the size there (zone 1 lacks `D2s_v6` and `D4s_v6`), the pod stays `Pending` |
+| The pod moves to another zone | The disk detaches and attaches to the new node. The pod starts with its data after about a minute | The scheduler places the pod only in the disk's zone. NAP creates a node there if none has room. If the zone is down, or NAP can't get the size there (zone 1 lacks `D2s_v6`), the pod stays `Pending` |
 | A zone outage | The disk is still readable from the other two zones | The data is out of reach until the zone returns |
 | Cost, 20Gi billed as 32 GiB | About $9.58 a month | About $6.39 a month |
 
@@ -317,7 +333,7 @@ kubectl -n data exec postgres-0 -- sh -c \
 kubectl -n data exec postgres-0 -- psql -U postgres -Atc "SHOW max_connections"
 ```
 
-Expect `app`, then `300`.
+Expect `app`, then `350`.
 
 ### P5-02 (#56): Redis keys survive a pod delete and the AOF is on the volume
 

@@ -223,14 +223,19 @@ locals {
     worker           = { namespace = "apps", service_account = "worker" }
     external-dns     = { namespace = "platform", service_account = "external-dns" }
     external-secrets = { namespace = "platform", service_account = "external-secrets" }
+    keda             = { namespace = "platform", service_account = "keda-operator" }
   }
 
   # The three publishers send and the worker receives, all on one queue.
+  # KEDA reads the queue's message count to scale the worker. Its scaler
+  # needs Manage rights on the entity, and Data Owner is the only built-in
+  # data role with them (k8s/keda/README.md).
   servicebus_roles = {
     order-service    = "Azure Service Bus Data Sender"
     payment-service  = "Azure Service Bus Data Sender"
     shipping-service = "Azure Service Bus Data Sender"
     worker           = "Azure Service Bus Data Receiver"
+    keda             = "Azure Service Bus Data Owner"
   }
 }
 

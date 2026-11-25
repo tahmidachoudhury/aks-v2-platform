@@ -1,0 +1,69 @@
+# Three k6 pods in parallel, each its own client address for the gateway's
+# rate limit. In default, not apps, so the test never takes the services'
+# quota or needs a NetworkPolicy: it reaches the services the way a client
+# does, through the public host and Traefik. make loadtest writes the
+# loadtest-settings ConfigMap (DURATION, RATE) before applying this.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest
+  namespace: default
+  labels:
+    app.kubernetes.io/name: loadtest
+spec:
+  parallelism: 3
+  completions: 3
+  # A failed run is a result, not something to retry.
+  backoffLimit: 0
+  # Ends a run whose pods never start, so make loadtest never waits forever.
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadtest
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # The image's user is k6, 12345. Set by number so runAsNonRoot can
+      # check it, and the pod meets restricted like everything else.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6:2.3.0@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8
+          args: ["run", "--quiet", "/scripts/script.js"]
+          env:
+            - name: BASE_URL
+              value: https://azure.order-fulfilment.tahmidchoudhury.uk
+          envFrom:
+            - configMapRef:
+                name: loadtest-settings
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: loadtest
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

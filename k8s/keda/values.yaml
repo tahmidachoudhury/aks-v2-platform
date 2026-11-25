@@ -1,0 +1,42 @@
+# KEDA, chart keda 2.21.1 (KEDA 2.21.1) from https://kedacore.github.io/charts,
+# installed into the platform namespace. Install command and design:
+# README.md.
+#
+# The client ID is not here. make keda passes it with --set-string from the
+# persistent output, so no ID is committed.
+
+# The operator reads the queue's message count as id-keda. The chart labels
+# the operator's pods azure.workload.identity/use and annotates the
+# keda-operator ServiceAccount, the subject id-keda's federated credential
+# trusts. The AKS webhook supplies the tenant.
+podIdentity:
+  azureWorkload:
+    enabled: true
+
+# Small, because the general NodePool is capped at 4 vCPUs and platform's
+# quota is 500m (README.md). The chart sets a 1 CPU limit by default: null
+# removes it, as no platform component has a CPU limit.
+resources:
+  operator:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      cpu: null
+      memory: 256Mi
+  metricServer:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: null
+      memory: 256Mi
+
+# No admission webhooks. They only catch ScaledObject mistakes, such as two
+# objects scaling one Deployment, with failurePolicy Ignore, and there is
+# one ScaledObject. AKS's admissions enforcer also rewrites every webhook's
+# namespaceSelector, which makes a second helm upgrade fail on a field
+# conflict (see k8s/cert-manager/values.yaml), and this chart can't declare
+# the selector to avoid it. Saves a pod too.
+webhooks:
+  enabled: false

@@ -7,9 +7,12 @@ resources:
   - deployment.yaml
   - service.yaml
   - networkpolicy.yaml
+  - pdb.yaml
+  - hpa.yaml
 
 components:
   - ../../components/service
+  - ../../components/host-spread
 
 # Settings that are not secret. The hash suffix on the name changes with the
 # content, so an edit here rolls the pods.

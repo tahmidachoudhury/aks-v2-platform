@@ -2,16 +2,17 @@
 
 **TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
 
-Filled by P6-01 (#62), P6-02 (#63), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69) and P6-11 (#72).
+Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69), P6-09 (#70), P6-10 (#71) and P6-11 (#72).
 
 ## Layout
 
 ```text
 k8s/apps/
   components/service/       the pod shape every workload shares (a Kustomize Component)
-  <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service,
-                            NetworkPolicy, ExternalSecret, config.env
-  <service>/overlays/dev/   image tag and replica count for dev
+  components/host-spread/   a hard node spread for the five multi-replica services
+  <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service, NetworkPolicy, PodDisruptionBudget,
+                            HorizontalPodAutoscaler, ExternalSecret, config.env
+  <service>/overlays/dev/   image tag for dev (and the scheduler's one replica)
   dev/                      all nine dev overlays, plus the values from OpenTofu
 ```
 
@@ -23,19 +24,19 @@ Each file writes its selectors out. Kustomize's `labels` with `includeSelectors`
 
 ## The services
 
-| Service | Port | Dev replicas | Identity | Secret keys | Postgres |
+| Service | Port | Replicas | Identity | Secret keys | Postgres |
 | --- | --- | --- | --- | --- | --- |
-| api-gateway | 8080 | 2 | none | `JWT_SECRET`; `REDIS_URL` | no |
-| order-service | 8081 | 2 | `id-order-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
-| inventory-service | 8082 | 2 | none | `PGPASSWORD` | yes |
-| payment-service | 8083 | 2 | `id-payment-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
-| notification-service | 8084 | 1 | none | `PGPASSWORD` | yes |
-| shipping-service | 8085 | 2 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`; `SHIPPING_WEBHOOK_SECRET` | yes |
-| dashboard-api | 8086 | 1 | none | `PGPASSWORD` | yes |
-| worker | 8090, health only | 1 | `id-worker`, Service Bus Data Receiver | none | no |
+| api-gateway | 8080 | 2 to 4 | none | `JWT_SECRET`; `REDIS_URL` | no |
+| order-service | 8081 | 2 to 3 | `id-order-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
+| inventory-service | 8082 | 2 to 3 | none | `PGPASSWORD` | yes |
+| payment-service | 8083 | 2 to 3 | `id-payment-service`, Service Bus Data Sender | `PGPASSWORD` | yes |
+| notification-service | 8084 | 1 to 2 | none | `PGPASSWORD` | yes |
+| shipping-service | 8085 | 2 to 3 | `id-shipping-service`, Service Bus Data Sender | `PGPASSWORD`; `SHIPPING_WEBHOOK_SECRET` | yes |
+| dashboard-api | 8086 | 1 to 2 | none | `PGPASSWORD` | yes |
+| worker | 8090, health only | 1 to 5 | `id-worker`, Service Bus Data Receiver | none | no |
 | scheduler | 8091, health only | 1 | none | `PGPASSWORD` | yes |
 
-The replica counts are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums. The worker has no Service, since nothing calls it. The scheduler has a headless one only because a StatefulSet needs a governing Service. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
+The replica ranges are the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) minimums and maximums. See [Autoscaling](#autoscaling). The worker has no Service, since nothing calls it. The scheduler has a headless one only because a StatefulSet needs a governing Service. Each base's `config.env` holds the non-secret settings. It becomes a ConfigMap with a hash suffix, so an edit rolls the pods. Service URLs use the Service names in `apps`, such as `http://order-service:8081`.
 
 `ADMIN_EMAILS` is unset on api-gateway on purpose. Login checks no password, so anyone who knows an admin email would get an admin token ([service catalogue](../../docs/service-catalogue.md#api-gateway)).
 
@@ -52,7 +53,10 @@ Every Deployment, and the scheduler's StatefulSet, gets these from `components/s
 | CPU request | 40m, no CPU limit | The per-pod budget in [namespaces](../namespaces/README.md#cpu-budget) |
 | Memory | 64Mi request, 256Mi limit | The namespace defaults, set explicitly |
 | `enableServiceLinks` | `false` | Stops `ORDER_SERVICE_PORT` and similar variables being injected for every Service in `apps` |
-| `terminationGracePeriodSeconds` | 40 | Covers the HTTP services' 5s drain and 30s shutdown, and the scheduler's 20s job wait and 5s stop |
+| Rollout | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1`, `progressDeadlineSeconds: 300` | Deployments only, from `rollout.yaml`. See [Rollouts](#rollouts) |
+| Spread | Across zones, then nodes, `ScheduleAnyway`. Nodes are a hard rule for the five multi-replica services, from `components/host-spread` | See [Disruption and spread](#disruption-and-spread) |
+| `preStop` | The kubelet's `sleep` action, 5s | Holds SIGTERM back while Cilium and Traefik drop the pod from their endpoints. The images have no shell to exec `sleep` in |
+| `terminationGracePeriodSeconds` | 45 | The 5s preStop, then the HTTP services' 5s drain and 30s shutdown: 40s. The scheduler's 5s, 20s job wait and 5s stop: 30s |
 | Startup probe | `/livez`, every 5s, 30 tries | The Postgres users ping the database for up to 120s before they listen |
 | Liveness probe | `/livez`, every 10s, 3s timeout, 3 tries | Always 200 while the process runs, so a dependency outage never restarts a pod |
 | Readiness probe | `/healthz`, every 5s, 3s timeout, 3 tries | 503 on SIGTERM, for Postgres, and for Service Bus on the worker. The Postgres ping has no timeout, so the probe's 3s bounds it |
@@ -67,7 +71,8 @@ The repo is public, so nothing deployment-specific is committed ([Client IDs](..
 | --- | --- | --- |
 | `acrLoginServer` | persistent `acr_login_server` | `ACR_LOGIN_SERVER` at the front of every image |
 | `serviceBusNamespace` | platform `servicebus_fqdn` | `SERVICEBUS_NAMESPACE` on order, payment, shipping and worker |
-| `serviceBusQueue` | platform `servicebus_queue_name` | `SERVICEBUS_QUEUE` on the same four |
+| `serviceBusNamespaceName` | platform `servicebus_namespace_name` | `namespace` in the worker's ScaledObject trigger. KEDA adds `.servicebus.windows.net` itself |
+| `serviceBusQueue` | platform `servicebus_queue_name` | `SERVICEBUS_QUEUE` on the same four, and `queueName` in the ScaledObject |
 | `order-service`, `payment-service`, `shipping-service`, `worker` | persistent `workload_identity_client_ids` | `azure.workload.identity/client-id` on each ServiceAccount |
 
 `make apps` checks the shape of every value before it writes the file: a GUID for each client ID, `*.azurecr.io`, `*.servicebus.windows.net`. A failed `tofu output`, a missing key or a malformed value stops it, so it never applies a placeholder or a `null`. If `azure.env` is missing, `kustomize build k8s/apps/dev` fails with an error naming the file. `azure.env.example` shows the shape. Don't copy it into place.
@@ -116,6 +121,80 @@ order-service, payment-service, shipping-service and worker each have:
 - `SERVICEBUS_NAMESPACE` set to the namespace's FQDN and no `SERVICEBUS_CONNECTION_STRING`, so `DefaultAzureCredential` signs in with that token.
 
 Each identity holds one role, on the `order-events` queue only: Data Sender for the three publishers, Data Receiver for the worker ([role matrix](../../infra/modules/workload-identity/README.md#role-matrix)). The other five services have no label and no annotation, so the webhook injects nothing into them. All nine ServiceAccounts set `automountServiceAccountToken: false`, since no service calls the API server. The webhook mounts its own projected token at `/var/run/secrets/azure/tokens`, separate from the API token, so the four callers keep their Azure sign-in. No service reads Key Vault. ESO does that with its own identity.
+
+## Rollouts
+
+P6-03 (#64). Every Deployment rolls one pod at a time, and keeps every old pod until the new one is Ready:
+
+1. The Deployment adds one new pod (`maxSurge: 1`). It takes traffic only once `/healthz` passes, so a pod that never turns Ready takes none.
+2. Only then does it remove an old pod (`maxUnavailable: 0`). That pod leaves the Service endpoints straight away. The 5s `preStop` sleep gives Cilium and Traefik time to stop sending it new connections.
+3. Kubernetes sends SIGTERM. The HTTP services fail `/healthz` and keep serving for `SHUTDOWN_DRAIN_DELAY` (5s), then `server.Shutdown` waits up to 30s for requests in flight. The 45s grace period covers all of it.
+4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and `make apps` fails. The old pods keep serving. Revert the tag in Git and run `make apps`. `kubectl rollout undo` also works for a Deployment, but the next `make apps` puts the broken tag back. A broken scheduler release needs `scheduler-0` deleted after the revert, since a StatefulSet doesn't replace an unready pod. `make apps` does that, or run `kubectl -n apps delete pod scheduler-0` ([Scheduler](#scheduler-one-statefulset-not-cronjobs)).
+
+The worker loses no messages in a rollout. It receives in PeekLock mode, so a message it hasn't completed is locked, not removed. On SIGTERM it abandons what it received after the signal, and Service Bus redelivers those at once. A message it was handling when the pod died returns when its one-minute lock expires.
+
+The scheduler is a StatefulSet, so the rollout fields live in a second component patch, `rollout.yaml`, that targets Deployments only. The StatefulSet's own rolling update deletes `scheduler-0` before it creates the new one, and has no progress deadline: `make apps` gives up on it after its 10-minute `rollout status` timeout (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)).
+
+With replicas near the HPA maximums, roll one service at a time. Each rollout adds a 40m surge pod, and at the maximums the `apps` quota has room for only a few at once ([Quotas](#quotas)). A surge pod the quota refuses holds its rollout until the deadline fails it.
+
+## Disruption and spread
+
+P6-04 (#65). Every service except the scheduler has a PodDisruptionBudget with `maxUnavailable: 1` and `unhealthyPodEvictionPolicy: AlwaysAllow`:
+
+- A drain or a NAP consolidation evicts one pod of a service, then waits until its replacement is Ready before evicting the next. A service with two or more replicas always keeps one serving.
+- A service at one replica (notification-service and dashboard-api at their minimum, the worker when the queue is quiet) can still be evicted, so a single replica never blocks a drain. It is down until its replacement is Ready. The ADR accepts that for these three, since none is on the path a customer waits on.
+- `minAvailable: 1` would block every drain of a single-replica service, so it isn't used.
+- The scheduler has no budget. It is one replica, and a budget allowing no disruption would block every drain of its node. A StatefulSet never starts its replacement before it has gone, and a missed tick only delays the next run.
+
+The shared component spreads each service's pods across zones, then across nodes, with `maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`. `matchLabelKeys` adds the pod's own `app.kubernetes.io/name` and `pod-template-hash` to the selector, so one rule spreads each service, and each revision, on its own.
+
+A preference isn't enough. On a fresh cluster the scheduler put all 14 app pods on the one `general` node, in one zone, and NAP never added a second: `ScheduleAnyway` is met on whatever nodes exist. So the five services that run two or more replicas at their minimum, api-gateway, order-service, inventory-service, payment-service and shipping-service, also include `components/host-spread`. It makes their hostname entry a hard rule, still with `maxSkew: 1`:
+
+- `whenUnsatisfiable: DoNotSchedule`. A pod the rule holds back stays `Pending`. NAP runs Karpenter, which treats a hard spread as a requirement and starts a node for it ([Karpenter scheduling](https://karpenter.sh/docs/concepts/scheduling/#topology-spread)).
+- `nodeTaintsPolicy: Honor`. Only nodes the pod tolerates count ([topology spread](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/#spread-constraint-definition)). With the default, `Ignore`, the three `aks-system` nodes, tainted `CriticalAddonsOnly`, and any spot node would count as nodes with none of the service's pods. The global minimum would stay 0, so each `general` node could hold only one pod of a service, and a third replica would stay `Pending`. Cordoned and NotReady nodes drop out too.
+- `minDomains: 2`. With `Honor` and one `general` node, that node would be the only domain and the rule would always hold, so every pod would pack onto it, as before. Below two eligible nodes, Kubernetes takes the global minimum as 0, so the node takes one pod of a service and the next waits `Pending`, which makes NAP add the second node. From two nodes on it has no effect, so three or four replicas split 2 and 1 or 2 and 2. Karpenter always takes the global minimum for hostname as 0, since it can add a node, and honours `nodeTaintsPolicy` when it counts ([Karpenter source](https://github.com/kubernetes-sigs/karpenter/blob/main/pkg/controllers/provisioning/scheduling/topologygroup.go)).
+
+The result is two `general` nodes, each with at least one pod of each of the five. `general` offers only 2 vCPU sizes, so its 4 vCPU limit always holds both ([node-pools](../node-pools/README.md#sizes-and-limits)). NAP consolidation won't merge them back: it removes a node only when its pods fit elsewhere under their rules. The zone spread stays a preference for all nine, and so does the hostname spread for the other four: notification-service and dashboard-api idle at one replica, the worker prefers spot, and the scheduler is one pod. Pod counts don't change, so the `apps` quota is as before.
+
+Why the node and not the zone: the first version of this rule, which the P6 live run on 24 Nov 2026 tested, made the zone entry hard instead. The limit holds two nodes but can't choose their zones, so a hard zone rule could strand pods. If NAP put both nodes in one zone, for example a second node started for `platform` or `data` overflow with no zone rule to follow, the five's second replicas would need a zone the limit has no room for, and each would be stuck at one pod. Under the host rule the same-zone case no longer strands anything: the five still get two replicas on two nodes, and lose only the zone spread. A full first node still can, now on CPU rather than zone, as the full-node case below describes. The zone preference still counts: Karpenter tries it first when it adds the second node for the five, and the scheduler follows it when the nodes are in two zones. The host rule's own spread and drain results are from 25 Nov 2026, under criterion 11 in [Proving it](#proving-it).
+
+The cost shows when only one `general` node is eligible: cordoned or drained, NotReady, or being disrupted by NAP. That node is then the only domain, the global minimum is 0, and each of the five runs at most one pod on it. A drained pod of the five stays `Pending` until the node is back, since the limit has no room for a third node while the drained one exists. The other copy keeps serving, so no service reaches zero, but the HPA can't add capacity either: a node that goes NotReady under load leaves each of the five on one pod until it returns. A service with two pods on the drained node, at three or four replicas, stalls the drain: its budget allows one pod down, and the first one's replacement is `Pending`. Drain with the five at their minimums, one pod per node each.
+
+With two nodes, a full node can still strand a pod, because the rule, not free CPU, picks the node. api-gateway at three replicas, two on node A and one on B, can put a fourth only on B. If B has no CPU left and A has room, the pod stays `Pending`. NAP can't help: Karpenter counts a new node as the place for it, and the limit has no room for a third. A rollout's surge pods hit the same case, since `pod-template-hash` spreads each revision on its own: with one new pod on A, the next must go on B, and with `maxUnavailable: 0` the rollout fails at its 300s deadline. This is rarer than under the zone rule, which had the same case and the same-zone one besides, but it is real. The two nodes run close to full at the quotas ([namespaces](../namespaces/README.md#capacity)).
+
+The same case can meet `make apps` at bring-up. If `platform` and `data` fill node A, NAP starts B for the overflow, and `general` is then at 4 of 4 vCPUs. Each of the five puts its first pod on B, where there is room. Its second must go on A, since a second on B would make the skew 2, and A has no CPU left. Karpenter's answer is a third node, which the limit refuses. The five sit at one pod each, their rollouts hit `ProgressDeadlineExceeded`, and `make apps` fails. Under `ScheduleAnyway` both pods would have run on B. This is a possible failure, not one seen yet: on 25 Nov 2026 the first node had room for one pod of each. To recover, move CPU from A to B by hand:
+
+1. `kubectl cordon` node A, so nothing new lands there.
+2. Delete `platform` pods on A, such as one Traefik pod or the External Secrets and KEDA pods, until about 40m is freed for each of the five's `Pending` pods. Their Deployments recreate them on B. Leave `postgres-0` and `redis-0` alone.
+3. Check the recreated pods are `Running` on B, then `kubectl uncordon` A. The five's `Pending` pods then take A, and `make apps` can run again.
+
+This works only if B has room for what moves, which it does whenever `ScheduleAnyway` would have fitted the five there. If the two nodes can't hold the requests between them, no placement helps: lower a request or a quota. Deleting node A instead should also end with room, but it moves Postgres and Redis too, and NAP's drain waits on their budgets ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)). Neither path has been tried on a live cluster yet.
+
+NAP drift also can't replace a `general` node while both exist, as far as upstream Karpenter's source shows. Drift plans a replacement before it drains, and leaves the drifted node out of that plan, so a 2 vCPU replacement fits the limit on paper ([disruption/helpers.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/helpers.go#L62-L70)). The launch then checks only that the pool isn't already over its limit, and 4 of 4 isn't ([provisioner.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/provisioning/provisioner.go#L495-L504), [nodepool.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/apis/v1/nodepool.go#L196-L208)). So NAP asks Azure for a third 2 vCPU node while all 10 of the subscription's standard vCPUs are in use: 6 on the system pool, 4 on `general`. Expect the launch to fail on quota. When the failed replacement is deleted, NAP untaints the drifted node and tries again on a later disruption pass ([queue.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L240-L246), [L163-L187](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/controllers/disruption/queue.go#L163-L187)), with at most a short pause while the failed offering is marked unavailable. Upstream's drift back-off sits behind the `NodePoolDriftBackoff` feature gate, Alpha and off by default ([options.go](https://github.com/kubernetes-sigs/karpenter/blob/748b37cd5562a3a545faf738f48f3fff313e2190/pkg/operator/options/options.go#L161-L168)). While each attempt is in flight, the drifted node carries the `karpenter.sh/disrupted:NoSchedule` taint, so under `nodeTaintsPolicy: Honor` it drops out as a domain. The other node is then the only one, and new pods of the five, from an HPA scale-out or a rollout surge, wait `Pending` as they do during a drain. It can't drift the node out without a replacement either, since the five's pods on it can't move to a node that already has one of theirs. Drift comes from a change to the NodePool or AKSNodeClass, including a new node image. To move a node onto the new spec by hand, one at a time, `kubectl cordon` it and `kubectl delete nodeclaim` its NodeClaim. NAP drains it, the five's pods from it wait `Pending`, and once the VM is gone the limit has room and NAP starts a new node under the current spec for them. If the drain waits on `postgres-0` or `redis-0`, delete that pod as [data](../data/README.md#scheduling-off-spot-and-safe-to-move) describes. This is from the source, not yet seen live.
+
+## Autoscaling
+
+P6-09 (#70), per the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) ADR:
+
+- The seven HTTP services each have a HorizontalPodAutoscaler in their base, on CPU at 70% of the 40m request, so a pod scales out at about 28m. The minimums and maximums are the ADR's, in the table above.
+- The worker scales with [KEDA](../keda/README.md) on the queue's active message count, 5 per replica, from 1 to 5. KEDA creates and owns the HPA `keda-hpa-worker`. The ScaledObject is in the worker's base, and `dev/` fills in the namespace's name and the queue.
+- The scheduler stays at one replica, set in its dev overlay.
+
+Only the scheduler's StatefulSet sets `replicas`, to 1. The eight Deployments leave it out. The autoscaler owns the count, and a count in Git would reset it on every apply. A new Deployment starts at 1 and its HPA raises it to the minimum within a few seconds. One catch on a live cluster: the first apply after a manifest drops `replicas` resets the Deployment to 1 for a moment. The cluster is rebuilt every morning, so this only matters on a cluster that ran an earlier version of these manifests.
+
+Postgres connections set the low maximums, not CPU: each pod opens up to its `SetMaxOpenConns` ([Postgres connections](../data/README.md#postgres-connections)).
+
+## Spot
+
+P6-10 (#71). The worker is the only service that tolerates the `spot` NodePool's taint, as [node-pools](../node-pools/README.md#spot) rules. Every other service, payment-service and the scheduler included, has no toleration, so the taint keeps it on `general`'s on-demand nodes. Postgres and Redis also require on-demand nodes by affinity ([data](../data/README.md#spot)).
+
+The worker loses nothing to an eviction. Azure promises 30 seconds' notice, but in the P6 live run the pod got about 1 second of its 45-second grace period before the node went. The worker shuts down in a few seconds when it gets the chance: it abandons what it received after SIGTERM, so Service Bus redelivers those at once. A message it was handling when the node went comes back when its one-minute lock expires. Orders never wait on the worker: order-service, payment-service and shipping-service publish and answer straight away, and the queue holds the events until a worker takes them.
+
+The worker prefers spot (`preferredDuringScheduling`, weight 100) but doesn't require it:
+
+- It lands on spot whenever a spot node has room. When NAP needs a new node for a pending worker, the `spot` pool's weight (50 against 10) makes it a spot node.
+- If the scheduler finds room on a `general` node first, the worker runs there until it is next rescheduled. In the P6 live run KEDA's scale-outs landed on `general`, which had room. Spot is preferred, not guaranteed.
+- If spot has no capacity, or the subscription's 3 spot vCPUs are used, the worker still runs on `general`. A hard requirement would leave the queue unworked until spot came back.
 
 ## Scheduler: one StatefulSet, not CronJobs
 
@@ -195,7 +274,18 @@ Kubelet probes come from the node, not a pod. Cilium lets a node reach its own p
 
 ### apps
 
-At the dev replica counts, the nine services run 14 pods. 14 x 40m is 560m of the 1,250m `requests.cpu` quota, and 14 x 64Mi is 896Mi of 4Gi. The migration Job adds 10m and 32Mi while it runs. P6-09 adds the autoscalers and the full arithmetic at their maximums.
+Every service pod requests 40m CPU and 64Mi, with a 256Mi limit. The migration Job requests 10m and 32Mi with a 64Mi limit. cert-manager's HTTP-01 solver pod requests 10m and 64Mi with a 64Mi limit, and runs only while a certificate is ordered.
+
+| | Pods | `requests.cpu` | `requests.memory` | `limits.memory` |
+| --- | --- | --- | --- | --- |
+| Minimums: 2+2+2+2+2+1+1+1+1 | 14 | 560m | 896Mi | 3,584Mi |
+| Maximums: 4+3+3+3+3+2+2+5+1 | 26 | 1,040m | 1,664Mi | 6,656Mi |
+| One rolling-update surge pod | 1 | 40m | 64Mi | 256Mi |
+| Migration Job | 1 | 10m | 32Mi | 64Mi |
+| HTTP-01 solver | 1 | 10m | 64Mi | 64Mi |
+| **At the maximums, with all three** | **29 of 40** | **1,100m of 1,250m** | **1,824Mi of 4Gi** | **7,040Mi of 10Gi** |
+
+It holds. The 150m left is room for three more surge pods, so at the maximums at most four services can roll at once. At the minimums, all eight rolling Deployments can roll together (22 pods, 880m). That is why the [Rollouts](#rollouts) section says to roll one service at a time when replicas are high. The load test runs in `default`, outside this quota.
 
 ### platform quota
 
@@ -206,7 +296,8 @@ At the dev replica counts, the nine services run 14 pods. 14 x 40m is 560m of th
 | External Secrets | 4 | 40m | 160Mi | 640Mi |
 | ExternalDNS | 1 | 10m | 32Mi | 128Mi |
 | Reloader | 1 | 10m | 32Mi | 128Mi |
-| **Total** | **11 of 20** | **190m of 500m** | **512Mi of 2Gi** | **2,048Mi of 4Gi** |
+| KEDA operator and metrics server | 2 | 40m | 160Mi | 512Mi |
+| **Total** | **13 of 20** | **230m of 500m** | **672Mi of 2Gi** | **2,560Mi of 4Gi** |
 
 While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 256Mi limit, from the LimitRange defaults.
 
@@ -215,7 +306,8 @@ While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 
 `make cluster` runs these after `make migrate`, so a failed migration stops `make` before any service rolls out:
 
 ```bash
-make reloader   # before make data, in the first line of make cluster
+# make reloader runs before make data, in the first line of make cluster.
+make reloader
 make apps
 ```
 
@@ -223,10 +315,11 @@ make apps
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root. The `az` commands name their subscription, so set it first. The registry and the vault are in the persistent root's:
+These need a live cluster after `make cluster`. Run them from the repo root. The commands work in bash, and in zsh with `setopt interactivecomments`, which oh-my-zsh sets. Without it, zsh reads each `#` line as a command, and an apostrophe in a comment opens a quote that swallows the lines after it. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
 
 ```bash
 SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
+PLATFORM_SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/platform/terraform.tfvars)
 ```
 
 **P6-02 (#63), criterion 3: nine images in ACR, pinned by the overlays.**
@@ -264,7 +357,7 @@ kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
 kubectl --context $CTX -n apps get pods -o json | jq -r '.items[] |
   [.metadata.labels["app.kubernetes.io/name"], ([.spec.containers[0].volumeMounts[]?.mountPath] | join(","))] | @tsv' | sort -u
 
-# Each sees its own client ID (no value printed, only a match per service).
+# Each sees its own client ID. No value is printed, only a match per service.
 for svc in order-service payment-service shipping-service worker; do
   want=$(tofu -chdir=infra/persistent output -json workload_identity_client_ids | jq -r --arg s $svc '.[$s]')
   got=$(kubectl --context $CTX -n apps get pod -l app.kubernetes.io/name=$svc -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="AZURE_CLIENT_ID")].value}')
@@ -357,85 +450,220 @@ The services' images have no shell, so the tests use `agnhost`, the Kubernetes e
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX"
+K() { kubectl --context "$CTX" "$@"; }
 IMG=registry.k8s.io/e2e-test-images/agnhost:2.33
 cat > /tmp/np-test.json <<'EOF'
 {"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"allowPrivilegeEscalation":false,
  "capabilities":{"drop":["ALL"]},"seccompProfile":{"type":"RuntimeDefault"}}}
 EOF
-$K get networkpolicy -n apps; $K get networkpolicy -n data
+K get networkpolicy -n apps; K get networkpolicy -n data
 
 # 1. A pod with no allow rule, in apps.
-$K -n apps run np-test --image=$IMG --restart=Never --labels=app.kubernetes.io/name=np-test   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
+K -n apps run np-test --image=$IMG --restart=Never --labels=app.kubernetes.io/name=np-test   --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
   "containers":[{"name":"np-test","image":"'$IMG'","args":["pause"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}'
-$K -n apps wait pod/np-test --for=condition=Ready --timeout=2m
+K -n apps wait pod/np-test --for=condition=Ready --timeout=2m
 for t in postgres.data.svc.cluster.local:5432 redis.data.svc.cluster.local:6379 \
          api-gateway:8080 order-service:8081 dashboard-api:8086; do
-  printf '%s ' "$t"; $K -n apps exec np-test -- /agnhost connect "$t" --timeout=3s --protocol=tcp || true; echo
+  printf '%s ' "$t"; K -n apps exec np-test -- /agnhost connect "$t" --timeout=3s --protocol=tcp || true; echo
 done
-$K -n apps delete pod np-test
+K -n apps delete pod np-test
 
 # 2. From inside a service's pod: what it may and may not reach.
-probe() { # <service> <target> ...
-  pod=$($K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
+# Usage: probe SERVICE TARGET...
+probe() {
+  local rc=0
+  pod=$(K -n apps get pod -l app.kubernetes.io/name=$1 -o name | head -1); shift
   for t in "$@"; do
     c=np-$RANDOM
     printf '%s -> %s: ' "$pod" "$t"
-    $K -n apps debug "$pod" -q -c "$c" --image=$IMG --profile=restricted --custom=/tmp/np-test.json \
+    K -n apps debug "$pod" -q -c "$c" --image=$IMG --profile=restricted --custom=/tmp/np-test.json \
       --attach -- /agnhost connect "$t" --timeout=3s --protocol=tcp
     # kubectl debug --attach exits 0 whatever the container did. Its exit code is in the pod status.
     code=
     for i in $(seq 20); do
-      code=$($K -n apps get "$pod" -o json | jq -er --arg c "$c" \
+      code=$(K -n apps get "$pod" -o json | jq -er --arg c "$c" \
         '.status.ephemeralContainerStatuses[] | select(.name == $c) | .state.terminated.exitCode') && break
       sleep 1
     done
-    [[ "$code" == 0 ]] && echo ok || echo "blocked (exit $code)"
+    # Only a numeric exit code is a verdict. Empty or null means the container
+    # never ran or never finished, so the target wasn't tested.
+    case "$code" in
+      0) echo ok ;;
+      '' | *[^0-9]*) echo "unknown (exit ${code:-none})"; rc=1 ;;
+      *) echo "blocked (exit $code)" ;;
+    esac
   done
+  return $rc
 }
-probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379
-probe scheduler order-service:8081 inventory-service:8082 payment-service:8083
-probe worker order-service:8081 postgres.data.svc.cluster.local:5432
-probe order-service payment-service:8083 redis.data.svc.cluster.local:6379
+# Each probe returns 1 if any of its targets printed unknown. Collect them, so
+# one failure early on isn't hidden by later probes that pass.
+bad=0
+probe api-gateway order-service:8081 dashboard-api:8086 redis.data.svc.cluster.local:6379 || bad=1
+probe scheduler order-service:8081 inventory-service:8082 payment-service:8083 || bad=1
+probe worker order-service:8081 postgres.data.svc.cluster.local:5432 || bad=1
+probe order-service payment-service:8083 redis.data.svc.cluster.local:6379 || bad=1
+[[ $bad == 0 ]] && echo "every probe ran" || echo "FAILED: a target printed unknown and wasn't tested"
 ```
 
-Expect a NetworkPolicy per service plus `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
+Expect a NetworkPolicy per service plus `db-migrate`, `default-deny`, `allow-dns` and `acme-http01-solver` in `apps`, and `default-deny`, `allow-dns`, `postgres`, `redis` and `postgres-snapshot` in `data`. From `np-test`, every target prints `TIMEOUT`. A refused or reset connection would mean the policy let it through. Then `ok` for api-gateway to order-service, dashboard-api and Redis, and for the scheduler to order-service and inventory-service. `TIMEOUT` and `blocked (exit 1)` for the scheduler to payment-service, the worker to order-service and Postgres, and order-service to payment-service and Redis. The verdict comes from the debug container's exit code in `ephemeralContainerStatuses`, not from `kubectl debug`, which exits 0 whatever the container did, so `&& echo ok` would print `ok` every time. No line may read `unknown`: that means the debug container never ran or never finished within 20 seconds, for example on an image pull failure, and the target wasn't tested. `probe` then returns 1, and the block ends with `FAILED` instead of `every probe ran`. Name resolution works throughout, which proves `allow-dns`. Ephemeral debug containers can't be removed. They go when the pod is next replaced, by a rollout or `kubectl rollout restart`.
+
+Proven on 25 Nov 2026: every policy listed, every line as expected, no `unknown`, and `every probe ran`. `kubectl debug` sometimes warned that it couldn't attach and fell back to streaming logs. That is harmless, since the verdict comes from the exit code.
 
 Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
+
+**P6-03 (#64), criterion 10: a rollout under load has no errors, a broken image fails without taking traffic, and rolling the worker loses no messages.**
+
+Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another:
+
+```bash
+CTX=aks-v2-platform
+K() { kubectl --context "$CTX" -n apps "$@"; }
+# 1. Roll two services under load.
+K rollout restart deploy/api-gateway deploy/order-service
+K rollout status deploy/api-gateway --timeout=5m
+K rollout status deploy/order-service --timeout=5m
+
+# 2. A broken image: the new pod never turns Ready, the old ones keep serving.
+ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
+K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
+K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
+K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progressing")].reason}{"\n"}'
+K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
+  | jq -r '.items[].endpoints[] | [.targetRef.name, .addresses[0], "ready=\(.conditions.ready)"] | @tsv'
+K rollout undo deploy/payment-service
+
+# 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
+K rollout restart deploy/worker
+K rollout status deploy/worker --timeout=5m
+# After the load test ends and the worker drains the queue:
+az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+  --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
+  -n order-events --query countDetails
+```
+
+Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists the old pods with `ready=true` and the broken pod with `ready=false`, and the load test still sees no errors. The slice holds every pod the Service selects. Traefik and Cilium send traffic only to endpoints marked ready, so the broken pod takes none. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
+
+Proven on 25 Nov 2026 under the host rule, with `make loadtest DURATION=15m` at the default `RATE=10`. `http_req_failed` was 0.00% on all three k6 pods, 0 failed out of 18,904, 18,904 and 18,901 requests, and `make loadtest` exited 0. The api-gateway and order-service rollouts finished with their new pods one per node, and a pod watch every 6 seconds never saw a `Pending` pod. The broken payment-service image hit `ProgressDeadlineExceeded` after 5 minutes, with the broken pod `ready=false` and the two old pods `ready=true`. The worker rolled, and the queue then read 0 active and 0 dead-lettered messages. At `RATE=10` no HPA scaled out, so every service stayed at its minimum. A surge pod for a service at three or more replicas, the case in [Disruption and spread](#disruption-and-spread) that can strand, was not exercised.
+
+**P6-04 (#65), criterion 11: the five multi-replica services run on at least two nodes, and draining a node never takes one to zero Ready.**
+
+```bash
+CTX=aks-v2-platform
+K() { kubectl --context "$CTX" "$@"; }
+FIVE='app.kubernetes.io/name in (api-gateway,order-service,inventory-service,payment-service,shipping-service)'
+# 1. Two general nodes, and each of the five on both. Zones are reported, not required.
+K get nodes -l karpenter.sh/nodepool=general -L topology.kubernetes.io/zone,node.kubernetes.io/instance-type
+K get nodes -o json > /tmp/nodes.json
+K -n apps get pods -l "$FIVE" -o json | jq -r --slurpfile n /tmp/nodes.json '
+  ($n[0].items | map({key: .metadata.name, value: .metadata.labels["topology.kubernetes.io/zone"]}) | from_entries) as $zone
+  | [.items[] | select(.spec.nodeName) | {svc: .metadata.labels["app.kubernetes.io/name"], node: .spec.nodeName, zone: $zone[.spec.nodeName]}]
+  | group_by(.svc)[] | ([.[].node] | unique | length) as $h | ([.[].zone] | unique) as $z
+  | "\(.[0].svc) nodes: \($h), zones: \($z | length) (\($z | join(" ")))"'
+K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
+
+# 2. Drain one general node. The selector leaves postgres-0 and redis-0 in
+# place: their budgets refuse every eviction, so a plain drain would retry
+# them until it timed out.
+K -n apps get pdb
+NODE=$(K get nodes -l karpenter.sh/nodepool=general -o jsonpath='{.items[0].metadata.name}')
+# Ready replicas of the five multi-replica services, every second, while the node drains.
+( for i in $(seq 240); do
+    K -n apps get deploy api-gateway order-service inventory-service payment-service shipping-service \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.status.readyReplicas} {end}{"\n"}'; sleep 1
+  done > /tmp/ready.log ) &
+K drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
+  --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=10m
+K -n apps get pods -l "$FIVE" -o wide --field-selector=status.phase=Pending
+wait
+grep -E '=0( |$)|=( |$)' /tmp/ready.log || echo "never zero"
+K uncordon "$NODE"
+K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
+```
+
+Expect two `general` nodes, `Standard_D2s_v6` or `Standard_D2nls_v6`, usually in different zones. Each of the five shows `nodes: 2`, and none is `Pending`. It usually shows `zones: 2` too, but `zones: 1` is allowed under the host rule: note which you got. Then each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. While the node is cordoned, the five's pods from it are `Pending`: the cordoned node no longer counts, the node left takes one pod of each, and there is no room for a third ([Disruption and spread](#disruption-and-spread)). After `uncordon` they schedule back and nothing is `Pending`. If the drained node held no data pod, NAP may remove it as empty first. Then the `Pending` pods get a new node within a few minutes, and `uncordon` reports the node not found. Run this with the five at their minimums. Under the load test api-gateway scales to 3 or 4, puts two pods on a node, and the drain waits on its budget.
+
+Proven on 25 Nov 2026 under the host rule. Each of the five showed `nodes: 2, zones: 2 (uksouth-1 uksouth-3)`, on a `Standard_D2s_v6` in `uksouth-3` and a `Standard_D2nls_v6` in `uksouth-1`, with nothing `Pending`. The drain of `general-8mlzs` exited 0, and the ready log read `never zero`: each of the five dropped to 1 Ready replica, never 0. While the node was cordoned, one pod of each of the five was `Pending`. The scheduler reported `1 node(s) didn't match pod topology spread constraints`, and NAP `all available instance types exceed limits for nodepool (NodePool=general)`. About a minute after the drain, NAP removed the drained node as empty and started `general-kvhpw`, a `Standard_D2nls_v6` in `uksouth-1`. The five's pods were `Pending` for about 3.5 minutes in all, then ran there, and `uncordon` reported the node not found, as above.
+
+**P6-09 (#70), criterion 12: the HPAs match the ADR, load triggers scale-out, and KEDA scales the worker on queue depth.**
+
+Offline, [Validate](#validate) prints each HPA's minimum, maximum and target. Live:
+
+```bash
+CTX=aks-v2-platform
+K() { kubectl --context "$CTX" -n apps "$@"; }
+K get hpa
+# In one terminal: the load test, five minutes of logins and page loads through Traefik.
+make loadtest DURATION=5m RATE=40
+# In another: watch the gateway and dashboard-api scale out, then back after it ends.
+K get hpa api-gateway dashboard-api -w
+```
+
+Expect seven HPAs at the ADR's minimums and maximums, plus `keda-hpa-worker`. During the load test, api-gateway's CPU passes 70% and it scales towards 4 replicas, and dashboard-api towards 2. About five minutes after the test ends, both return to their minimums. The backends sit behind the gateway's rate limit of 100 requests a minute per client, so a load test from a few pods can't push them hard. That limit is doing its job. KEDA's half of the criterion is in [keda](../keda/README.md#proving-it).
+
+**P6-10 (#71), criterion 13: a simulated eviction of the spot node causes no failed orders.**
+
+The worker must be on a spot node first. If it is on `general`, cordon the `general` nodes for a moment and roll the worker: the new pod can't fit anywhere, so NAP brings up a node from the higher-weight `spot` pool. The old pod keeps working until the new one is Ready, since `maxUnavailable` is 0. `az vm simulate-eviction` evicts the VM. Azure promises 30 seconds' notice, but in the P6 live run the worker pod got about 1 second of its grace period. NAP's nodes are VMs in the node resource group, named after the node. Run the `az` command only on the spot node.
+
+```bash
+CTX=aks-v2-platform
+K() { kubectl --context "$CTX" "$@"; }
+K get nodes -L karpenter.sh/capacity-type,karpenter.sh/nodepool
+K -n apps get pods -o wide -l app.kubernetes.io/name=worker
+# Only if no worker runs on a spot node:
+K cordon -l karpenter.sh/nodepool=general
+K -n apps rollout restart deploy/worker
+K -n apps rollout status deploy/worker --timeout=10m
+K uncordon -l karpenter.sh/nodepool=general
+
+# Orders flowing, then evict the spot node.
+make loadtest DURATION=5m &
+NODE=$(K get nodes -l karpenter.sh/capacity-type=spot -o jsonpath='{.items[0].metadata.name}')
+NRG=$(tofu -chdir=infra/platform output -raw aks_node_resource_group)
+az vm simulate-eviction --subscription "$PLATFORM_SUB" --resource-group "$NRG" --name "$NODE"
+K get pods -n apps -o wide -l app.kubernetes.io/name=worker -w
+wait
+az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/platform output -raw resource_group_name)" \
+  --namespace-name "$(tofu -chdir=infra/platform output -raw servicebus_namespace_name)" \
+  -n order-events --query countDetails
+```
+
+Expect every other `apps` pod on an on-demand node. After the eviction, the worker pods on that node go, new ones start on another spot node or on `general`. A message the worker was handling comes back when its lock expires, since the pod had no time to abandon it. The load test ends with `http_req_failed` at 0% and exit 0: no order failed. Once the worker catches up, `activeMessageCount` and `deadLetterMessageCount` are 0. A message held by an evicted worker shows a delivery count of 2 in the worker's log when it comes back.
 
 **P6-11 (#72), criterion 7: one copy of each job per tick, across a rollout, a pod delete and a node drain.**
 
 ```bash
 CTX=aks-v2-platform
-K="kubectl --context $CTX -n apps"
-$K get statefulset scheduler -o jsonpath='{.kind} {.spec.replicas}{"\n"}'
+K() { kubectl --context "$CTX" -n apps "$@"; }
+K get statefulset scheduler -o jsonpath='{.kind} {.spec.replicas}{"\n"}'
 # Count scheduler pods that exist, Terminating included, every second, in the background.
-( for i in $(seq 600); do $K get pods -l app.kubernetes.io/name=scheduler --no-headers 2>/dev/null | wc -l; sleep 1; done \
+( for i in $(seq 600); do K get pods -l app.kubernetes.io/name=scheduler --no-headers 2>/dev/null | wc -l; sleep 1; done \
   | sort | uniq -c > /tmp/scheduler-pods.log ) &
 
 # 1. A rollout.
-$K rollout restart statefulset/scheduler
-$K rollout status statefulset/scheduler --timeout=3m
+K rollout restart statefulset/scheduler
+K rollout status statefulset/scheduler --timeout=3m
 # 2. A pod delete.
-$K delete pod scheduler-0
-$K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
+K delete pod scheduler-0
+K wait pod/scheduler-0 --for=condition=Ready --timeout=3m
 # 3. A drain of its node. The selector leaves postgres-0 and redis-0 where they
 # are, since their budgets refuse every eviction.
-NODE=$($K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
+NODE=$(K get pod scheduler-0 -o jsonpath='{.spec.nodeName}')
 kubectl --context $CTX drain "$NODE" --ignore-daemonsets --delete-emptydir-data \
   --pod-selector='app.kubernetes.io/name notin (postgres,redis)' --timeout=5m
-$K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
+K wait pod/scheduler-0 --for=condition=Ready --timeout=5m
 kubectl --context $CTX uncordon "$NODE"
 
 wait; cat /tmp/scheduler-pods.log
 # One expire_reservations run a minute since the drain.
 sleep 300
-$K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
+K logs scheduler-0 --since=5m --timestamps | grep "Running job: expire_reservations" | cut -c1-16 | uniq -c
 ```
 
 Expect `StatefulSet 1`. The pod count log shows only `0` and `1`, never `2`, even while an old pod is `Terminating`. Each minute since the drain shows one `expire_reservations` run. Each new pod's first run comes at startup, after the old pod stopped.
 
-The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)), so `kubectl drain` retries their evictions until `--timeout` and exits 1. On a fresh cluster the scheduler often shares the only `general` node with both, so a plain drain always fails there. `--pod-selector` evicts every other pod and leaves those two running on the cordoned node until `uncordon`.
+Proven on 25 Nov 2026 under the host rule. The pod count log read `0` twice and `1` 598 times, never `2`. Each minute from 11:29 to 11:33 showed one `expire_reservations` run. The drain of the scheduler's node exited 0. The five's pods from it were `Pending` while it was cordoned and ran again after `uncordon`. The same pod also ran `abandoned_carts` once every 5 minutes from 11:14:49 to 11:59:49, with no duplicate runs. The 11:59:49 run cancelled 699 orders older than 30 minutes, with one cancel line for each.
+
+The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)), so `kubectl drain` retries their evictions until `--timeout` and exits 1, and a plain drain fails whenever the scheduler shares a node with either. `--pod-selector` evicts every other pod and leaves those two running on the cordoned node until `uncordon`. The five multi-replica services' pods from that node stay `Pending` until then too, since with it cordoned the node left takes only one pod of each ([Disruption and spread](#disruption-and-spread)). Run this with the five at their minimums, not within the HPA's 300s scale-down window after criterion 12's load test. A service above its minimum can have two pods on the scheduler's node: the drain evicts one, its replacement is `Pending`, the budget allows no more evictions, and the 5m drain exits 1.
 
 ## Validate
 
@@ -447,7 +675,8 @@ cp -R k8s/apps "$TMP/"
 cp k8s/apps/dev/azure.env.example "$TMP/apps/dev/azure.env"
 kustomize build "$TMP/apps/dev" > "$TMP/dev.yaml"
 
-# Criterion 1: valid manifests. The CRD catalog covers ExternalSecret, so nothing is skipped.
+# Criterion 1: valid manifests. The CRD catalog covers ExternalSecret, ScaledObject and
+# TriggerAuthentication, so nothing is skipped.
 kubeconform -strict -summary \
   -schema-location default \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
@@ -455,15 +684,40 @@ kubeconform -strict -summary \
 
 # Criteria 1 and 2: one line per workload. Every column after the name must read
 # true 65532 RuntimeDefault true false ALL 40m 3
-yq ea -r '[select(.kind == "Deployment" or .kind == "StatefulSet")] | .[] | .spec.template.spec as $p | $p.containers[] |
+yq -N -r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .spec.template.spec as $p | $p.containers[] |
   [$p.serviceAccountName, $p.securityContext.runAsNonRoot, $p.securityContext.runAsUser,
    $p.securityContext.seccompProfile.type, .securityContext.readOnlyRootFilesystem,
    .securityContext.allowPrivilegeEscalation, (.securityContext.capabilities.drop | join(",")),
-   .resources.requests.cpu, .readinessProbe.timeoutSeconds] | @tsv' "$TMP/dev.yaml"
+   .resources.requests.cpu, .readinessProbe.timeoutSeconds] | @tsv' "$TMP/dev.yaml" | grep .
+
+# Criterion 10: rollout settings for the eight Deployments. Every row reads
+# RollingUpdate 0 1 300 45 5. The scheduler is a StatefulSet and has none of
+# these: its grace period and preStop come from the same patch as the rest.
+yq -N -r 'select(.kind == "Deployment") | [.metadata.name, .spec.strategy.type,
+  .spec.strategy.rollingUpdate.maxUnavailable, .spec.strategy.rollingUpdate.maxSurge,
+  .spec.progressDeadlineSeconds, .spec.template.spec.terminationGracePeriodSeconds,
+  .spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds] | @tsv' "$TMP/dev.yaml" | grep .
+
+# Criterion 12: name, minimum, maximum, CPU target. Expect api-gateway 2 4 70,
+# order, inventory, payment and shipping 2 3 70, notification and dashboard-api
+# 1 2 70, then the worker's ScaledObject: 1 5 5.
+yq -N -r 'select(.kind == "HorizontalPodAutoscaler") | [.metadata.name, .spec.minReplicas,
+  .spec.maxReplicas, .spec.metrics[0].resource.target.averageUtilization] | @tsv' "$TMP/dev.yaml" | grep .
+yq -N -r 'select(.kind == "ScaledObject") | [.metadata.name, .spec.minReplicaCount,
+  .spec.maxReplicaCount, .spec.triggers[0].metadata.messageCount] | @tsv' "$TMP/dev.yaml" | grep .
+
+# Criterion 11: each workload's zone, then hostname, spread: key, rule, minDomains,
+# nodeTaintsPolicy. Every zone entry reads topology.kubernetes.io/zone
+# ScheduleAnyway null null. The five multi-replica services' hostname entry reads
+# kubernetes.io/hostname DoNotSchedule 2 Honor, the other four's
+# kubernetes.io/hostname ScheduleAnyway null null.
+yq -N -r 'select(.kind == "Deployment" or .kind == "StatefulSet") | .spec.template.spec.topologySpreadConstraints as $t |
+  [.metadata.name, $t[0].topologyKey, $t[0].whenUnsatisfiable, $t[0].minDomains, $t[0].nodeTaintsPolicy,
+   $t[1].topologyKey, $t[1].whenUnsatisfiable, $t[1].minDomains, $t[1].nodeTaintsPolicy] | @tsv' "$TMP/dev.yaml" | grep .
 
 # Criterion 2: the gateway trusts X-Forwarded-For only from the pod CIDR.
-yq ea -r '[select(.kind == "ConfigMap" and .metadata.name == "api-gateway*")] | .[].data.TRUSTED_PROXIES' "$TMP/dev.yaml"
+yq -N -r 'select(.kind == "ConfigMap" and .metadata.name == "api-gateway*") | .data.TRUSTED_PROXIES' "$TMP/dev.yaml" | grep .
 rm -rf "$TMP"
 ```
 
-Expect `Valid: 56, Invalid: 0, Errors: 0, Skipped: 0`, nine identical rows apart from the name, and `10.244.0.0/16`.
+Expect `Valid: 73, Invalid: 0, Errors: 0, Skipped: 0`, then the rows each comment describes, and `10.244.0.0/16`.

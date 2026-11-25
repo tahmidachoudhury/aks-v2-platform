@@ -1,0 +1,22 @@
+# Scales on CPU at 70% of the 40m request, per the Autoscaling ADR. Reservations
+# take row locks, so more pods mostly add lock waits. 25 connections a pod.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inventory-service
+  labels:
+    app.kubernetes.io/name: inventory-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inventory-service
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
