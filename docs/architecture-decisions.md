@@ -121,7 +121,7 @@ Ticket: [#8](https://github.com/tahmidachoudhury/aks-v2-platform/issues/8)
 
 | Service              | Scaler | Metric                                              | Min | Max | Reason                                                                                                     |
 | -------------------- | ------ | --------------------------------------------------- | --- | --- | ---------------------------------------------------------------------------------------------------------- |
-| api-gateway          | HPA    | CPU, 70% of request                                 | 2   | 4   | Stateless. Rate-limit counters live in Redis, so replicas share them. Public entry point, so two for zone spread |
+| api-gateway          | HPA    | CPU, 70% of request                                 | 2   | 4   | Stateless. Rate-limit counters live in Redis, so replicas share them. Public entry point, so two, one per node, in two zones where possible |
 | order-service        | HPA    | CPU, 70% of request                                 | 2   | 3   | On the order path. Each pod can open 25 Postgres connections                                               |
 | inventory-service    | HPA    | CPU, 70% of request                                 | 2   | 3   | Reservations take row locks, so more pods mostly add lock waits. 25 connections a pod                      |
 | payment-service      | HPA    | CPU, 70% of request                                 | 2   | 3   | On the order path. 25 connections a pod                                                                    |

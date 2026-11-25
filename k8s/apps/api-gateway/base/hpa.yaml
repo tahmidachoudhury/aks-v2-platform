@@ -1,6 +1,6 @@
 # Scales on CPU at 70% of the 40m request, per the Autoscaling ADR. Two at
-# least for zone spread on the public entry point. Rate-limit counters live
-# in Redis, so replicas share them.
+# least, so the public entry point runs on two nodes, in two zones when it
+# can. Rate-limit counters live in Redis, so replicas share them.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
