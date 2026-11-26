@@ -216,7 +216,9 @@ K() { kubectl --context aks-v2-platform "$@"; }
 K -n argocd get pods -o wide
 K get ingress -A | grep -c argocd || true
 K get ns argocd --show-labels
-K -n argocd port-forward svc/argocd-server 8080:443 >/dev/null & PF=$!
+# kubectl in full, not K: a backgrounded function runs in a subshell, so
+# kill $PF would stop the subshell and leave the port-forward running.
+kubectl --context aks-v2-platform -n argocd port-forward svc/argocd-server 8080:443 >/dev/null & PF=$!
 sleep 3
 curl -sk -o /dev/null -w '%{http_code}\n' https://localhost:8080/
 argocd login localhost:8080 --insecure --username admin \
