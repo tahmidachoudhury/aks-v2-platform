@@ -35,13 +35,15 @@ The daily stack runs from 9am to 5pm to keep within the budget.
 Morning, from the repo root:
 
 ```bash
-make up    # platform apply, kubeconfig, then the argocd apply
+# Platform apply, kubeconfig, then the argocd apply.
+make up
 ```
 
 Evening:
 
 ```bash
-make down  # argocd destroy, then platform destroy
+# argocd destroy, then platform destroy.
+make down
 ```
 
 `make help` lists every target. `tofu apply` and `tofu destroy` stay interactive, so each shows its plan and waits for `yes`. Run `make init` once per clone, and again after a module is added. The [Makefile](../Makefile) runs the roots in the order above. Argo CD brings up the in-cluster components in the order [`argocd/README.md`](../argocd/README.md#how-the-cluster-comes-up) gives.

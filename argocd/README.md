@@ -103,8 +103,10 @@ selfHeal undoes any `kubectl edit`, `kubectl annotate` or `kubectl scale` on a f
 The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges. To see why one is stuck:
 
 ```bash
-argocd app get <app>    # the operation's phase and message, and each resource's state
-argocd app get root     # the wave the root waits on
+# The operation's phase and message, and each resource's state.
+argocd app get <app>
+# The wave the root waits on.
+argocd app get root
 ```
 
 To retry now rather than wait for the backoff, stop the retrying operation and sync again, the child first, then the root. `terminate-op` fails harmlessly if nothing is running:
@@ -205,20 +207,20 @@ Don't turn auto-sync back on before the revert has merged, or the broken tag red
 
 ## Proving it
 
-These need a live cluster after `make up`. Run them from the repo root.
+These need a live cluster after `make up`. Run them from the repo root. The commands work in bash, and in zsh with `setopt interactivecomments`, which oh-my-zsh sets. Without it, zsh reads each `#` line as a command, and an apostrophe in a comment opens a quote that swallows the lines after it.
 
 **P7-01 (#73): Argo CD runs on the system pool, has no Ingress, the UI answers and the repo is connected.**
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K -n argocd get pods -o wide
-$K get ingress -A | grep -c argocd || true
-$K get ns argocd --show-labels
-$K -n argocd port-forward svc/argocd-server 8080:443 >/dev/null & PF=$!
+K() { kubectl --context aks-v2-platform "$@"; }
+K -n argocd get pods -o wide
+K get ingress -A | grep -c argocd || true
+K get ns argocd --show-labels
+K -n argocd port-forward svc/argocd-server 8080:443 >/dev/null & PF=$!
 sleep 3
 curl -sk -o /dev/null -w '%{http_code}\n' https://localhost:8080/
 argocd login localhost:8080 --insecure --username admin \
-  --password "$($K -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
+  --password "$(K -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
 argocd repo list
 kill $PF
 ```
@@ -237,10 +239,10 @@ Expect 23 rows: `root`, which has no wave, and the 22 children with the waves in
 **P7-03 (#75): a platform resource deleted by hand comes back.**
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K delete storageclass premium-zrs
+K() { kubectl --context aks-v2-platform "$@"; }
+K delete storageclass premium-zrs
 sleep 30
-$K get storageclass premium-zrs -o jsonpath='{.metadata.creationTimestamp} {.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}'
+K get storageclass premium-zrs -o jsonpath='{.metadata.creationTimestamp} {.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}'
 ```
 
 Expect a creation time from the last minute and `true`. Bound PVCs are unaffected, since a StorageClass is only read when a volume is provisioned.
@@ -274,11 +276,11 @@ tofu -chdir=infra/argocd apply -var target_revision=tc/p7-gate-test
 About 15 minutes later:
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K -n argocd get application migrations -o jsonpath='{.status.operationState.phase}{"\n"}'
-$K -n apps logs job/db-migrate --tail=5
-$K -n argocd get applications -o name | grep -c -E '/(api-gateway|order-service|inventory-service|payment-service|notification-service|shipping-service|dashboard-api|worker|scheduler)$'
-$K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
+K() { kubectl --context aks-v2-platform "$@"; }
+K -n argocd get application migrations -o jsonpath='{.status.operationState.phase}{"\n"}'
+K -n apps logs job/db-migrate --tail=5
+K -n argocd get applications -o name | grep -c -E '/(api-gateway|order-service|inventory-service|payment-service|notification-service|shipping-service|dashboard-api|worker|scheduler)$'
+K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
 ```
 
 Expect `Failed`, `division by zero` in the log, `0` service Applications, and the root `Running` with a message that it is retrying. Then clean up: set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), run `tofu -chdir=infra/argocd apply` with no `-var` to go back to `main`, and delete the branch. The services' Applications appear once `migrations` passes.
@@ -288,10 +290,10 @@ Expect `Failed`, `division by zero` in the log, `0` service Applications, and th
 Bump one service's tag (`make images`, `make pin-images`, commit, merge), then:
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K -n argocd get application order-service -w
-$K -n argocd get application order-service -o jsonpath='{.status.operationState.operation.initiatedBy}{"\n"}{.status.sync.revision}{"\n"}'
-$K -n apps get deploy order-service -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+K() { kubectl --context aks-v2-platform "$@"; }
+K -n argocd get application order-service -w
+K -n argocd get application order-service -o jsonpath='{.status.operationState.operation.initiatedBy}{"\n"}{.status.sync.revision}{"\n"}'
+K -n apps get deploy order-service -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
 
 Expect the Application to go OutOfSync, then Synced within about three minutes, `{"automated":true}`, the merge commit as the revision, and the new tag on the Deployment.
@@ -299,11 +301,11 @@ Expect the Application to go OutOfSync, then Synced within about three minutes, 
 **Server-side diff and AKS's admissions enforcer: the webhooks don't flap.**
 
 ```bash
-K="kubectl --context aks-v2-platform"
-$K get validatingwebhookconfiguration cert-manager-webhook -o json | jq -c '[.metadata.managedFields[].manager] | unique'
+K() { kubectl --context aks-v2-platform "$@"; }
+K get validatingwebhookconfiguration cert-manager-webhook -o json | jq -c '[.metadata.managedFields[].manager] | unique'
 for i in $(seq 10); do
   for app in cert-manager external-secrets; do
-    $K -n argocd get application $app -o jsonpath='{.metadata.name} {.status.sync.status} {.status.operationState.finishedAt}{"\n"}'
+    K -n argocd get application $app -o jsonpath='{.metadata.name} {.status.sync.status} {.status.operationState.finishedAt}{"\n"}'
   done; sleep 30
 done | sort | uniq -c
 argocd app diff cert-manager; echo "exit $?"

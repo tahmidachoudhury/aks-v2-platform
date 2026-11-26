@@ -305,9 +305,11 @@ It never prunes. A resource removed from this folder stays in the cluster until 
 The cost: an edit to `app-role.sql` gives the generated ConfigMap a new hash suffix, so a new `postgres-init-<hash>` arrives and the old one stays. `data` then shows OutOfSync until the evening destroy. Auto-sync ignores a difference that only a prune would fix, so nothing loops. To tidy up the same day, delete every `postgres-init-` ConfigMap the StatefulSet no longer mounts. The check on `KEEP` stops it deleting the one in use if the lookup fails:
 
 ```bash
-K="kubectl --context aks-v2-platform -n data"
-KEEP=$($K get statefulset postgres -o jsonpath='{.spec.template.spec.volumes[?(@.name=="init")].configMap.name}')
-[[ -n "$KEEP" ]] && $K get configmap -o name | grep '^configmap/postgres-init-' | grep -v "/$KEEP\$" | xargs -r $K delete
+K() { kubectl --context aks-v2-platform -n data "$@"; }
+KEEP=$(K get statefulset postgres -o jsonpath='{.spec.template.spec.volumes[?(@.name=="init")].configMap.name}')
+# xargs can't run a shell function, so the delete names kubectl in full.
+[[ -n "$KEEP" ]] && K get configmap -o name | grep '^configmap/postgres-init-' | grep -v "/$KEEP\$" \
+  | xargs -r kubectl --context aks-v2-platform -n data delete
 ```
 
 ## Acceptance test
