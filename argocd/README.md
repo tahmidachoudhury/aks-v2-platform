@@ -321,10 +321,11 @@ K -n argocd get application migrations -o jsonpath='{.status.operationState.phas
 K -n apps logs job/db-migrate --tail=5
 K exec -n data postgres-0 -- psql -U postgres -d orders -tAc "SELECT version, dirty FROM schema_migrations"
 K -n argocd get applications -o name | grep -c -E '/(api-gateway|order-service|inventory-service|payment-service|notification-service|shipping-service|dashboard-api|worker|scheduler)$'
+K -n apps get deploy,statefulset
 K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
 ```
 
-Expect `Failed` with `one or more synchronization tasks completed unsuccessfully (retried 2 times)`. The log usually reads `Dirty database version 2. Fix and force version.`: Argo CD recreates the hook Job on each retry, so the first run's `division by zero` is gone unless you catch it, and later runs stop at the dirty version. `2|t` from `schema_migrations` is the proof that 000002 failed. Then `0` service Applications, no workloads in `apps`, and the root `Running`, its message cycling through `waiting for healthy state of ...` for each wave, then `Retrying attempt #N`. On 26 Nov 2026 it read exactly that.
+Expect `Failed` with `one or more synchronization tasks completed unsuccessfully (retried 2 times)`. The log usually reads `Dirty database version 2. Fix and force version.`: Argo CD recreates the hook Job on each retry, so the first run's `division by zero` is gone unless you catch it, and later runs stop at the dirty version. `2|t` from `schema_migrations` is the proof that 000002 failed. Then `0` service Applications, no workloads in `apps` (`No resources found in apps namespace.`), and the root `Running`, its message cycling through `waiting for healthy state of ...` for each wave, then `Retrying attempt #N`. On 26 Nov 2026 it read exactly that.
 
 Then clean up. Set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), apply `infra/argocd` again to go back to `main`, or to the branch under test if this one came off it, then end the root's operation, and any child's still running on the gate branch, as in [Testing a branch](#testing-a-branch). Without that the root keeps retrying the gate branch. Within about 3 minutes `migrations` reports `no change` with the version `1|f`, and the nine services' Applications appear and turn Healthy. Delete the branch.
 
