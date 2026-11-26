@@ -55,7 +55,7 @@ A plan fails straight away if a name has drifted from the other roots. `subscrip
 
 Copy `terraform.tfvars.example` to `terraform.tfvars`, which is gitignored. `subscription_id`, `acr_name`, `key_vault_name` and `servicebus_namespace_name` are required, with the same values as in the other roots' tfvars. The rest have defaults that match theirs.
 
-`target_revision`, `main` by default, is the branch, tag or commit the root and every child track. To try a branch before merging, set it, then apply again without it. After each apply that changes it on a live cluster, end the root's running operation, or the root stays on the old revision ([Testing a branch](../../argocd/README.md#testing-a-branch)).
+`target_revision`, `main` by default, is the branch, tag or commit the root and every child track. To try a branch before merging, set it, then apply again without it. After each apply that changes it on a live cluster, end the root's running operation, and any child's still running on the old revision, or they stay on it ([Testing a branch](../../argocd/README.md#testing-a-branch)).
 
 ## Lifecycle
 

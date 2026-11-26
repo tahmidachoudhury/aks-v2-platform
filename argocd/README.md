@@ -98,7 +98,23 @@ kubectl --context aks-v2-platform -n argocd patch application root --type merge 
   -p '{"status":{"operationState":{"phase":"Terminating"}}}'
 ```
 
-`argocd app terminate-op --core` reads the kube context's namespace, so unless that is `argocd` it fails with `configmap "argocd-cm" not found`. A fix or revert pushed to the branch the root already tracks needs none of this: the next retry picks it up, within the 3-minute backoff cap.
+`argocd app terminate-op --core` reads the kube context's namespace, so unless that is `argocd` it fails with `configmap "argocd-cm" not found`.
+
+**Then end any child operation still running on the old revision.** A child stuck retrying keeps its own captured revision after the root updates its spec, the app-of-apps case argo-cd#28794 describes, and every child but `migrations` retries without a limit. The root applies a child's new spec when its wave starts, then waits on that child's health. So once the root's new operation names a child in `waiting for healthy state of ...` and that child stays Progressing, end the children's running operations:
+
+```bash
+# Every child but root and migrations with an operation still Running.
+# migrations stops after 2 retries by itself.
+for app in $(kubectl --context aks-v2-platform -n argocd get applications -o json | jq -r '
+    .items[] | select(.metadata.name != "root" and .metadata.name != "migrations")
+    | select(.status.operationState.phase == "Running") | .metadata.name'); do
+  echo "terminating $app"
+  kubectl --context aks-v2-platform -n argocd patch application "$app" --type merge \
+    -p '{"status":{"operationState":{"phase":"Terminating"}}}'
+done
+```
+
+Auto-sync then starts each one again on its current spec. A child ended before the root reaches its wave restarts on its old spec, so if a later wave stalls the same way, run the loop again then. A fix or revert pushed to the branch already tracked needs none of this: the next retry picks it up, within the 3-minute backoff cap.
 
 ## What Argo CD leaves alone
 
@@ -114,7 +130,7 @@ selfHeal undoes any `kubectl edit`, `kubectl annotate` or `kubectl scale` on a f
 
 ## When a sync fails
 
-The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges to the branch they track. A change of `target_revision` also needs the root's operation ended ([Testing a branch](#testing-a-branch)). To see why one is stuck:
+The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges to the branch they track. A change of `target_revision` also needs the root's operation ended, and any child's still running on the old revision ([Testing a branch](#testing-a-branch)). To see why one is stuck:
 
 ```bash
 # The operation's phase and message, and each resource's state.
@@ -310,7 +326,7 @@ K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.s
 
 Expect `Failed` with `one or more synchronization tasks completed unsuccessfully (retried 2 times)`. The log usually reads `Dirty database version 2. Fix and force version.`: Argo CD recreates the hook Job on each retry, so the first run's `division by zero` is gone unless you catch it, and later runs stop at the dirty version. `2|t` from `schema_migrations` is the proof that 000002 failed. Then `0` service Applications, no workloads in `apps`, and the root `Running`, its message cycling through `waiting for healthy state of ...` for each wave, then `Retrying attempt #N`. On 26 Nov 2026 it read exactly that.
 
-Then clean up. Set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), apply `infra/argocd` again to go back to `main`, or to the branch under test if this one came off it, then end the root's operation as in [Testing a branch](#testing-a-branch). Without that last step the root keeps retrying the gate branch. Within about 3 minutes `migrations` reports `no change` with the version `1|f`, and the nine services' Applications appear and turn Healthy. Delete the branch.
+Then clean up. Set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), apply `infra/argocd` again to go back to `main`, or to the branch under test if this one came off it, then end the root's operation, and any child's still running on the gate branch, as in [Testing a branch](#testing-a-branch). Without that the root keeps retrying the gate branch. Within about 3 minutes `migrations` reports `no change` with the version `1|f`, and the nine services' Applications appear and turn Healthy. Delete the branch.
 
 **P7-05 (#77): a merged tag bump deploys with no manual sync.**
 
