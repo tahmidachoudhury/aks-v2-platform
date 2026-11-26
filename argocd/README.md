@@ -51,7 +51,7 @@ It never asks for Synced, since data doesn't prune and can stay OutOfSync. So a 
 
 The root waits on a wave's health only before it starts the next wave, so the gate holds up to wave 8: the services wait on `migrations`, as the gate test proved. Wave 9, the services, is the last, so nothing waits on it. The root's sync ends Succeeded once they are applied, and a service that is still rolling out or Degraded shows in the root's health, not as a failed sync. On 26 Nov 2026 the root's sync Succeeded at 12:41:54 and the services turned Healthy at 12:44:11. In an earlier run the root read Synced, Degraded and Succeeded while two services were still Degraded just after creation.
 
-The waves order a bootstrap only. After that, each child syncs on its own when its folder changes. A tag bump and a migration in the same merge sync in parallel, so merge the migration first ([migrations](../k8s/migrations/README.md#under-argo-cd)).
+The waves order a bootstrap only. After that, each child syncs on its own when its folder changes. The exception is a change to `k8s/migrations/job.yaml` alone: Argo CD leaves the hook out of sync status, so run `argocd app sync migrations` after it merges ([migrations](../k8s/migrations/README.md#under-argo-cd)). A tag bump and a migration in the same merge sync in parallel, so merge the migration first ([migrations](../k8s/migrations/README.md#under-argo-cd)).
 
 ## Values that stay out of Git
 

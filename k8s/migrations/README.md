@@ -44,6 +44,7 @@ The Job sits in its own Application, `migrations`, at wave 8, one wave before th
 - On a fresh cluster they are missing, so the Application is OutOfSync and syncs.
 - A new file changes the hash, so the new ConfigMap is missing and the Application syncs. The Job mounts the new name, and the old ConfigMap is pruned.
 - An unrelated sync, such as selfHeal putting back an edited NetworkPolicy, runs the Job too. golang-migrate reports `no change`.
+- A change to `job.yaml` alone, such as a new migrate image, changes only the hook, so the Application stays Synced and nothing runs. Run `argocd app sync migrations` after it merges.
 
 To run it with no change in Git, for example after resetting the database by hand: `argocd app sync migrations`.
 

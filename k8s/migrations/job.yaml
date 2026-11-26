@@ -2,11 +2,13 @@
 #
 # The migrations Application runs it as a Sync hook, one wave after its
 # inputs (the ConfigMap, the ExternalSecret and the NetworkPolicy), and
-# BeforeHookCreation recreates it on every sync, so every sync migrates,
-# even after the database was reset. A failed Job fails the sync, and the
-# root holds the services back. golang-migrate is idempotent, and its
-# Postgres advisory lock serialises two runs against one database. See
-# README.md.
+# BeforeHookCreation recreates it on every sync, so every sync migrates.
+# A sync runs at bootstrap and when the SQL changes. After a database reset
+# mid-day, or a change to this file alone, run argocd app sync migrations.
+# A failed Job fails the sync. At bootstrap that holds the services back,
+# since the root waits on migrations; later the services sync on their
+# own. golang-migrate is idempotent, and its Postgres advisory lock
+# serialises two runs against one database. See README.md.
 apiVersion: batch/v1
 kind: Job
 metadata:
