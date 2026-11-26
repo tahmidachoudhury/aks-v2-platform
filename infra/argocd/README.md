@@ -34,7 +34,7 @@ Every pod meets `restricted`: non-root, the RuntimeDefault seccomp profile, no p
 
 ## Signing in to the cluster
 
-The cluster has local accounts disabled. The kubernetes and helm providers use `exec` with `kubelogin get-token --login azurecli`, so they sign in as your `az login`. The `azurerm_kubernetes_cluster` data source gives the API server address and CA, with no credential. You need `kubelogin` on your PATH and AKS RBAC Cluster Admin, which platform grants to `operator_object_ids`.
+The cluster has local accounts disabled. The kubernetes and helm providers use `exec` with `kubelogin get-token --login azurecli`, so they sign in as your `az login`. The `azurerm_kubernetes_cluster` data source gives the API server address and CA, with no credential. This root pins azurerm `~> 5.15`: 4.81's data source panics on a cluster with Node Auto Provisioning ([terraform-provider-azurerm#33604](https://github.com/hashicorp/terraform-provider-azurerm/issues/33604)). It only reads with azurerm, so persistent and platform stay on 4.81 for now. You need `kubelogin` on your PATH and AKS RBAC Cluster Admin, which platform grants to `operator_object_ids`.
 
 ## Values from Azure
 
@@ -55,13 +55,13 @@ A plan fails straight away if a name has drifted from the other roots. `subscrip
 
 Copy `terraform.tfvars.example` to `terraform.tfvars`, which is gitignored. `subscription_id`, `acr_name`, `key_vault_name` and `servicebus_namespace_name` are required, with the same values as in the other roots' tfvars. The rest have defaults that match theirs.
 
-`target_revision`, `main` by default, is the branch, tag or commit the root and every child track. To try a branch before merging, set it, then apply again without it ([Testing a branch](../../argocd/README.md#testing-a-branch)).
+`target_revision`, `main` by default, is the branch, tag or commit the root and every child track. To try a branch before merging, set it, then apply again without it. After each apply that changes it on a live cluster, end the root's running operation, or the root stays on the old revision ([Testing a branch](../../argocd/README.md#testing-a-branch)).
 
 ## Lifecycle
 
 Destroyed and applied again with `platform` every day. `make up` applies it after platform and the kubeconfig step. `make down` destroys it before platform, so the Helm releases go while the cluster still exists. No Application has a finalizer, so the destroy never waits on a cascade ([The evening destroy](../../argocd/README.md#the-evening-destroy)). If it fails, `make down` stops before platform and prints the recovery.
 
-The root retries a failed sync without a limit, every 3 minutes at most, and picks up a new revision as it lands. Auto-sync never retries a failed revision by itself, so a root that gave up would leave the later waves undeployed until the next commit.
+The root retries a failed sync without a limit, every 3 minutes at most, and picks up a new commit on the same branch as it lands. Auto-sync never retries a failed revision by itself, so a root that gave up would leave the later waves undeployed until the next commit.
 
 A plan or apply needs the cluster up, since the providers read it.
 

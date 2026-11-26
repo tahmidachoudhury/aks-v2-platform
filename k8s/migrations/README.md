@@ -78,7 +78,15 @@ Never edit or renumber a file that has been applied anywhere. golang-migrate rec
 
 golang-migrate marks the version dirty before running a file. The file's transaction rolled back, so the schema is unchanged, but every later run stops with `Dirty database version N. Fix and force version.`
 
-1. Read the error: `kubectl --context aks-v2-platform logs -n apps job/db-migrate`.
+1. Find the failed version. Argo CD recreates the hook Job on each retry, so the Job's log may be from a later run that stopped at `Dirty database version N`, and the file's own error may be gone. The `schema_migrations` row says which file failed: N is the version marked `t`.
+
+   ```bash
+   kubectl --context aks-v2-platform -n argocd get application migrations -o jsonpath='{.status.operationState.message}{"\n"}'
+   kubectl --context aks-v2-platform logs -n apps job/db-migrate
+   kubectl --context aks-v2-platform exec -n data postgres-0 -- \
+     psql -U postgres -d orders -tAc "SELECT version, dirty FROM schema_migrations"
+   ```
+
 2. Clear the dirty version. What to run depends on which file failed:
 
    - **A later file, N of 2 or more.** Set the version back to N-1, the last file that applied:
@@ -147,5 +155,5 @@ P5-05 (#59): a new migration applies once, and a failure stops the rollout.
    Expect `1/u baseline` and `1|f`.
 
 2. `argocd app sync migrations`. Expect the Job's log to say `no change`, and the version still `1|f`.
-3. On a scratch branch, add `sql/000002_fail.up.sql` containing `SELECT 1/0;` and list it in `kustomization.yaml`. Point the cluster at the branch ([Testing a branch](../../argocd/README.md#testing-a-branch)). Expect `division by zero` in the Job's log, and `argocd app get migrations` to show the sync operation `Failed`.
-4. Recover as in [When a migration fails](#when-a-migration-fails), setting the version back to 1. Then apply the argocd root with `main` again and run `argocd app sync migrations`, which reports `no change`.
+3. On a scratch branch, add `sql/000002_fail.up.sql` containing `SELECT 1/0;` and list it in `kustomization.yaml`. Point the cluster at the branch ([Testing a branch](../../argocd/README.md#testing-a-branch)). Expect `argocd app get migrations` to show the sync operation `Failed`, `2|t` from `schema_migrations`, and in the Job's log `division by zero` if you catch the first run, or `Dirty database version 2` from a later retry.
+4. Recover as in [When a migration fails](#when-a-migration-fails), setting the version back to 1. Then apply the argocd root with `main`, or the branch under test, again and end the root's running operation ([Testing a branch](../../argocd/README.md#testing-a-branch)). `migrations` then syncs on `main` and reports `no change`.

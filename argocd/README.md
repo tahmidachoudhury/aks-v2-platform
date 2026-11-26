@@ -73,7 +73,7 @@ Every child, and the root, has:
 - Automated sync with selfHeal. A merged change deploys with no click, and Argo CD reverts a hand edit to a managed field.
 - Prune, except on data. A resource dropped from Git is deleted. data never prunes, so a bad commit can't delete Postgres, Redis or their disks. Delete a resource that left `k8s/data` by hand.
 - Server-side apply. ESO's, KEDA's and cert-manager's CRDs are larger than the 256 KiB the last-applied annotation allows. From Argo CD 3.6, server-side apply also selects the server-side diff, which leaves out fields Argo CD doesn't own.
-- Retries without a limit, with backoff from 10 seconds to 3 minutes, picking up a new revision as it lands (`refresh`). Auto-sync never retries a failed revision by itself, so without them a short Degraded spell, such as a webhook from the wave before still starting, would leave every later wave undeployed until the next commit. `migrations` stops after 2, since rerunning a failed SQL file only marks the version dirty again.
+- Retries without a limit, with backoff from 10 seconds to 3 minutes, picking up a new commit on the tracked branch as it lands (`refresh`). Auto-sync never retries a failed revision by itself, so without them a short Degraded spell, such as a webhook from the wave before still starting, would leave every later wave undeployed until the next commit. `migrations` stops after 2, since rerunning a failed SQL file only marks the version dirty again.
 - SkipDryRunOnMissingResource on the Applications whose custom resources use another Application's CRDs: the store, data, migrations and the services.
 
 ### Testing a branch
@@ -85,6 +85,18 @@ tofu -chdir=infra/argocd apply -var target_revision=tc/my-branch
 ```
 
 Every child follows the branch until the next apply without the variable. Chart versions come from the branch too. Apply again with no `-var` before merging, or the cluster stays on the branch.
+
+**After changing `target_revision`, end the root's running operation.** An operation keeps the revision it started with, and each retry refreshes only that branch to its latest commit ([argo-cd#28794](https://github.com/argoproj/argo-cd/issues/28794)). With retries unlimited, an operation retrying a failed wave never ends, and auto-sync starts no new one while it runs. On 26 Nov 2026 the root stayed on the old branch for about 55 minutes and 20 retries after the apply. Ending the operation makes auto-sync start one on the new revision at once:
+
+```bash
+# Logged in to the argocd CLI, as in The UI below.
+argocd app terminate-op root
+# Or with no login.
+kubectl --context aks-v2-platform -n argocd patch application root --type merge \
+  -p '{"status":{"operationState":{"phase":"Terminating"}}}'
+```
+
+`argocd app terminate-op --core` reads the kube context's namespace, so unless that is `argocd` it fails with `configmap "argocd-cm" not found`. A fix or revert pushed to the branch the root already tracks needs none of this: the next retry picks it up, within the 3-minute backoff cap.
 
 ## What Argo CD leaves alone
 
@@ -100,7 +112,7 @@ selfHeal undoes any `kubectl edit`, `kubectl annotate` or `kubectl scale` on a f
 
 ## When a sync fails
 
-The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges. To see why one is stuck:
+The root and every child retry on their own, every 3 minutes at most, and pick up a fix as soon as it merges to the branch they track. A change of `target_revision` also needs the root's operation ended ([Testing a branch](#testing-a-branch)). To see why one is stuck:
 
 ```bash
 # The operation's phase and message, and each resource's state.
@@ -279,13 +291,16 @@ About 15 minutes later:
 
 ```bash
 K() { kubectl --context aks-v2-platform "$@"; }
-K -n argocd get application migrations -o jsonpath='{.status.operationState.phase}{"\n"}'
+K -n argocd get application migrations -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
 K -n apps logs job/db-migrate --tail=5
+K exec -n data postgres-0 -- psql -U postgres -d orders -tAc "SELECT version, dirty FROM schema_migrations"
 K -n argocd get applications -o name | grep -c -E '/(api-gateway|order-service|inventory-service|payment-service|notification-service|shipping-service|dashboard-api|worker|scheduler)$'
 K -n argocd get application root -o jsonpath='{.status.operationState.phase} {.status.operationState.message}{"\n"}'
 ```
 
-Expect `Failed`, `division by zero` in the log, `0` service Applications, and the root `Running` with a message that it is retrying. Then clean up: set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), run `tofu -chdir=infra/argocd apply` with no `-var` to go back to `main`, and delete the branch. The services' Applications appear once `migrations` passes.
+Expect `Failed` with `one or more synchronization tasks completed unsuccessfully (retried 2 times)`. The log usually reads `Dirty database version 2. Fix and force version.`: Argo CD recreates the hook Job on each retry, so the first run's `division by zero` is gone unless you catch it, and later runs stop at the dirty version. `2|t` from `schema_migrations` is the proof that 000002 failed. Then `0` service Applications, no workloads in `apps`, and the root `Running`, its message cycling through `waiting for healthy state of ...` for each wave, then `Retrying attempt #N`. On 26 Nov 2026 it read exactly that.
+
+Then clean up. Set the version back to 1 ([When a migration fails](../k8s/migrations/README.md#when-a-migration-fails)), apply `infra/argocd` again to go back to `main`, or to the branch under test if this one came off it, then end the root's operation as in [Testing a branch](#testing-a-branch). Without that last step the root keeps retrying the gate branch. Within about 3 minutes `migrations` reports `no change` with the version `1|f`, and the nine services' Applications appear and turn Healthy. Delete the branch.
 
 **P7-05 (#77): a merged tag bump deploys with no manual sync.**
 
