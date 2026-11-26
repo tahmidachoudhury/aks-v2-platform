@@ -134,7 +134,7 @@ The defaults apply only to a container that sets nothing. If a container sets a 
 
 ## Morning apply
 
-Argo CD's `namespaces` Application applies this folder at wave 1, after the NodePools and before any chart installs into `platform` ([argocd](../../argocd/README.md#how-the-cluster-comes-up)).
+Argo CD's `namespaces` Application applies this folder at wave 1, after the NodePools and before any chart installs into `platform` ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). It prunes, but `data` carries `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, as the `default` StorageClass does in [storage](../storage/README.md), since deleting it would take Postgres, Redis and their disks with it. `apps` and `platform` hold no data: everything in them comes back from Git and Key Vault, so they prune like everything else.
 
 ## Acceptance test
 
