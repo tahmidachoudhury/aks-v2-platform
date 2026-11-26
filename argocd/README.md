@@ -25,7 +25,7 @@ Chart versions are pinned in `platform.yaml` and nowhere else. Each chart's valu
 
 1. `make up` applies platform, fetches a kubeconfig, then applies `infra/argocd`.
 2. `infra/argocd` creates the `argocd` namespace, installs the argo-cd chart and creates the root Application with the values from OpenTofu ([infra/argocd](../infra/argocd/README.md)).
-3. The root syncs `argocd/apps` and creates the children wave by wave. Each child syncs itself, and the root moves on only when the whole wave is Healthy.
+3. The root syncs `argocd/apps` and creates the children wave by wave. Each child syncs itself, and the root moves on only when the whole wave is Healthy. On 26 Nov 2026 wave 3, `external-secrets-store`, started at 12:31:26 during a short Healthy spell of `external-secrets` before ESO settled at 12:33:30. It still converged with no manual step.
 
 | Wave | Applications | Source | Why here |
 | --- | --- | --- | --- |
@@ -44,10 +44,12 @@ Argo CD 1.8 dropped health for Applications, so the root would apply every wave 
 
 - No sync yet, as when the root has just created it: Progressing. A child that is already Synced, say one recreated over resources that stayed, has nothing to sync and goes by its health.
 - A sync running or retrying: Progressing.
-- A sync that Failed or errored: Degraded, which fails the root's wave.
+- A sync that Failed or errored: Degraded, which fails the root's wave, for every wave but the last.
 - A sync that Succeeded: the child's health.
 
 It never asks for Synced, since data doesn't prune and can stay OutOfSync. So a migration Job that is still running, retrying or failed holds the services back. The root then retries until the wave passes ([When a sync fails](#when-a-sync-fails)).
+
+The root waits on a wave's health only before it starts the next wave, so the gate holds up to wave 8: the services wait on `migrations`, as the gate test proved. Wave 9, the services, is the last, so nothing waits on it. The root's sync ends Succeeded once they are applied, and a service that is still rolling out or Degraded shows in the root's health, not as a failed sync. On 26 Nov 2026 the root's sync Succeeded at 12:41:54 and the services turned Healthy at 12:44:11. In an earlier run the root read Synced, Degraded and Succeeded while two services were still Degraded just after creation.
 
 The waves order a bootstrap only. After that, each child syncs on its own when its folder changes. A tag bump and a migration in the same merge sync in parallel, so merge the migration first ([migrations](../k8s/migrations/README.md#under-argo-cd)).
 
@@ -105,7 +107,7 @@ Nothing needs `ignoreDifferences` today:
 - Replicas. Only the scheduler's StatefulSet sets `replicas`. The eight Deployments leave it out, so the HPAs and KEDA own the count.
 - Reloader. It stamps an annotation on the pod template (`reloadStrategy: annotations`). The annotation isn't in Git, so it isn't in the diff.
 - Secrets from ESO, and cert-manager's solver pods, Services and Ingresses. Their controllers create them. They carry no Argo CD tracking annotation, so Argo CD never prunes them.
-- AKS's admissions enforcer, which adds expressions to every webhook's `namespaceSelector`. It writes them as its own field manager, `admissionsenforcer`, and the server-side diff ignores fields Argo CD doesn't own. [Proving it](#proving-it) checks that cert-manager's and ESO's webhooks don't flap.
+- AKS's admissions enforcer, which adds expressions to every webhook's `namespaceSelector` that lacks them. It writes them as its own field manager, `admissionsenforcer`, and the server-side diff ignores fields Argo CD doesn't own. cert-manager's values already declare them, so only ESO's webhooks carry the enforcer's fields. [Proving it](#proving-it) checks that cert-manager's and ESO's webhooks don't flap.
 - The `default` StorageClass, which AKS owns. `k8s/storage` redeclares it with `Prune=false,Delete=false`.
 
 selfHeal undoes any `kubectl edit`, `kubectl annotate` or `kubectl scale` on a field Git sets. That includes the old switch to the production certificate, now a commit ([apps](../k8s/apps/README.md#ingress)). `kubectl annotate ... force-sync=` on an ExternalSecret survives, since Git doesn't set that annotation.
@@ -241,6 +243,8 @@ kill $PF
 
 Expect every pod Running, `0` Ingresses, `pod-security.kubernetes.io/enforce=restricted`, `200`, and the repo with `STATUS` `Successful`.
 
+Proven on 26 Nov 2026: the four Argo CD pods Running on `aks-system` nodes, `0` Ingresses, `enforce=restricted`, `200`, and the repo `Successful`.
+
 **P7-02 (#74): syncing the root creates every child.**
 
 ```bash
@@ -249,6 +253,8 @@ kubectl --context aks-v2-platform -n argocd get applications \
 ```
 
 Expect 23 rows: `root`, which has no wave, and the 22 children with the waves in the table above.
+
+Proven on 26 Nov 2026: 23 rows, every one Synced and Healthy.
 
 **P7-03 (#75): a platform resource deleted by hand comes back.**
 
@@ -260,6 +266,8 @@ K get storageclass premium-zrs -o jsonpath='{.metadata.creationTimestamp} {.meta
 ```
 
 Expect a creation time from the last minute and `true`. Bound PVCs are unaffected, since a StorageClass is only read when a volume is provisioned.
+
+Proven on 26 Nov 2026: `premium-zrs` was deleted at 12:45:20 and an automated sync recreated it in the same second, still the default. Both PVCs stayed Bound.
 
 **P7-04 (#76): a fresh cluster bootstraps with no manual step, in wave order.**
 
@@ -273,6 +281,8 @@ kubectl --context aks-v2-platform -n argocd get applications -o json | jq -r '.i
 ```
 
 Expect every row `Synced` and `Healthy`, and the start times rising with the wave. Then check the services: `kubectl --context aks-v2-platform -n apps get deploy,statefulset`.
+
+Proven on 26 Nov 2026, with no manual step: 14 minutes from the root's first sync at 12:30:37 to every child Healthy at 12:44:11. The start times rose with the wave, from `node-pools` at 12:30:47 to the services at 12:41:52, and every operation was automated with a retry count of 0.
 
 **P7-04 (#76): a failed migration at bootstrap holds the services back.**
 
@@ -315,11 +325,17 @@ K -n apps get deploy order-service -o jsonpath='{.spec.template.spec.containers[
 
 Expect the Application to go OutOfSync, then Synced within about three minutes, `{"automated":true}`, the merge commit as the revision, and the new tag on the Deployment.
 
+Proven on 26 Nov 2026, with the bump pushed to the tracked branch, `tc/p7-argocd`, rather than merged, since P7 wasn't merged yet. order-service synced at 12:55:14, 3 minutes 17 seconds after the push at 12:51:57: about the 3-minute poll plus the sync. `{"automated":true}`, revision `f56ff06`, and the new image, `8770f95129aa`, rolled out.
+
 **Server-side diff and AKS's admissions enforcer: the webhooks don't flap.**
 
 ```bash
 K() { kubectl --context aks-v2-platform "$@"; }
-K get validatingwebhookconfiguration cert-manager-webhook -o json | jq -c '[.metadata.managedFields[].manager] | unique'
+# kubectl 1.36 leaves managedFields out unless asked.
+for wh in cert-manager-webhook externalsecret-validate secretstore-validate; do
+  printf '%s ' "$wh"
+  K get validatingwebhookconfiguration "$wh" -o json --show-managed-fields | jq -c '[.metadata.managedFields[].manager] | unique'
+done
 for i in $(seq 10); do
   for app in cert-manager external-secrets; do
     K -n argocd get application $app -o jsonpath='{.metadata.name} {.status.sync.status} {.status.operationState.finishedAt}{"\n"}'
@@ -329,7 +345,9 @@ argocd app diff cert-manager; echo "exit $?"
 argocd app diff external-secrets; echo "exit $?"
 ```
 
-Expect `admissionsenforcer` among the managers, one line per Application with a count of 10: `Synced` with the same finish time for five minutes, so no sync ran. Both diffs print nothing and exit 0.
+Expect `cert-manager-webhook ["argocd-controller","cert-manager-cainjector"]`: cert-manager's values already declare the AKS expressions, so the enforcer has nothing to add there. ESO's two webhooks read `["admissionsenforcer","argocd-controller","external-secrets"]`. Then one line per Application with a count of 10: `Synced` with the same finish time for five minutes, so no sync ran. Both diffs print nothing and exit 0.
+
+Proven on 26 Nov 2026: those managers, 10 of 10 unchanged for both Applications, and both diffs empty with exit 0.
 
 **P7-06 (#78):** the runbook is above. P9-05 exercises it.
 
