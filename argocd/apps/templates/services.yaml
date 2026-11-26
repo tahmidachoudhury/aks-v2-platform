@@ -32,7 +32,7 @@ spec:
             metadata:
               name: {{ $name }}
               annotations:
-                azure.workload.identity/client-id: {{ index $azure.clientIds $name | quote }}
+                azure.workload.identity/client-id: {{ required (printf "azure.clientIds.%s is required: %s has workloadIdentity set" $name $name) (index $azure.clientIds $name) | quote }}
         - target:
             kind: Deployment
             name: {{ $name }}
