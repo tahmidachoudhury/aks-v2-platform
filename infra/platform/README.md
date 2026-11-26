@@ -18,7 +18,7 @@
 
 AKS creates its own node resource group. This root doesn't manage it, and it goes when the cluster goes.
 
-`make up` from the repo root runs this apply, fetches an Entra ID kubeconfig with the `kubeconfig_command` output, then applies the NodePools and the other in-cluster components. See [Daily routine](../README.md#daily-routine).
+`make up` from the repo root runs this apply, fetches an Entra ID kubeconfig with the `kubeconfig_command` output, then applies the argocd root, which installs Argo CD, and Argo CD the rest of the cluster. See [Daily routine](../README.md#daily-routine).
 
 State lives in the `platform.tfstate` blob in the state account.
 
@@ -143,10 +143,12 @@ It only happens while the cluster is up, so it shows first on the evening destro
 The fix is on the machine that runs `tofu`. Send lookups for that one name to a public resolver, and leave the rest of the network's DNS alone. On macOS, a file in `/etc/resolver` named after the host does this:
 
 ```bash
-ST=<state account name>   # storage_account_name in infra/backend.hcl
+# storage_account_name in infra/backend.hcl.
+ST=<state account name>
 sudo mkdir -p /etc/resolver
 echo "nameserver 1.1.1.1" | sudo tee "/etc/resolver/$ST.blob.core.windows.net"
-dig +short "$ST.blob.core.windows.net"   # ends in a public IP
+# Ends in a public IP.
+dig +short "$ST.blob.core.windows.net"
 ```
 
 Keep the file. It is harmless when the endpoint doesn't exist, so the morning apply and evening destroy both work. On Linux with systemd-resolved, use a drop-in that routes the name to a public resolver instead.

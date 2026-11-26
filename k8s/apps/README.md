@@ -1,6 +1,6 @@
 # apps
 
-**TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. `dev/` aggregates the nine overlays and fills in values kept out of Git from a gitignored `azure.env`. `make images` builds each service into ACR, tagged with the last commit that touched its folder. `make apps` applies `dev/` after `make migrate` and waits for every rollout. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed. ArgoCD takes over in P7, with one Application per service folder.
+**TL;DR:** The nine services run in the `apps` namespace. Each has a folder here named after its folder in `app/services/`, with a `base` and a `dev` overlay. One shared Kustomize component gives every workload the same pod shape. Each service is its own Argo CD Application, deployed after the migrations, which fills in the values kept out of Git. `make images` builds each service into ACR, tagged with the last commit that touched its folder. Key Vault supplies secrets through one ExternalSecret per service, and Reloader restarts only the services whose Secret changed.
 
 Filled by P6-01 (#62), P6-02 (#63), P6-03 (#64), P6-04 (#65), P6-05 (#66), P6-06 (#67), P6-07 (#68), P6-08 (#69), P6-09 (#70), P6-10 (#71) and P6-11 (#72).
 
@@ -12,11 +12,10 @@ k8s/apps/
   components/host-spread/   a hard node spread for the five multi-replica services
   <service>/base/           ServiceAccount, Deployment (the scheduler: StatefulSet), Service, NetworkPolicy, PodDisruptionBudget,
                             HorizontalPodAutoscaler, ExternalSecret, config.env
-  <service>/overlays/dev/   image tag for dev (and the scheduler's one replica)
-  dev/                      all nine dev overlays, plus the values from OpenTofu
+  <service>/overlays/dev/   image tag for dev (and the scheduler's one replica), what its Application deploys
 ```
 
-This follows [data](../data/README.md#why-k8sdatacomponent): one folder per namespace, then one per component. The service folder name is also the name of its ServiceAccount, of the federated credential's subject (`system:serviceaccount:apps:<service>`), and of its ArgoCD Application in P7.
+This follows [data](../data/README.md#why-k8sdatacomponent): one folder per namespace, then one per component. The service folder name is also the name of its ServiceAccount, of the federated credential's subject (`system:serviceaccount:apps:<service>`), and of its Argo CD Application.
 
 The [Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling) ADR warned of nine near-identical bases and chose a Kustomize component. `components/service` holds what the services share. Each base includes it and keeps only its port, config, Secret and identity. The component patches every Deployment and the scheduler's StatefulSet by kind (`Deployment|StatefulSet`, a regular expression) and merges into the container called `app`. It carries only fields both kinds have. It also labels everything `app.kubernetes.io/part-of: order-fulfilment`, on resources and pod templates but never on selectors.
 
@@ -65,21 +64,17 @@ Every container port is named `http`, so the probes find it.
 
 ## Values from OpenTofu
 
-The repo is public, so nothing deployment-specific is committed ([Client IDs](../../infra/modules/workload-identity/README.md#client-ids)). The bases carry placeholders. `dev/` replaces them from the gitignored `dev/azure.env`. The ClusterSecretStore's `vault.env` uses the same pattern ([external-secrets](../external-secrets/README.md#ids-and-the-public-repo)).
+The repo is public, so nothing deployment-specific is committed ([Client IDs](../../infra/modules/workload-identity/README.md#client-ids)). The bases carry placeholders, and each service's Application in [`argocd/apps`](../../argocd/README.md#values-that-stay-out-of-git) fills them in from the root's values, which OpenTofu sets:
 
-| Key in `azure.env` | From | Replaces |
-| --- | --- | --- |
-| `acrLoginServer` | persistent `acr_login_server` | `ACR_LOGIN_SERVER` at the front of every image |
-| `serviceBusNamespace` | platform `servicebus_fqdn` | `SERVICEBUS_NAMESPACE` on order, payment, shipping and worker |
-| `serviceBusNamespaceName` | platform `servicebus_namespace_name` | `namespace` in the worker's ScaledObject trigger. KEDA adds `.servicebus.windows.net` itself |
-| `serviceBusQueue` | platform `servicebus_queue_name` | `SERVICEBUS_QUEUE` on the same four, and `queueName` in the ScaledObject |
-| `order-service`, `payment-service`, `shipping-service`, `worker` | persistent `workload_identity_client_ids` | `azure.workload.identity/client-id` on each ServiceAccount |
+| Value | From | Replaces | How |
+| --- | --- | --- | --- |
+| `acrLoginServer` | The registry in persistent | `ACR_LOGIN_SERVER` at the front of every image | `kustomize.images`, with `:*` so the overlay's pinned tag stays |
+| `serviceBusNamespace` | The Service Bus namespace in platform, as an FQDN | `SERVICEBUS_FQDN_FROM_ARGOCD` on order, payment, shipping and worker | A strategic merge patch on the Deployment |
+| `serviceBusNamespaceName` | The same, as a name | `namespace` in the worker's ScaledObject trigger. KEDA adds `.servicebus.windows.net` itself | A JSON patch |
+| `serviceBusQueue` | The queue in platform | `SERVICEBUS_QUEUE_FROM_ARGOCD` on the same four, and `queueName` in the ScaledObject | Both patches |
+| `clientIds` | Each workload identity in persistent | `CLIENT_ID_FROM_ARGOCD` in `azure.workload.identity/client-id` on the four ServiceAccounts | A strategic merge patch |
 
-`make apps` checks the shape of every value before it writes the file: a GUID for each client ID, `*.azurecr.io`, `*.servicebus.windows.net`. A failed `tofu output`, a missing key or a malformed value stops it, so it never applies a placeholder or a `null`. If `azure.env` is missing, `kustomize build k8s/apps/dev` fails with an error naming the file. `azure.env.example` shows the shape. Don't copy it into place.
-
-The generated `azure` ConfigMap is marked `config.kubernetes.io/local-config`, so it feeds the replacements and never reaches the cluster.
-
-A per-service overlay applied alone still holds the placeholders. Until P7, apply only `dev/`. In P7 the argocd root passes these values to each Application as Kustomize patches, as it does for the store's `vaultUrl`.
+The root's chart checks the shape of every value before it renders: a GUID for each client ID, `*.azurecr.io`, `*.servicebus.windows.net`. A missing or malformed value fails the render, so Argo CD never applies a placeholder or a `null`. An overlay applied by hand with `kubectl apply -k` still holds the placeholders, so don't.
 
 ## Images
 
@@ -129,11 +124,11 @@ P6-03 (#64). Every Deployment rolls one pod at a time, and keeps every old pod u
 1. The Deployment adds one new pod (`maxSurge: 1`). It takes traffic only once `/healthz` passes, so a pod that never turns Ready takes none.
 2. Only then does it remove an old pod (`maxUnavailable: 0`). That pod leaves the Service endpoints straight away. The 5s `preStop` sleep gives Cilium and Traefik time to stop sending it new connections.
 3. Kubernetes sends SIGTERM. The HTTP services fail `/healthz` and keep serving for `SHUTDOWN_DRAIN_DELAY` (5s), then `server.Shutdown` waits up to 30s for requests in flight. The 45s grace period covers all of it.
-4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and `make apps` fails. The old pods keep serving. Revert the tag in Git and run `make apps`. `kubectl rollout undo` also works for a Deployment, but the next `make apps` puts the broken tag back. A broken scheduler release needs `scheduler-0` deleted after the revert, since a StatefulSet doesn't replace an unready pod. `make apps` does that, or run `kubectl -n apps delete pod scheduler-0` ([Scheduler](#scheduler-one-statefulset-not-cronjobs)).
+4. If no new pod turns Ready for 5 minutes (`progressDeadlineSeconds: 300`), the rollout is marked `ProgressDeadlineExceeded` and Argo CD reports the service Degraded. The old pods keep serving. Revert the tag in Git and merge it. `kubectl rollout undo` doesn't help, since selfHeal puts Git's tag straight back. A broken scheduler release also needs `scheduler-0` deleted after the revert, since a StatefulSet doesn't replace an unready pod ([Scheduler](#scheduler-one-statefulset-not-cronjobs)). The runbook is in [argocd](../../argocd/README.md#rollback).
 
 The worker loses no messages in a rollout. It receives in PeekLock mode, so a message it hasn't completed is locked, not removed. On SIGTERM it abandons what it received after the signal, and Service Bus redelivers those at once. A message it was handling when the pod died returns when its one-minute lock expires.
 
-The scheduler is a StatefulSet, so the rollout fields live in a second component patch, `rollout.yaml`, that targets Deployments only. The StatefulSet's own rolling update deletes `scheduler-0` before it creates the new one, and has no progress deadline: `make apps` gives up on it after its 10-minute `rollout status` timeout (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)).
+The scheduler is a StatefulSet, so the rollout fields live in a second component patch, `rollout.yaml`, that targets Deployments only. The StatefulSet's own rolling update deletes `scheduler-0` before it creates the new one, and has no progress deadline: Argo CD shows it Progressing until the pod turns Ready (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)).
 
 With replicas near the HPA maximums, roll one service at a time. Each rollout adds a 40m surge pod, and at the maximums the `apps` quota has room for only a few at once ([Quotas](#quotas)). A surge pod the quota refuses holds its rollout until the deadline fails it.
 
@@ -162,11 +157,11 @@ The cost shows when only one `general` node is eligible: cordoned or drained, No
 
 With two nodes, a full node can still strand a pod, because the rule, not free CPU, picks the node. api-gateway at three replicas, two on node A and one on B, can put a fourth only on B. If B has no CPU left and A has room, the pod stays `Pending`. NAP can't help: Karpenter counts a new node as the place for it, and the limit has no room for a third. A rollout's surge pods hit the same case, since `pod-template-hash` spreads each revision on its own: with one new pod on A, the next must go on B, and with `maxUnavailable: 0` the rollout fails at its 300s deadline. This is rarer than under the zone rule, which had the same case and the same-zone one besides, but it is real. The two nodes run close to full at the quotas ([namespaces](../namespaces/README.md#capacity)).
 
-The same case can meet `make apps` at bring-up. If `platform` and `data` fill node A, NAP starts B for the overflow, and `general` is then at 4 of 4 vCPUs. Each of the five puts its first pod on B, where there is room. Its second must go on A, since a second on B would make the skew 2, and A has no CPU left. Karpenter's answer is a third node, which the limit refuses. The five sit at one pod each, their rollouts hit `ProgressDeadlineExceeded`, and `make apps` fails. Under `ScheduleAnyway` both pods would have run on B. This is a possible failure, not one seen yet: on 25 Nov 2026 the first node had room for one pod of each. To recover, move CPU from A to B by hand:
+The same case can meet the morning bring-up. If `platform` and `data` fill node A, NAP starts B for the overflow, and `general` is then at 4 of 4 vCPUs. Each of the five puts its first pod on B, where there is room. Its second must go on A, since a second on B would make the skew 2, and A has no CPU left. Karpenter's answer is a third node, which the limit refuses. The five sit at one pod each, their rollouts hit `ProgressDeadlineExceeded`, and Argo CD reports their Applications Degraded until the pods schedule. The services are the root's last wave, so the root's sync still ends Succeeded and the root shows Degraded health ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). Under `ScheduleAnyway` both pods would have run on B. This is a possible failure, not one seen yet: on 25 Nov 2026 the first node had room for one pod of each. To recover, move CPU from A to B by hand:
 
 1. `kubectl cordon` node A, so nothing new lands there.
 2. Delete `platform` pods on A, such as one Traefik pod or the External Secrets and KEDA pods, until about 40m is freed for each of the five's `Pending` pods. Their Deployments recreate them on B. Leave `postgres-0` and `redis-0` alone.
-3. Check the recreated pods are `Running` on B, then `kubectl uncordon` A. The five's `Pending` pods then take A, and `make apps` can run again.
+3. Check the recreated pods are `Running` on B, then `kubectl uncordon` A. The five's `Pending` pods then take A, their rollouts finish, and Argo CD reports them Healthy.
 
 This works only if B has room for what moves, which it does whenever `ScheduleAnyway` would have fitted the five there. If the two nodes can't hold the requests between them, no placement helps: lower a request or a quota. Deleting node A instead should also end with room, but it moves Postgres and Redis too, and NAP's drain waits on their budgets ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)). Neither path has been tried on a live cluster yet.
 
@@ -177,7 +172,7 @@ NAP drift also can't replace a `general` node while both exist, as far as upstre
 P6-09 (#70), per the [Autoscaling](../../docs/architecture-decisions.md#autoscaling) ADR:
 
 - The seven HTTP services each have a HorizontalPodAutoscaler in their base, on CPU at 70% of the 40m request, so a pod scales out at about 28m. The minimums and maximums are the ADR's, in the table above.
-- The worker scales with [KEDA](../keda/README.md) on the queue's active message count, 5 per replica, from 1 to 5. KEDA creates and owns the HPA `keda-hpa-worker`. The ScaledObject is in the worker's base, and `dev/` fills in the namespace's name and the queue.
+- The worker scales with [KEDA](../keda/README.md) on the queue's active message count, 5 per replica, from 1 to 5. KEDA creates and owns the HPA `keda-hpa-worker`. The ScaledObject is in the worker's base, and its Application fills in the namespace's name and the queue.
 - The scheduler stays at one replica, set in its dev overlay.
 
 Only the scheduler's StatefulSet sets `replicas`, to 1. The eight Deployments leave it out. The autoscaler owns the count, and a count in Git would reset it on every apply. A new Deployment starts at 1 and its HPA raises it to the minimum within a few seconds. One catch on a live cluster: the first apply after a manifest drops `replicas` resets the Deployment to 1 for a moment. The cluster is rebuilt every morning, so this only matters on a cluster that ran an earlier version of these manifests.
@@ -207,7 +202,7 @@ P6-11 (#72) asked which fits the code. The answer is a StatefulSet with one repl
 - The scheduler keeps no state, so it has no `volumeClaimTemplates`. The headless Service `scheduler` exists only because a StatefulSet requires `serviceName`.
 - CronJobs would need a new entry point per job. `concurrencyPolicy: Forbid` also doesn't stop two Jobs overlapping across a CronJob edit. That change isn't worth making for five short jobs.
 
-**A broken scheduler release needs its pod deleted after the revert.** With one replica, a StatefulSet rolls by deleting `scheduler-0` and creating it from the new template. If that pod never turns Ready, say from a bad image, reverting the tag in Git and applying again doesn't replace it, and neither does `kubectl rollout undo`: the controller waits for the broken pod to turn Ready first, and `rollout status` times out. `make apps` handles this. After it applies, if `scheduler-0` is unready, not already terminating, and from a different revision than the StatefulSet's `updateRevision`, it deletes the pod once and the controller recreates it from the current template. It never deletes a Ready pod or one whose revision matches. By hand, after reverting:
+**A broken scheduler release needs its pod deleted after the revert.** With one replica, a StatefulSet rolls by deleting `scheduler-0` and creating it from the new template. If that pod never turns Ready, say from a bad image, reverting the tag in Git and applying again doesn't replace it, and neither does `kubectl rollout undo`: the controller waits for the broken pod to turn Ready first. Argo CD doesn't delete pods, so once the revert has synced, delete it by hand if it is unready and from the broken revision. The controller recreates it from the current template:
 
 ```bash
 kubectl --context aks-v2-platform -n apps delete pod scheduler-0
@@ -231,18 +226,14 @@ ExternalDNS writes the A record for the host, pointing at Traefik's persistent I
 
 **Staging by default.** The overlay uses `letsencrypt-staging`, as the [TLS certificates](../../docs/architecture-decisions.md#tls-certificates) ADR and the [cert-manager rate limits](../cert-manager/README.md#rate-limits) rule. Production allows five certificates for this name in any seven days, and each morning's cluster orders a new one. Browsers distrust the staging certificate, but the whole flow runs.
 
-**Production for a proof window**, a demo or grading run. Each switch uses one of the five:
+**Production for a proof window**, a demo or grading run. Each switch uses one of the five. selfHeal reverts a `kubectl annotate` within seconds, so the switch is a commit: set `cert-manager.io/cluster-issuer: letsencrypt-production` in `api-gateway/overlays/dev/ingress.yaml` and merge it. Then wait for the Secret to name the production issuer. The old staging certificate stays Ready while the new one is ordered:
 
 ```bash
-kubectl --context aks-v2-platform -n apps annotate ingress api-gateway \
-  cert-manager.io/cluster-issuer=letsencrypt-production --overwrite
-# The old staging certificate stays Ready while the new one is ordered, so wait
-# for the Secret to name the production issuer instead.
 kubectl --context aks-v2-platform -n apps wait secret api-gateway-tls --timeout=5m \
   --for=jsonpath='{.metadata.annotations.cert-manager\.io/issuer-name}'=letsencrypt-production
 ```
 
-cert-manager sees the issuer change and orders a production certificate into the same Secret. The next `make apps` puts the annotation back to staging, which orders a staging certificate again, so a forgotten switch costs nothing more.
+cert-manager sees the issuer change and orders a production certificate into the same Secret. Revert the commit when the window ends, which orders a staging certificate again. A forgotten switch only lasts until the revert: each morning's cluster orders whatever Git says, so leave it on staging in Git.
 
 The client's address survives the trip. Traefik's Service has `externalTrafficPolicy: Local`, so Traefik sees the real client, and it replaces any `X-Forwarded-For` the client sends with the address it saw ([traefik](../traefik/README.md)). The gateway trusts that header only from the pod CIDR in `TRUSTED_PROXIES`, and its NetworkPolicy lets only Traefik connect, so the rate limit counts each client, not Traefik (#128).
 
@@ -303,19 +294,11 @@ While it runs, cert-manager's startupapicheck Job adds one pod, 50m, 64Mi and a 
 
 ## Morning apply
 
-`make cluster` runs these after `make migrate`, so a failed migration stops `make` before any service rolls out:
-
-```bash
-# make reloader runs before make data, in the first line of make cluster.
-make reloader
-make apps
-```
-
-`make apps` writes `dev/azure.env` and applies `dev/`. It waits up to 2 minutes for every ExternalSecret in `apps`, then up to 10 minutes for each rollout: eight Deployments and `statefulset/scheduler`. Before waiting, it replaces a `scheduler-0` left unready by an earlier broken release (see [Scheduler](#scheduler-one-statefulset-not-cronjobs)). The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy.
+Argo CD deploys the nine services last, in wave 9, after the `migrations` sync has succeeded, so a migration still running, or one that failed, holds every service back ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). Each service's Application waits for its ExternalSecrets and its rollout to turn Healthy. The images must already be in ACR. Run `make images` once after a service changes, not every morning, since ACR outlives the nightly destroy. A merged tag bump deploys on its own, with no click.
 
 ## Proving it
 
-These need a live cluster after `make cluster`. Run them from the repo root. The commands work in bash, and in zsh with `setopt interactivecomments`, which oh-my-zsh sets. Without it, zsh reads each `#` line as a command, and an apostrophe in a comment opens a quote that swallows the lines after it. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
+These need a live cluster after `make up`. Run them from the repo root. The commands work in bash, and in zsh with `setopt interactivecomments`, which oh-my-zsh sets. Without it, zsh reads each `#` line as a command, and an apostrophe in a comment opens a quote that swallows the lines after it. The `az` commands name their subscription, so set both first. The registry and the vault are in the persistent root's, the Service Bus queue and the node VMs in the platform root's:
 
 ```bash
 SUB=$(awk -F'"' '/^[[:space:]]*subscription_id[[:space:]]*=/ {print $2; exit}' infra/persistent/terraform.tfvars)
@@ -442,7 +425,7 @@ for i in $(seq 110); do
 done | sort | uniq -c
 ```
 
-Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), the host as subject, and `DNS:` followed by the host, the certificate's subject alternative name. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Switch back with `make apps` when the window ends.
+Expect the `dig` answer to equal the ingress IP. Then `200 text/html`, an issuer from Let's Encrypt (not `(STAGING)`), the host as subject, and `DNS:` followed by the host, the certificate's subject alternative name. `401`, then `200`. Last, `100 200` and `10 429`: the gateway counted every request against the one client address, whatever the header said. Revert the switch when the window ends.
 
 **P6-08 (#69), criterion 9: default deny in `apps` and `data`. A pod with no allow rule reaches nothing. Only api-gateway reaches the backends and dashboard-api, plus the scheduler to order-service and inventory-service.**
 
@@ -509,11 +492,11 @@ Expect a NetworkPolicy per service plus `db-migrate`, `default-deny`, `allow-dns
 
 Proven on 25 Nov 2026: every policy listed, every line as expected, no `unknown`, and `every probe ran`. `kubectl debug` sometimes warned that it couldn't attach and fell back to streaming logs. That is harmless, since the verdict comes from the exit code.
 
-Also check that the data namespace still works under default deny: `make backup` then `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `make migrate` reports `no change`. Delete `snap-test` after.
+Also check that the data namespace still works under default deny: `kubectl -n data create job snap-test --from=cronjob/postgres-snapshot` completes, which proves the API server rule. `make restore-drill` passes, and `argocd app sync migrations` reports `no change` in the Job's log. Delete `snap-test` after.
 
 **P6-03 (#64), criterion 10: a rollout under load has no errors, a broken image fails without taking traffic, and rolling the worker loses no messages.**
 
-Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another:
+Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another. Step 2 uses the `argocd` CLI, so log in first as in [argocd](../../argocd/README.md#the-ui):
 
 ```bash
 CTX=aks-v2-platform
@@ -524,6 +507,10 @@ K rollout status deploy/api-gateway --timeout=5m
 K rollout status deploy/order-service --timeout=5m
 
 # 2. A broken image: the new pod never turns Ready, the old ones keep serving.
+# selfHeal would put Git's image back within seconds, so turn auto-sync off
+# for the test, the root first (argocd/README.md, Rollback).
+argocd app set root --sync-policy none
+argocd app set payment-service --sync-policy none
 ACR=$(tofu -chdir=infra/persistent output -raw acr_login_server)
 K set image deploy/payment-service app="$ACR/payment-service:does-not-exist"
 K rollout status deploy/payment-service --timeout=6m; echo "exit $?"
@@ -531,6 +518,8 @@ K get deploy payment-service -o jsonpath='{.status.conditions[?(@.type=="Progres
 K get endpointslices -l kubernetes.io/service-name=payment-service -o json \
   | jq -r '.items[].endpoints[] | [.targetRef.name, .addresses[0], "ready=\(.conditions.ready)"] | @tsv'
 K rollout undo deploy/payment-service
+# Back on: the root restores payment-service's own policy from Git.
+argocd app set root --sync-policy automated --auto-prune --self-heal
 
 # 3. Roll the worker while orders flow, then check nothing is left or dead-lettered.
 K rollout restart deploy/worker
@@ -544,6 +533,8 @@ az servicebus queue show --subscription "$PLATFORM_SUB" -g "$(tofu -chdir=infra/
 Expect the load test to finish with `http_req_failed` at 0% and exit 0 through steps 1 and 3. In step 2, `rollout status` exits 1 after about 5 minutes with `ProgressDeadlineExceeded`, the EndpointSlice lists the old pods with `ready=true` and the broken pod with `ready=false`, and the load test still sees no errors. The slice holds every pod the Service selects. Traefik and Cilium send traffic only to endpoints marked ready, so the broken pod takes none. In step 3, `activeMessageCount` and `deadLetterMessageCount` are both 0.
 
 Proven on 25 Nov 2026 under the host rule, with `make loadtest DURATION=15m` at the default `RATE=10`. `http_req_failed` was 0.00% on all three k6 pods, 0 failed out of 18,904, 18,904 and 18,901 requests, and `make loadtest` exited 0. The api-gateway and order-service rollouts finished with their new pods one per node, and a pod watch every 6 seconds never saw a `Pending` pod. The broken payment-service image hit `ProgressDeadlineExceeded` after 5 minutes, with the broken pod `ready=false` and the two old pods `ready=true`. The worker rolled, and the queue then read 0 active and 0 dead-lettered messages. At `RATE=10` no HPA scaled out, so every service stayed at its minimum. A surge pod for a service at three or more replicas, the case in [Disruption and spread](#disruption-and-spread) that can strand, was not exercised.
+
+Step 2 again on 26 Nov 2026, under Argo CD: `ProgressDeadlineExceeded` after 5 minutes, the broken pod `ready=false` and the two old pods `ready=true`, and payment-service `OutOfSync` and `Degraded` while auto-sync was off. After the undo and turning the root back on, the root restored payment-service's policy from Git, automated with prune and selfHeal, within about 30 seconds, and it read Synced and Healthy.
 
 **P6-04 (#65), criterion 11: the five multi-replica services run on at least two nodes, and draining a node never takes one to zero Ready.**
 
@@ -583,6 +574,8 @@ K -n apps get pods -l "$FIVE" --field-selector=status.phase=Pending
 Expect two `general` nodes, `Standard_D2s_v6` or `Standard_D2nls_v6`, usually in different zones. Each of the five shows `nodes: 2`, and none is `Pending`. It usually shows `zones: 2` too, but `zones: 1` is allowed under the host rule: note which you got. Then each budget at `ALLOWED DISRUPTIONS 1`, the drain to finish, and `never zero`. While the node is cordoned, the five's pods from it are `Pending`: the cordoned node no longer counts, the node left takes one pod of each, and there is no room for a third ([Disruption and spread](#disruption-and-spread)). After `uncordon` they schedule back and nothing is `Pending`. If the drained node held no data pod, NAP may remove it as empty first. Then the `Pending` pods get a new node within a few minutes, and `uncordon` reports the node not found. Run this with the five at their minimums. Under the load test api-gateway scales to 3 or 4, puts two pods on a node, and the drain waits on its budget.
 
 Proven on 25 Nov 2026 under the host rule. Each of the five showed `nodes: 2, zones: 2 (uksouth-1 uksouth-3)`, on a `Standard_D2s_v6` in `uksouth-3` and a `Standard_D2nls_v6` in `uksouth-1`, with nothing `Pending`. The drain of `general-8mlzs` exited 0, and the ready log read `never zero`: each of the five dropped to 1 Ready replica, never 0. While the node was cordoned, one pod of each of the five was `Pending`. The scheduler reported `1 node(s) didn't match pod topology spread constraints`, and NAP `all available instance types exceed limits for nodepool (NodePool=general)`. About a minute after the drain, NAP removed the drained node as empty and started `general-kvhpw`, a `Standard_D2nls_v6` in `uksouth-1`. The five's pods were `Pending` for about 3.5 minutes in all, then ran there, and `uncordon` reported the node not found, as above.
+
+Again on 26 Nov 2026, on the cluster Argo CD deployed: each of the five showed `nodes: 2, zones: 2 (uksouth-1 uksouth-3)`. The drain of `general-7bkqh` exited 0, and the ready log read `never zero`, with each service at 1 Ready at the least. One pod of each was `Pending` with the same scheduler message. NAP replaced the empty node with `general-mgcbd`, a `Standard_D2s_v6` in `uksouth-2`, and the five's pods ran after about 3.5 minutes. `uncordon` reported the node not found.
 
 **P6-09 (#70), criterion 12: the HPAs match the ADR, load triggers scale-out, and KEDA scales the worker on queue depth.**
 
@@ -667,13 +660,14 @@ The drain skips Postgres and Redis. Their budgets are `maxUnavailable: 0` ([data
 
 ## Validate
 
-Run offline, from the repo root. The build uses a temporary copy with the example `azure.env`, so no placeholder file stays behind for a later apply:
+Run offline, from the repo root. Each overlay builds with its placeholders, which are valid values for the schema checks:
 
 ```bash
 TMP=$(mktemp -d)
-cp -R k8s/apps "$TMP/"
-cp k8s/apps/dev/azure.env.example "$TMP/apps/dev/azure.env"
-kustomize build "$TMP/apps/dev" > "$TMP/dev.yaml"
+for svc in api-gateway order-service inventory-service payment-service notification-service \
+           shipping-service dashboard-api worker scheduler; do
+  kustomize build k8s/apps/$svc/overlays/dev; echo ---
+done > "$TMP/dev.yaml"
 
 # Criterion 1: valid manifests. The CRD catalog covers ExternalSecret, ScaledObject and
 # TriggerAuthentication, so nothing is skipped.

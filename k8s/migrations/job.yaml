@@ -1,11 +1,14 @@
 # Applies every pending file in sql/ with golang-migrate, then exits.
 #
-# make migrate deletes any earlier db-migrate Job first, then applies this
-# one, so every run migrates, even when a finished Job is still around after
-# the database was reset. golang-migrate is idempotent, and its Postgres
-# advisory lock serialises two runs against one database. From P7 ArgoCD runs
-# it as a PreSync hook and recreates it on every sync, so a failed Job fails
-# the sync before any Deployment changes.
+# The migrations Application runs it as a Sync hook, one wave after its
+# inputs (the ConfigMap, the ExternalSecret and the NetworkPolicy), and
+# BeforeHookCreation recreates it on every sync, so every sync migrates.
+# A sync runs at bootstrap and when the SQL changes. After a database reset
+# mid-day, or a change to this file alone, run argocd app sync migrations.
+# A failed Job fails the sync. At bootstrap that holds the services back,
+# since the root waits on migrations; later the services sync on their
+# own. golang-migrate is idempotent, and its Postgres advisory lock
+# serialises two runs against one database. See README.md.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -14,8 +17,9 @@ metadata:
   labels:
     app.kubernetes.io/name: db-migrate
   annotations:
-    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   # Two retries cover failures before any file runs: Postgres restarting, or
   # the advisory lock not freed within 60s. They can't recover a failure

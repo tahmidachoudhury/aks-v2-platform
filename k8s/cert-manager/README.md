@@ -4,11 +4,9 @@
 
 ## Install
 
-You need the NodePools, the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54) and Traefik. ExternalDNS can come after, but a certificate isn't issued until it has written the A record. The morning order is Traefik, cert-manager, then ExternalDNS. From the repo root, run `make cert-manager`. The [Makefile](../../Makefile) installs the chart, pinned as `CERT_MANAGER_VERSION`, then applies the ClusterIssuers with `kubectl apply -k k8s/cert-manager`.
+You need the NodePools, the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54) and Traefik. ExternalDNS can come after, but a certificate isn't issued until it has written the A record. The `cert-manager` Application installs it at wave 5, after Traefik, alongside ExternalDNS [argocd](../../argocd/README.md#how-the-cluster-comes-up). It has two sources: chart `cert-manager` v1.21.3 from `https://charts.jetstack.io`, pinned in `argocd/apps/templates/platform.yaml`, and this folder, which renders the ClusterIssuers and serves `values.yaml` to the chart.
 
-The chart installs the CRDs (`crds.enabled`), so the ClusterIssuers apply straight after. `crds.keep` stops `helm uninstall` from deleting the CRDs, and every Certificate with them.
-
-For P7, the chart maps to an Argo CD Helm source like the others. `kubectl apply -k k8s/cert-manager` maps to a second, plain Kustomize Application. The `kustomization.yaml` lists only `cluster-issuers.yaml`, so Kustomize ignores `values.yaml`.
+The chart installs the CRDs (`crds.enabled`). The ClusterIssuers carry `argocd.argoproj.io/sync-wave: "1"`, so Argo CD applies them after the chart's webhook is up, and `SkipDryRunOnMissingResource`, since their CRD arrives in the same sync. The `kustomization.yaml` lists only `cluster-issuers.yaml`, so Kustomize ignores `values.yaml`. `crds.keep` keeps the CRDs, and every Certificate with them, if the chart is ever uninstalled.
 
 ## Why HTTP-01
 
@@ -104,6 +102,9 @@ This test uses one of the test host's five production certificates for the week.
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template cert-manager cert-manager --kube-context aks-v2-platform --repo https://charts.jetstack.io --version v1.21.3 \
   -n platform -f k8s/cert-manager/values.yaml | kubeconform -strict -ignore-missing-schemas -summary
 kustomize build k8s/cert-manager | kubeconform -strict -summary \

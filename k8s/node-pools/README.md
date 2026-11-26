@@ -1,6 +1,6 @@
 # node-pools
 
-**TL;DR:** The Node Auto Provisioning (NAP) NodePools for user workloads: `general` for on-demand nodes, capped at 4 vCPUs, and `spot` for eviction-tolerant workloads, capped at 3 vCPUs. Both allow zones 1 to 3 and consolidate empty or underused nodes. `make node-pools` applies them each morning after the platform apply. Without them only critical add-ons can schedule, because the system pool is tainted. ArgoCD takes this over in P7.
+**TL;DR:** The Node Auto Provisioning (NAP) NodePools for user workloads: `general` for on-demand nodes, capped at 4 vCPUs, and `spot` for eviction-tolerant workloads, capped at 3 vCPUs. Both allow zones 1 to 3 and consolidate empty or underused nodes. Argo CD applies them first each morning, at wave 0. Without them only critical add-ons can schedule, because the system pool is tainted. Argo CD tolerates that taint, so it starts on the system pool.
 
 NAP is the AKS-managed Karpenter. OpenTofu turns it on with no default NodePools ([aks module](../../infra/modules/aks/README.md#node-auto-provisioning)), so these manifests are the only ones. Filled by P3-08 (#34).
 
@@ -55,17 +55,17 @@ Use spot only for workloads that lose nothing on a restart, such as the worker, 
 
 ## Acceptance test
 
-This needs a live cluster. ArgoCD applies the manifests from P7. Before that, apply them by hand once to test, then delete them:
+This needs a live cluster after `make up`, which applies the NodePools:
 
 ```bash
-kubectl apply -k k8s/node-pools
+kubectl get nodepools
 kubectl create deployment nap-test --image=mcr.microsoft.com/oss/kubernetes/pause:3.6 --replicas=3
 kubectl set resources deployment nap-test --requests=cpu=500m,memory=512Mi
 kubectl get nodeclaims -w
 kubectl get nodes -L karpenter.sh/nodepool,topology.kubernetes.io/zone,node.kubernetes.io/instance-type
 ```
 
-A NodeClaim should appear within a minute or two, then a node labelled `karpenter.sh/nodepool=general`. Delete the deployment with `kubectl delete deployment nap-test`, and the node should go after `consolidateAfter`. Then run `kubectl delete -k k8s/node-pools`, so ArgoCD later takes them over cleanly.
+A NodeClaim should appear within a minute or two, then a node labelled `karpenter.sh/nodepool=general`. Delete the deployment with `kubectl delete deployment nap-test`, and the node should go after `consolidateAfter`.
 
 ## Validate
 

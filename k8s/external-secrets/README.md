@@ -1,6 +1,6 @@
 # external-secrets
 
-**TL;DR:** External Secrets Operator (ESO) 2.15.0 is installed with Helm into `platform`. One ClusterSecretStore, `azure-key-vault`, reads the Key Vault as `id-external-secrets` through workload identity. No ID or vault name is committed. The client ID goes in with `--set-string` at install time, the AKS webhook supplies the tenant, and a gitignored `vault.env` holds the vault URL. `make external-secrets` installs it each morning after the node pools and namespaces. ArgoCD takes it over in P7. Filled by P4-06 (#53).
+**TL;DR:** External Secrets Operator (ESO) 2.15.0 runs in `platform`, installed by Argo CD from its Helm chart. One ClusterSecretStore, `azure-key-vault`, reads the Key Vault as `id-external-secrets` through workload identity. No ID or vault name is committed. Argo CD sets the client ID and the vault URL from OpenTofu, and the AKS webhook supplies the tenant. The chart syncs at wave 2 and the store at wave 3, after the node pools and namespaces. Filled by P4-06 (#53), moved under Argo CD by P7-03 (#75).
 
 Why ESO and not the CSI driver: [Secrets delivery](../../docs/architecture-decisions.md#secrets-delivery). Why Helm for it: [Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling).
 
@@ -8,9 +8,8 @@ Why ESO and not the CSI driver: [Secrets delivery](../../docs/architecture-decis
 
 | Path | What | Applied by |
 | --- | --- | --- |
-| `values.yaml` | Helm values for chart `external-secrets` 2.15.0 | `helm upgrade --install` |
-| `store/` | The ClusterSecretStore `azure-key-vault` | `kubectl apply -k` |
-| `store/vault.env.example` | The shape of `vault.env`, which holds the vault URL and is gitignored | |
+| `values.yaml` | Helm values for chart `external-secrets` 2.15.0 | The `external-secrets` Application |
+| `store/` | The ClusterSecretStore `azure-key-vault`, with a placeholder `vaultUrl` | The `external-secrets-store` Application |
 | `test/` | `eso-smoke-test`, an ExternalSecret for the acceptance test only. Nothing else includes it | `kubectl apply -k`, then delete |
 
 ## How it signs in
@@ -33,11 +32,11 @@ Nothing deployment-specific is committed, following [Client IDs](../../infra/mod
 
 | Value | Needed by | How it gets there |
 | --- | --- | --- |
-| Client ID of `id-external-secrets` | ServiceAccount annotation `azure.workload.identity/client-id` | `--set-string` on the Helm install, from `tofu output workload_identity_client_ids` in persistent |
+| Client ID of `id-external-secrets` | ServiceAccount annotation `azure.workload.identity/client-id` | Helm `valuesObject` on the `external-secrets` Application, from the identity's data source in `infra/argocd` |
 | Tenant ID | ESO's token request | Injected by the AKS webhook. Not set by us |
-| Vault URL | `spec.provider.azurekv.vaultUrl` | `store/vault.env`, written from `tofu output key_vault_uri` in persistent. A kustomize `replacements` copies it into the store. The generated ConfigMap is marked `config.kubernetes.io/local-config`, so it never reaches the cluster |
+| Vault URL | `spec.provider.azurekv.vaultUrl` | A kustomize patch on the `external-secrets-store` Application, from the vault's data source in `infra/argocd` |
 
-If `vault.env` is missing, `kubectl apply -k k8s/external-secrets/store` fails with an error naming the file. It never applies a placeholder.
+The root's chart refuses to render without a vault URI shaped like `https://<name>.vault.azure.net/`, so Argo CD never applies the placeholder. Don't apply `store/` by hand: it would apply `VAULT_URL_FROM_ARGOCD`.
 
 ## Which namespaces can use it
 
@@ -62,22 +61,15 @@ This fits the `platform` quota from P4-07 (500m CPU and 2Gi of requests, 4Gi of 
 
 ## Install each morning
 
-ArgoCD installs this from P7. Until then, `make up` or `make cluster` installs it each morning. Before you start:
-
-- The persistent and platform roots are applied. Platform creates the federated credential that trusts `system:serviceaccount:platform:external-secrets`.
-- `make node-pools` has run, so ESO has a node to land on.
-- `make namespaces` has run, so `platform`, `apps` and `data` exist (P4-07, #54).
-- `tofu`, `jq` and `helm` are on your PATH. The Makefile passes the cluster's context itself, so your current context doesn't matter.
-
-From the repo root, run `make external-secrets`. The [Makefile](../../Makefile) pins the chart in `ESO_VERSION`. It runs under `set -euo pipefail`, reads both values and checks them before writing anything. A failed `tofu output`, a missing key or an empty value stops it with a message, so it never writes an empty `vaultUrl` or annotates the ServiceAccount with `null`. Then it writes `vault.env`, installs the chart and applies the store. Check the store with:
+Argo CD installs it ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). The `external-secrets` Application, at wave 2, renders chart 2.15.0 from `ghcr.io/external-secrets/charts` with `values.yaml`, read through a second source with `ref: values`. Its CRDs are too large for client-side apply, so it syncs with server-side apply, like every Application. The `external-secrets-store` Application, at wave 3, applies `store/` once the CRDs and webhook are up. The platform root must be applied first, since it creates the federated credential that trusts `system:serviceaccount:platform:external-secrets`. Check the store with:
 
 ```bash
 kubectl --context aks-v2-platform get clustersecretstore azure-key-vault
 ```
 
-The store should show `STATUS Valid` and `READY True`. `vault.env` only changes if the vault does, so writing it again each morning is harmless.
+The store should show `STATUS Valid` and `READY True`.
 
-To upgrade ESO, read the chart's release notes for CRD changes first. Then change `ESO_VERSION` in the Makefile and the version in the header of `values.yaml`.
+To upgrade ESO, read the chart's release notes for CRD changes first. Then change `targetRevision` on the `external-secrets` Application in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
 
 ## Acceptance test
 
@@ -99,12 +91,6 @@ kubectl delete -k k8s/external-secrets/test
 
 The test uses `jwt-secret` because it is the cheapest secret to rotate if the copy is left behind. A new value only signs users out.
 
-## P7
-
-- The chart becomes an ArgoCD Helm source: `oci://ghcr.io/external-secrets/charts/external-secrets` at 2.15.0, with `values.yaml` as its values file. The `argocd` root sets the client ID as a Helm parameter from a data source, so it stays out of Git.
-- `store/` becomes a Kustomize source. ArgoCD's checkout has no `vault.env`, so P7 removes the generator and the replacement. The `argocd` root sets `vaultUrl` with a patch on that Application.
-- The ClusterSecretStore must sync after the CRDs. A sync wave on the store Application handles that.
-
 ## Validate
 
 ```bash
@@ -113,14 +99,7 @@ helm template external-secrets oci://ghcr.io/external-secrets/charts/external-se
   --set-string serviceAccount.annotations."azure\.workload\.identity/client-id"=00000000-0000-0000-0000-000000000000 \
   | kubeconform -strict -ignore-missing-schemas -summary
 
-# Build the store from a temporary copy with the example vault.env, so no
-# placeholder vault.env is left in the working tree for a later apply to pick up.
-TMP=$(mktemp -d)
-cp k8s/external-secrets/store/cluster-secret-store.yaml k8s/external-secrets/store/kustomization.yaml "$TMP"
-cp k8s/external-secrets/store/vault.env.example "$TMP/vault.env"
-kustomize build "$TMP" | kubeconform -strict -ignore-missing-schemas -summary
-rm -rf "$TMP"
-
+kustomize build k8s/external-secrets/store | kubeconform -strict -ignore-missing-schemas -summary
 kustomize build k8s/external-secrets/test | kubeconform -strict -ignore-missing-schemas -summary
 ```
 

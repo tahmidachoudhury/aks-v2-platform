@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+# Required. The platform root's subscription_id. Platform reads the
+# persistent resources in it, and so does this root.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+
+# Required. The same values as in infra/persistent/terraform.tfvars and
+# infra/platform/terraform.tfvars.
+acr_name                  = "acraksv20000"
+key_vault_name            = "kv-aksv2-example"
+servicebus_namespace_name = "sb-aks-v2-platform-1234"
+
+# Optional. Test a branch on the cluster before merging it. Every Application
+# follows it until the next apply. Back to main when done.
+# target_revision = "tc/my-branch"

@@ -1,6 +1,7 @@
 # Traefik, chart traefik 42.4.1 (Traefik v3.7.19) from
-# https://traefik.github.io/charts, installed into the platform namespace.
-# Install command and design: README.md.
+# https://traefik.github.io/charts, installed into the platform namespace by
+# its Application in argocd/apps, which pins the version and reads this file.
+# Design: README.md.
 
 deployment:
   replicas: 2

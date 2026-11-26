@@ -6,7 +6,7 @@ resources:
 
 # The tag is the first 12 characters of the last commit that touched
 # app/services/payment-service, the tag make images builds. make pin-images sets it.
-# The registry stays a placeholder until k8s/apps/dev fills it in.
+# The registry stays a placeholder until its Application in argocd/apps fills it in.
 images:
   - name: ACR_LOGIN_SERVER/payment-service
     newTag: b33be046503f

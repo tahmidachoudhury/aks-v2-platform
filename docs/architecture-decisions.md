@@ -21,7 +21,7 @@ Prices are rough monthly figures in US dollars (USD) for the UK South region. Th
 | [Private endpoints](#private-endpoints) | Endpoints for Key Vault and state blob in platform. Vault firewalled to operator IPs, state public with Entra ID only | Accepted | [#40](https://github.com/tahmidachoudhury/aks-v2-platform/issues/40) |
 | [TLS certificates](#tls-certificates) | cert-manager with Let's Encrypt, HTTP-01 through Traefik, no Azure identity | Accepted | [#51](https://github.com/tahmidachoudhury/aks-v2-platform/issues/51) |
 | [Volume snapshots](#volume-snapshots) | Hourly CronJob, newest six kept, snapshots last the day | Accepted | [#61](https://github.com/tahmidachoudhury/aks-v2-platform/issues/61) |
-| [Database migrations](#database-migrations) | golang-migrate in a Job, an ArgoCD PreSync hook from P7, expand/contract, forward only | Accepted | [#58](https://github.com/tahmidachoudhury/aks-v2-platform/issues/58) |
+| [Database migrations](#database-migrations) | golang-migrate in a Job, an Argo CD hook in its own Application from P7, expand/contract, forward only | Accepted | [#58](https://github.com/tahmidachoudhury/aks-v2-platform/issues/58) |
 
 ## Event bus
 
@@ -433,7 +433,7 @@ Ticket: [#61](https://github.com/tahmidachoudhury/aks-v2-platform/issues/61)
 
 **Context:** Seven services share the `orders` database. Five of them (order, inventory, payment, notification and shipping) create their own tables at startup in `migrate()`, with `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`, and notification-service seeds its templates. scheduler and dashboard-api read tables the others create. Nothing records a schema version, nothing orders changes across services, and an `IF NOT EXISTS` statement can't change a table that already exists. The brief asks how schema changes get applied and rolled back, and how to add a column to `orders`, which dashboard-api reads, without downtime.
 
-**Decision:** A Kubernetes Job in `apps` runs [golang-migrate](https://github.com/golang-migrate/migrate) over numbered SQL files in [`k8s/migrations/sql/`](../k8s/migrations/README.md), shipped in a ConfigMap. It connects as `app`, the role that owns the database and that the services use. From P7 ArgoCD runs it as a PreSync hook, so a failed migration fails the sync before any Deployment changes. Until then `make migrate` runs it and exits non-zero on failure. Postgres starts empty every morning, so `make cluster` runs it last, after `make data`, and P6 applies the Deployments after it. Every change is expand/contract and rolls forward. There are no down migrations.
+**Decision:** A Kubernetes Job in `apps` runs [golang-migrate](https://github.com/golang-migrate/migrate) over numbered SQL files in [`k8s/migrations/sql/`](../k8s/migrations/README.md), shipped in a ConfigMap. It connects as `app`, the role that owns the database and that the services use. From P7 Argo CD runs it as a Sync hook in its own `migrations` Application, in the wave before the services. Postgres starts empty every morning, and at bootstrap a failed migration holds the services back. Day to day, a migration merges before the release that needs it. Every change is expand/contract and rolls forward. There are no down migrations.
 
 The first migration is a baseline: the five `migrate()` functions copied verbatim. The services keep their `migrate()` for now, unchanged. On any database the two give the same schema, so neither breaks the other.
 
@@ -443,7 +443,7 @@ The first migration is a baseline: the five `migrate()` functions copied verbati
 | --- | --- | --- | --- |
 | Each service at startup (today) | Every pod start, in five services | No. A failing pod crashes while the old ReplicaSet keeps serving | No version or order. Each pod start takes a brief `SHARE` lock on every table it owns. The services' role must own the tables |
 | Init container per Deployment | Every pod start | Partly. New pods sit in `Init:CrashLoopBackOff` mid-rollout | Seven services and their replicas race for one shared schema, and an HPA scale-out reruns it. No obvious image to carry the SQL |
-| Job, PreSync hook (chosen) | Once per sync, before the Deployments | Yes. ArgoCD stops the sync. Until P7, `make` stops at `migrate` | Needs ArgoCD for the automatic gate. Until then it is a `make` step |
+| Job, Argo CD hook in its own Application (chosen) | Once per change to the SQL, in the wave before the services | At bootstrap, yes: the root holds the services back. Day to day, by merging the migration first | After bootstrap the order is a rule, not a gate |
 
 **Which tool**
 
@@ -461,7 +461,7 @@ golang-migrate locks by default, ships a small image, and reads the same SQL a d
 **Locking and retries**
 
 - golang-migrate holds a Postgres advisory lock for the whole run, so two runs never apply at once. A second run waits up to 60 seconds, then finds nothing to do.
-- `make migrate` deletes any earlier `db-migrate` Job before applying, so it always runs. A finished Job left from before a database reset would otherwise make the apply a no-op that reports success. golang-migrate is idempotent, so rerunning costs nothing.
+- `BeforeHookCreation` deletes any earlier `db-migrate` Job before each sync creates a new one, so every sync runs it. A finished Job left from before a database reset would otherwise make the run a no-op. golang-migrate is idempotent, so rerunning costs nothing.
 - Each file runs in one transaction. A failure leaves no partial change.
 - Each file starts with `SET lock_timeout = '10s';`. A DDL statement that can't get its table lock gives up rather than queue behind a long transaction, which would block every query queued behind it. The setting is in the files, not the connection URL, because in the URL it also caps golang-migrate's wait for the advisory lock at 10 seconds.
 - `backoffLimit: 2` retries only failures before any file runs: a Postgres restart, or the advisory lock not freed in time. It can't recover a failure inside a file. golang-migrate marks the version dirty before running the file, so every retry stops at `Dirty database version N`, and that needs the manual recovery below. `activeDeadlineSeconds: 300` fails a Job that hangs.
@@ -471,7 +471,7 @@ golang-migrate locks by default, ships a small image, and reads the same SQL a d
 
 The services name their columns in every query and insert, with no `SELECT *`, so a new column breaks no running code. The migration runs before any pod changes, so the column always exists before code that uses it. Adding `gift_message`, which order-service writes and dashboard-api reads, takes these steps:
 
-1. **Expand, release N.** `000002_orders_add_gift_message.up.sql`: `ALTER TABLE orders ADD COLUMN gift_message TEXT;`. Nullable with no default, it changes only the catalog and holds its lock for milliseconds. The release also ships order-service writing the column and dashboard-api reading it with `COALESCE`, since rows from before, and from old pods mid-rollout, hold `NULL`. ArgoCD runs the migration, then rolls the two Deployments one pod at a time. Old and new pods both work against the new schema.
+1. **Expand, release N.** `000002_orders_add_gift_message.up.sql`: `ALTER TABLE orders ADD COLUMN gift_message TEXT;`. Nullable with no default, it changes only the catalog and holds its lock for milliseconds. The release also ships order-service writing the column and dashboard-api reading it with `COALESCE`, since rows from before, and from old pods mid-rollout, hold `NULL`. The migration merges and syncs first, then the code, which rolls the two Deployments one pod at a time. Old and new pods both work against the new schema.
 2. **Backfill, if needed, release N+1.** A separate migration, or a scheduler job for a large table, fills old rows in batches. A single `UPDATE` of every row would lock them all.
 3. **Contract, release N+2 or later.** Tighten only once no running release, and no release you might roll back to, writes `NULL`. Add `CHECK (gift_message IS NOT NULL) NOT VALID`, then `VALIDATE CONSTRAINT` in its own file, so the check scans the table without blocking writes. Dropping or renaming a column follows the same pattern: stop using the old column in release N, drop it in N+1.
 
@@ -479,7 +479,7 @@ Every migration must work with the release that is running and with the one befo
 
 **Rollback**
 
-- **The application.** Roll back the image: an ArgoCD rollback or a revert of the tag. The schema stays expanded and the old code ignores the new column. Rolling back the code never needs a schema rollback.
+- **The application.** Roll back the image: an Argo CD rollback or a revert of the tag. The schema stays expanded and the old code ignores the new column. Rolling back the code never needs a schema rollback.
 - **The schema.** Forward only. Undoing a change is a new migration that contracts it, once no release uses it. A down migration would run in the same window as the code rollback and could drop data that new code had already written.
 - **A failed migration.** Its transaction rolls back, so the schema is unchanged and the services were never rolled out. golang-migrate marks the version dirty. Fix the file, clear the dirty version and run again. For a later file that is one `UPDATE` back to the previous version. For a failed baseline it is a `DELETE` of the row, as version 0 isn't a migration and golang-migrate refuses it. The steps are in [When a migration fails](../k8s/migrations/README.md#when-a-migration-fails).
 - **Bad data from a migration that worked.** Restore the Postgres volume from a snapshot. That loses writes since the snapshot, so it is the last resort.
@@ -488,11 +488,9 @@ Every migration must work with the release that is running and with the one befo
 
 - The services' `migrate()` stays until a follow-up removes it. Until then the Job must connect as the role the services use, `app`. A service connecting as a role that doesn't own the tables exits at startup with `must be owner of table`, since `CREATE INDEX IF NOT EXISTS` needs ownership even when the index exists. Running the Job as the superuser would make `postgres` the owner and break the services the same way.
 - The password reaches the Job as `PGPASSWORD`, not inside a URL, so it needs no escaping.
-- Until P7 nothing runs the Job by itself. `make cluster` runs it each morning, and P6's rollout comes after it.
-- In P7 the Job must sit in the same ArgoCD Application as the Deployments it protects. A PreSync hook only gates its own Application's sync.
-- ArgoCD never prunes hook resources, so the ConfigMap has a fixed name, with no hash suffix. Hashed names would leave one ConfigMap behind per change. `BeforeHookCreation` recreates the Job, ConfigMap and ExternalSecret on every sync, so the Job always mounts the current SQL.
+- The Job sits in its own Application in the wave before the services, not in theirs: a hook only gates its own Application, and each service is its own Application. At bootstrap the root's health check holds the services until the Job succeeds. Argo CD's own Application health skips hooks, so the check waits for the Application's last sync to succeed, not only for its resources. Day to day the rule is to merge a migration before the release that needs it, which expand/contract makes safe.
+- Only the Job is a hook. An Application made only of hooks never syncs, since Argo CD leaves hooks out of the sync status and auto-syncs only when it is OutOfSync. The ConfigMap, ExternalSecret and NetworkPolicy are ordinary resources a wave earlier, and the ConfigMap's hashed name makes a new migration sync. See the [migrations README](../k8s/migrations/README.md#under-argo-cd).
 - Each migration takes two edits: the SQL file, starting with the `SET lock_timeout` line, and its line in `kustomization.yaml`. A file left out of the kustomization never runs and nothing warns.
-- Run one `make migrate` at a time. A second run deletes the first one's Job, and a migration killed mid-file leaves its version dirty.
 - golang-migrate keeps no checksum, so editing an applied file is never detected. The README forbids it.
 - A long `CREATE INDEX` must be `CONCURRENTLY`, which can't run in a transaction, so it goes in a file of its own.
 

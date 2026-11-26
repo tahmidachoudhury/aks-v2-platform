@@ -1,6 +1,6 @@
 # storage
 
-**TL;DR:** `premium-zrs` is the default StorageClass: Azure Disk CSI, `Premium_ZRS`, `WaitForFirstConsumer`, volume expansion, platform-managed keys. AKS's `default` class is redeclared here with its default flag set to `"false"`. This sticks because AKS creates its classes with `EnsureExists`. `csi-azuredisk-vsc` is the VolumeSnapshotClass, with incremental snapshots. AKS ships none. `make storage` applies it each morning after the node pools. ArgoCD takes this over in P7.
+**TL;DR:** `premium-zrs` is the default StorageClass: Azure Disk CSI, `Premium_ZRS`, `WaitForFirstConsumer`, volume expansion, platform-managed keys. AKS's `default` class is redeclared here with its default flag set to `"false"`. This sticks because AKS creates its classes with `EnsureExists`. `csi-azuredisk-vsc` is the VolumeSnapshotClass, with incremental snapshots. AKS ships none. Argo CD applies it each morning at wave 1, after the node pools.
 
 Filled by P4-01 (#48) and P4-02 (#49). The Azure Disk CSI driver and the snapshot controller are AKS add-ons, enabled in the [aks module](../../infra/modules/aks/README.md#add-ons) (P3-09).
 
@@ -47,7 +47,7 @@ The cluster is new every morning, so a manifest makes the change, not a one-off 
 Because this folder declares `default`, deleting the folder's resources deletes AKS's class too, and the addon manager brings it back as the default. So:
 
 - Never run `kubectl delete -k k8s/storage`, the cleanup pattern in [node-pools](../node-pools/README.md#acceptance-test). Delete test resources by name, as in the [acceptance test](#acceptance-test).
-- `storageclass-default.yaml` carries `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so from P7 neither an ArgoCD prune nor deleting the Application removes it.
+- `storageclass-default.yaml` carries `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so neither an Argo CD prune nor deleting the Application removes it.
 
 To check the label is still `EnsureExists` on a new cluster:
 
@@ -71,24 +71,11 @@ Snapshots go to the node resource group, `rg-aks-v2-platform-nodes`, and are del
 
 ## Morning apply
 
-After the platform apply, `kubectl apply -k k8s/node-pools` and `kubectl apply -k k8s/namespaces`:
-
-```bash
-kubectl apply -k k8s/storage
-```
-
-The first apply to `default` prints a warning about a missing `last-applied-configuration` annotation. This is expected. AKS created the class, and kubectl adds the annotation.
+Argo CD's `storage` Application applies this folder at wave 1, after the NodePools and alongside `namespaces` ([argocd](../../argocd/README.md#how-the-cluster-comes-up)).
 
 ## Acceptance test
 
-This needs a live cluster with the NodePools applied, so the test pod lands on a NAP node. Run from the repo root.
-
-Preview the change first. Only the annotation on `default` and the two new objects should differ:
-
-```bash
-kubectl diff -k k8s/storage
-kubectl apply -k k8s/storage
-```
+This needs a live cluster after `make up`, which applies the NodePools, so the test pod lands on a NAP node. Run from the repo root.
 
 P4-01 (#48): only `premium-zrs` is the default.
 

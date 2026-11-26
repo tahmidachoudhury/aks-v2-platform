@@ -1,6 +1,7 @@
 # Stakater Reloader, chart reloader 2.2.20 (Reloader v1.4.24) from
 # https://stakater.github.io/stakater-charts, installed into the platform
-# namespace. Install command and design: README.md.
+# namespace by its Application in argocd/apps, which pins the version and
+# reads this file. Design: README.md.
 
 reloader:
   # Only workloads that name a Secret in the
@@ -15,7 +16,8 @@ reloader:
   # carry the annotation, and only the services in apps do.
   # A restart stamps an annotation on the pod template, not an environment
   # variable, so the container spec stays as Git has it. Reloader's docs
-  # suggest this strategy for GitOps tools such as ArgoCD (P7).
+  # suggest this strategy for GitOps tools such as Argo CD. The annotation
+  # is not in Git, so it never shows as drift and selfHeal leaves it alone.
   reloadStrategy: annotations
   readOnlyRootFileSystem: true
   deployment:

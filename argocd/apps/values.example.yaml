@@ -1,0 +1,21 @@
+# The shape of the values the root Application sets from OpenTofu, with
+# example values. For helm template and kubeconform only: never install
+# with it, or the services would point at the example registry and
+# identities.
+azure:
+  acrLoginServer: acraksv2example.azurecr.io
+  keyVaultUri: https://kv-aksv2-example.vault.azure.net/
+  subscriptionId: 00000000-0000-0000-0000-000000000000
+  dnsZoneName: azure.order-fulfilment.tahmidchoudhury.uk
+  dnsZoneResourceGroup: rg-aks-v2-persistent
+  serviceBusNamespace: sb-aks-v2-platform-1234.servicebus.windows.net
+  serviceBusNamespaceName: sb-aks-v2-platform-1234
+  serviceBusQueue: order-events
+  clientIds:
+    order-service: 00000000-0000-0000-0000-000000000001
+    payment-service: 00000000-0000-0000-0000-000000000002
+    shipping-service: 00000000-0000-0000-0000-000000000003
+    worker: 00000000-0000-0000-0000-000000000004
+    external-dns: 00000000-0000-0000-0000-000000000005
+    external-secrets: 00000000-0000-0000-0000-000000000006
+    keda: 00000000-0000-0000-0000-000000000007

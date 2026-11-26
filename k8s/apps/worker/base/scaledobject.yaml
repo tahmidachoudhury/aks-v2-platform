@@ -3,7 +3,7 @@
 # KEDA creates and owns the HPA, keda-hpa-worker. One idle pod stays, so the
 # first order after a quiet spell needs no cold start.
 #
-# The namespace and queue are placeholders that k8s/apps/dev fills in. KEDA
+# The namespace and queue are placeholders that argocd/apps fills in. KEDA
 # wants the namespace's name, not its FQDN: it adds servicebus.windows.net.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -19,8 +19,8 @@ spec:
   triggers:
     - type: azure-servicebus
       metadata:
-        namespace: SERVICEBUS_NAMESPACE_NAME_FROM_AZURE_ENV
-        queueName: SERVICEBUS_QUEUE_FROM_AZURE_ENV
+        namespace: SERVICEBUS_NAMESPACE_NAME_FROM_ARGOCD
+        queueName: SERVICEBUS_QUEUE_FROM_ARGOCD
         messageCount: "5"
       authenticationRef:
         name: worker-servicebus

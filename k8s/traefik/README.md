@@ -1,12 +1,10 @@
 # traefik
 
-**TL;DR:** Traefik v3.7, the cluster's only ingress controller, from the `traefik` chart pinned at 42.4.1. Two replicas in `platform`, behind the cluster's Standard Load Balancer on a static public IP kept in the persistent root. The Service keeps client addresses (`externalTrafficPolicy: Local`), and the dashboard is reachable only through `kubectl port-forward`. `make traefik` installs it each morning until ArgoCD takes it over in P7. Filled by P4-03 (#50).
+**TL;DR:** Traefik v3.7, the cluster's only ingress controller, from the `traefik` chart pinned at 42.4.1. Two replicas in `platform`, behind the cluster's Standard Load Balancer on a static public IP kept in the persistent root. The Service keeps client addresses (`externalTrafficPolicy: Local`), and the dashboard is reachable only through `kubectl port-forward`. Argo CD installs it each morning, at wave 4. Filled by P4-03 (#50).
 
 ## Install
 
-You need the NodePools from [`../node-pools`](../node-pools/README.md) and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). From the repo root, run `make traefik`. The [Makefile](../../Makefile) holds the `helm upgrade --install` command and pins the chart version in `TRAEFIK_VERSION`.
-
-For P7, this maps to an Argo CD Helm source: `repoURL` is the chart repo, `chart` is `traefik`, `targetRevision` is the version, and `values.yaml` is the values file. The chart installs Traefik's CRDs from its `crds/` folder.
+The `traefik` Application installs it at wave 4, after the NodePools from [`../node-pools`](../node-pools/README.md) and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54) [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `traefik` 42.4.1 from `https://traefik.github.io/charts` with `values.yaml`, pinned in `argocd/apps/templates/platform.yaml`. Argo CD also applies Traefik's CRDs from the chart's `crds/` folder.
 
 ## Public IP
 
@@ -85,6 +83,9 @@ The first command prints the IP from the output and `Local`. The probe list show
 ## Validate
 
 ```bash
+# The repo's own Helm repository config, as infra/argocd uses, so a stale entry
+# in your own Helm config can't fail the render. Run from the repo root.
+export HELM_REPOSITORY_CONFIG="$PWD/.helm/repositories.yaml" HELM_REPOSITORY_CACHE="$PWD/.helm/cache"
 helm template traefik traefik --kube-context aks-v2-platform --repo https://traefik.github.io/charts --version 42.4.1 \
   -n platform -f k8s/traefik/values.yaml | kubeconform -strict -ignore-missing-schemas -summary
 ```

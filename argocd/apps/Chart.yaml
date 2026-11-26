@@ -1,0 +1,5 @@
+apiVersion: v2
+name: apps
+description: The child Applications of the root Application, one per component, data piece and service.
+type: application
+version: 0.1.0

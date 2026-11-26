@@ -1,6 +1,6 @@
 # backup
 
-**TL;DR:** A CronJob in `data` snapshots the Postgres disk every hour and keeps the newest six. `make restore-drill` proves a snapshot restores. It writes a marker row, snapshots the disk, writes a second marker, restores the snapshot to a temporary Postgres pod and checks it has the first marker and not the second. The snapshots live in the node resource group, so the evening destroy deletes them. They are recovery points for the day, not a backup that outlives the cluster. See the ADR [Volume snapshots](../../docs/architecture-decisions.md#volume-snapshots). Redis gets no snapshots. `make backup` applies the CronJob each morning, last in `make cluster`. It stops with an error if `data-postgres-0` doesn't exist yet. ArgoCD takes this over in P7.
+**TL;DR:** A CronJob in `data` snapshots the Postgres disk every hour and keeps the newest six. `make restore-drill` proves a snapshot restores. It writes a marker row, snapshots the disk, writes a second marker, restores the snapshot to a temporary Postgres pod and checks it has the first marker and not the second. The snapshots live in the node resource group, so the evening destroy deletes them. They are recovery points for the day, not a backup that outlives the cluster. See the ADR [Volume snapshots](../../docs/architecture-decisions.md#volume-snapshots). Redis gets no snapshots. Argo CD applies the CronJob each morning at wave 7, once the data wave is Healthy, so `data-postgres-0` exists.
 
 Filled by P5-06 (#60) and P5-07 (#61). It builds on the `csi-azuredisk-vsc` VolumeSnapshotClass in [storage](../storage/README.md#the-volumesnapshotclass) and the Postgres StatefulSet from P5-01 (#55).
 
@@ -167,7 +167,7 @@ Redis has no scheduled snapshots. It holds only api-gateway's rate-limit counter
 
 ### Test the schedule
 
-After `make backup`, check the CronJob:
+After `make up`, check the CronJob:
 
 ```bash
 k() { kubectl --context aks-v2-platform -n data "$@"; }
@@ -182,22 +182,22 @@ k get volumesnapshot -l app.kubernetes.io/managed-by=postgres-snapshot
 
 Expect one row named `data-postgres-0-<date>-<time>` with `READYTOUSE` `true`, and one more each hour, up to six.
 
-To test pruning without waiting seven hours, set the retention to 2 and run the job three times by hand. This also prunes the day's hourly snapshots down to two. Each run waits for its snapshot, so allow a couple of minutes each:
+To test pruning without waiting seven hours, run the job three times by hand with the retention at 2. selfHeal would put back an edit to the CronJob, so each Job gets `KEEP=2` itself. This also prunes the day's hourly snapshots down to two. Each run waits for its snapshot, so allow a couple of minutes each:
 
 ```bash
-k set env cronjob/postgres-snapshot KEEP=2
 for i in 1 2 3; do
-  k create job --from=cronjob/postgres-snapshot "prune-test-$i"
+  k create job --from=cronjob/postgres-snapshot "prune-test-$i" --dry-run=client -o yaml \
+    | yq '(.spec.template.spec.containers[0].env[] | select(.name == "KEEP") | .value) = "2"' \
+    | k apply -f -
   k wait --for=condition=complete "job/prune-test-$i" --timeout=15m
 done
 k get volumesnapshot -l app.kubernetes.io/managed-by=postgres-snapshot
 k logs job/prune-test-3
 ```
 
-Expect the newest two snapshots listed. The `prune-test-3` log ends with `volumesnapshot.snapshot.storage.k8s.io "<oldest>" deleted from data namespace`. Then restore the CronJob and delete the test jobs. `make backup` sets `KEEP` back to 6 from the manifest:
+Expect the newest two snapshots listed. The `prune-test-3` log ends with `volumesnapshot.snapshot.storage.k8s.io "<oldest>" deleted from data namespace`. Then delete the test jobs. The CronJob still keeps six:
 
 ```bash
-make backup
 k delete job prune-test-1 prune-test-2 prune-test-3 --ignore-not-found
 ```
 

@@ -1,0 +1,159 @@
+{{- /*
+The platform: node pools, namespaces, storage, then the third-party charts
+in platform. Chart versions are pinned here and nowhere else. Each chart's
+values stay in k8s/<component>/values.yaml, read through the $values ref,
+and the values that stay out of Git come from .Values.azure.
+*/ -}}
+{{- $azure := .Values.azure }}
+{{- include "apps.head" (dict "root" . "name" "node-pools" "wave" 0) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/node-pools
+  {{- include "apps.tail" (dict "namespace" "default") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "namespaces" "wave" 1) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/namespaces
+  {{- include "apps.tail" (dict "namespace" "default") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "storage" "wave" 1) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/storage
+  {{- include "apps.tail" (dict "namespace" "default") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "external-secrets" "wave" 2) }}
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/external-secrets/charts
+      chart: external-secrets
+      targetRevision: 2.15.0
+      helm:
+        valueFiles:
+          - $values/k8s/external-secrets/values.yaml
+        valuesObject:
+          serviceAccount:
+            annotations:
+              azure.workload.identity/client-id: {{ index $azure.clientIds "external-secrets" | quote }}
+    - {{- include "apps.repo" . | nindent 6 }}
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "external-secrets-store" "wave" 3) }}
+spec:
+  project: default
+  source:
+    {{- include "apps.repo" . | nindent 4 }}
+    path: k8s/external-secrets/store
+    kustomize:
+      patches:
+        - target:
+            kind: ClusterSecretStore
+            name: azure-key-vault
+          patch: |-
+            apiVersion: external-secrets.io/v1
+            kind: ClusterSecretStore
+            metadata:
+              name: azure-key-vault
+            spec:
+              provider:
+                azurekv:
+                  vaultUrl: {{ $azure.keyVaultUri | quote }}
+  {{- include "apps.tail" (dict "namespace" "platform" "skipDryRun" true) | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "traefik" "wave" 4) }}
+spec:
+  project: default
+  sources:
+    - repoURL: https://traefik.github.io/charts
+      chart: traefik
+      targetRevision: 42.4.1
+      helm:
+        valueFiles:
+          - $values/k8s/traefik/values.yaml
+    - {{- include "apps.repo" . | nindent 6 }}
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}
+---
+{{- /*
+The second source both renders k8s/cert-manager, the ClusterIssuers, and
+serves the values file. The issuers sit one wave after the chart inside
+this Application, so the webhook is up before they are applied.
+*/}}
+{{ include "apps.head" (dict "root" . "name" "cert-manager" "wave" 5) }}
+spec:
+  project: default
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.21.3
+      helm:
+        valueFiles:
+          - $values/k8s/cert-manager/values.yaml
+    - {{- include "apps.repo" . | nindent 6 }}
+      path: k8s/cert-manager
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "external-dns" "wave" 5) }}
+spec:
+  project: default
+  sources:
+    - repoURL: https://kubernetes-sigs.github.io/external-dns/
+      chart: external-dns
+      targetRevision: 1.23.0
+      helm:
+        valueFiles:
+          - $values/k8s/external-dns/values.yaml
+        valuesObject:
+          serviceAccount:
+            annotations:
+              azure.workload.identity/client-id: {{ index $azure.clientIds "external-dns" | quote }}
+          extraArgs:
+            azure-subscription-id: {{ $azure.subscriptionId | quote }}
+            azure-resource-group: {{ $azure.dnsZoneResourceGroup | quote }}
+          domainFilters:
+            - {{ $azure.dnsZoneName | quote }}
+    - {{- include "apps.repo" . | nindent 6 }}
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "reloader" "wave" 5) }}
+spec:
+  project: default
+  sources:
+    - repoURL: https://stakater.github.io/stakater-charts
+      chart: reloader
+      targetRevision: 2.2.20
+      helm:
+        valueFiles:
+          - $values/k8s/reloader/values.yaml
+    - {{- include "apps.repo" . | nindent 6 }}
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}
+---
+{{ include "apps.head" (dict "root" . "name" "keda" "wave" 5) }}
+spec:
+  project: default
+  sources:
+    - repoURL: https://kedacore.github.io/charts
+      chart: keda
+      targetRevision: 2.21.1
+      helm:
+        valueFiles:
+          - $values/k8s/keda/values.yaml
+        valuesObject:
+          podIdentity:
+            azureWorkload:
+              clientId: {{ $azure.clientIds.keda | quote }}
+    - {{- include "apps.repo" . | nindent 6 }}
+      ref: values
+  {{- include "apps.tail" (dict "namespace" "platform") | nindent 2 }}

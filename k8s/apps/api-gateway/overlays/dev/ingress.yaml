@@ -6,7 +6,7 @@
 # letsencrypt-staging day to day, as the TLS ADR and k8s/cert-manager rule:
 # production allows five certificates for this name a week, and every
 # morning's cluster orders a new one. Switch to production only for a demo
-# or grading run (README.md, Ingress). The next make apps switches back.
+# or grading run, as a commit, and revert it after (README.md, Ingress).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

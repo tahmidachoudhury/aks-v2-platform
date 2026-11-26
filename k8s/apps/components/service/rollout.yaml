@@ -15,7 +15,7 @@ spec:
       maxUnavailable: 0
       maxSurge: 1
   # A rollout that makes no progress for 5 minutes is marked failed, and
-  # kubectl rollout status (make apps) exits non-zero. Long enough for NAP to
-  # add a node for the surge pod and for the 150s startup probe, half the
+  # Argo CD reports the Application Degraded. Long enough for NAP to add a
+  # node for the surge pod and for the 150s startup probe, half the
   # default 10 minutes.
   progressDeadlineSeconds: 300

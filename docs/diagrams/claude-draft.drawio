@@ -103,7 +103,7 @@
         <mxCell id="sched" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="scheduler&#xa;(CronJobs)" vertex="1">
           <mxGeometry height="55" width="180" x="850" y="110" as="geometry" />
         </mxCell>
-        <mxCell id="migrate" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="DB migration Job&#xa;(ArgoCD PreSync hook)" vertex="1">
+        <mxCell id="migrate" parent="nsapps" style="rounded=1;whiteSpace=wrap;" value="DB migration Job&#xa;(Argo CD Sync hook, migrations Application)" vertex="1">
           <mxGeometry height="60" width="180" x="850" y="185" as="geometry" />
         </mxCell>
         <mxCell id="nsdata" parent="aks" style="rounded=0;whiteSpace=wrap;verticalAlign=top;align=left;spacingLeft=8;fillColor=none;dashed=0;container=1;" value="ns: data (on-demand nodes, PDBs)" vertex="1">
@@ -342,7 +342,7 @@
         <mxCell id="g0" value="detects manifest change in git" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
           <mxGeometry x="40" y="40" width="480" height="55" as="geometry" />
         </mxCell>
-        <mxCell id="g1" value="PreSync: DB migration Job" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
+        <mxCell id="g1" value="Sync hook in the migrations Application: DB migration Job" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">
           <mxGeometry x="40" y="110" width="480" height="55" as="geometry" />
         </mxCell>
         <mxCell id="g2" value="rolling update (maxUnavailable 0)&#xa;readiness gates" style="rounded=1;whiteSpace=wrap;" vertex="1" parent="argo">

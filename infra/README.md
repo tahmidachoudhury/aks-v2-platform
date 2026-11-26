@@ -1,6 +1,6 @@
 # infra
 
-**TL;DR:** OpenTofu for the Azure side of the platform, split into four roots by lifecycle. Apply them in order: bootstrap, persistent, platform, argocd. Destroy platform and argocd every evening, and never destroy the other two. `make up` and `make down` run the daily part. Until P7 gives argocd resources, they cover platform only.
+**TL;DR:** OpenTofu for the Azure side of the platform, split into four roots by lifecycle. Apply them in order: bootstrap, persistent, platform, argocd. Destroy platform and argocd every evening, and never destroy the other two. `make up` and `make down` run the daily part: platform, then argocd, which installs Argo CD and hands the cluster to it.
 
 ## Roots
 
@@ -11,7 +11,7 @@ Each root has its own folder and its own state, so you plan and apply each one s
 | [`bootstrap`](bootstrap/README.md) | Local `terraform.tfstate`, gitignored | Applied once, never destroyed | The state storage account and the cost budget |
 | [`persistent`](persistent/README.md) | `persistent.tfstate` | Never destroyed | DNS zone, Key Vault, ACR, and identities referenced from Git |
 | [`platform`](platform/README.md) | `platform.tfstate` | Destroyed every evening, applied every morning | Network, private DNS zones, AKS, Service Bus, private endpoints, Log Analytics, federated credentials, Service Bus role assignments |
-| [`argocd`](argocd/README.md) | `argocd.tfstate` | Destroyed and applied with platform | The ArgoCD Helm release, the only in-cluster component OpenTofu manages |
+| [`argocd`](argocd/README.md) | `argocd.tfstate` | Destroyed and applied with platform | Argo CD and its root Application, the only in-cluster resources OpenTofu manages. Argo CD installs the rest from Git |
 
 Each remote root names only its state blob in its `backend "azurerm"` block. The shared settings come from `infra/backend.hcl`. Generate it from the bootstrap outputs (see [`backend.hcl.example`](backend.hcl.example)):
 
@@ -35,18 +35,20 @@ The daily stack runs from 9am to 5pm to keep within the budget.
 Morning, from the repo root:
 
 ```bash
-make up    # platform apply, kubeconfig, then every in-cluster component
+# Platform apply, kubeconfig, then the argocd apply.
+make up
 ```
 
 Evening:
 
 ```bash
-make down  # platform destroy
+# argocd destroy, then platform destroy.
+make down
 ```
 
-`make help` lists every target. `tofu apply` and `tofu destroy` stay interactive, so each shows its plan and waits for `yes`. Run `make init` once per clone, and again after a module is added. The [Makefile](../Makefile) runs the roots in the order above and the in-cluster components in the order [`k8s/README.md`](../k8s/README.md) gives. When `argocd` gets a provider in P7, add it to `up` after platform and to `down` before it.
+`make help` lists every target. `tofu apply` and `tofu destroy` stay interactive, so each shows its plan and waits for `yes`. Run `make init` once per clone, and again after a module is added. The [Makefile](../Makefile) runs the roots in the order above. Argo CD brings up the in-cluster components in the order [`argocd/README.md`](../argocd/README.md#how-the-cluster-comes-up) gives.
 
-Once the argocd root has resources (P7-01), it is destroyed first, so its Helm release is removed while the cluster still exists. If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
+The argocd root is destroyed first, so its Helm releases are removed while the cluster still exists. No Application has a finalizer, so this never waits on a cascade ([The evening destroy](../argocd/README.md#the-evening-destroy)). If a root fails with `lookup <account>.blob.core.windows.net: no such host` while the cluster is up, your DNS server hosts its own privatelink zone: see [State account DNS](platform/README.md#state-account-dns). Never run `tofu destroy` in `persistent` or `bootstrap`. Both carry `prevent_destroy` on the resources that matter.
 
 ## What goes in persistent
 

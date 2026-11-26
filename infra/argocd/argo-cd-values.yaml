@@ -1,0 +1,109 @@
+# Helm values for the argo-cd chart, version 10.17.1 (Argo CD v3.6.1), from
+# https://argoproj.github.io/argo-helm. main.tf installs it and adds the
+# repository. Design: README.md.
+
+global:
+  # NAP has no NodePools until Argo CD applies k8s/node-pools, so Argo CD
+  # must start on the system pool, which is tainted CriticalAddonsOnly.
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+# The CRDs stay when the release goes. Deleting the Application CRD would
+# delete every Application with it, and the evening destroy needs none of
+# that: the cluster goes next.
+crds:
+  install: true
+  keep: true
+
+configs:
+  cm:
+    # The local admin user, with the password from the
+    # argocd-initial-admin-secret each install generates. No SSO.
+    admin.enabled: true
+    # Application health, which Argo CD dropped in 1.8. The root's sync
+    # waves wait on it, so each wave of children must pass before the next
+    # starts. Argo CD's own health for an Application skips hooks and
+    # missing resources, so it can read Healthy while a hook Job still runs,
+    # and a failing sync stays Running while it retries. So a child passes
+    # only once its last sync has Succeeded, and then only on its own
+    # health:
+    # - no sync yet, as when the root has just created it: Progressing,
+    #   unless it is already Synced, as when recreated over resources that
+    #   stayed, which leaves nothing for it to sync;
+    # - a sync running or retrying: Progressing;
+    # - a sync Failed or Error: Degraded, which fails the root's wave;
+    # - a sync Succeeded: the child's health.
+    # It never asks for Synced, since data doesn't prune and can stay
+    # OutOfSync for good.
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = "Waiting for the first sync"
+      if obj.status == nil then
+        return hs
+      end
+      local op = obj.status.operationState
+      local synced = obj.status.sync ~= nil and obj.status.sync.status == "Synced"
+      if op == nil and not synced then
+        return hs
+      end
+      if op ~= nil then
+        if op.phase == "Failed" or op.phase == "Error" then
+          hs.status = "Degraded"
+          hs.message = op.message or "The last sync failed"
+          return hs
+        end
+        if op.phase ~= "Succeeded" then
+          hs.message = op.message or "Syncing"
+          return hs
+        end
+      end
+      if obj.status.health ~= nil and obj.status.health.status ~= nil then
+        hs.status = obj.status.health.status
+        hs.message = obj.status.health.message or ""
+      end
+      return hs
+
+# Off: no SSO, no notifications. The chart has no switch for the
+# ApplicationSet controller, so it runs no replicas.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  replicas: 0
+
+# No Ingress anywhere: the UI is reached with kubectl port-forward only
+# (README.md). The chart's defaults already create none.
+server:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
