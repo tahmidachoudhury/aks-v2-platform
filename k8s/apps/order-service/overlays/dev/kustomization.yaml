@@ -9,7 +9,7 @@ resources:
 # The registry stays a placeholder until its Application in argocd/apps fills it in.
 images:
   - name: ACR_LOGIN_SERVER/order-service
-    newTag: b33be046503f
+    newTag: 8770f95129aa
 
 # No replica count: the HPA in the base owns it, and a count here would reset it on
 # every apply.
