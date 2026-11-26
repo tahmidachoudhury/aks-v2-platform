@@ -23,7 +23,7 @@ Filled by P5-01 (#55), P5-02 (#56) and P5-03 (#57). The decision to run Postgres
 
 ### Why `k8s/data/<component>`
 
-There is one folder per namespace and one subfolder per component. Postgres and Redis share the namespace, the priority class and the morning step, so `kubectl apply -k k8s/data` applies both. Each subfolder is its own kustomization, so `kubectl apply -k k8s/data/postgres` works alone. We own these manifests, so they are Kustomize, not a chart ([Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling)). The restore drill's second Postgres stays out of this tree, so Argo CD never creates it.
+There is one folder per namespace and one subfolder per component. Postgres and Redis share the namespace, the priority class and one Argo CD Application, `data`, which applies `k8s/data`. Each subfolder is its own kustomization, so `kubectl kustomize k8s/data/postgres` builds alone. We own these manifests, so they are Kustomize, not a chart ([Manifest tooling](../../docs/architecture-decisions.md#manifest-tooling)). The restore drill's second Postgres stays out of this tree, so Argo CD never creates it.
 
 ## Connecting
 

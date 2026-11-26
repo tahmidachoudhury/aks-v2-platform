@@ -32,7 +32,7 @@ The chart sets a non-root pod (user 65534) with the `RuntimeDefault` seccomp pro
 
 ## Install each morning
 
-The `reloader` Application installs it at wave 5 [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `reloader` 2.2.20 with `values.yaml`. To upgrade, read the chart's release notes, then change its `targetRevision` in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
+The `reloader` Application installs it at wave 5 ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). It renders chart `reloader` 2.2.20 with `values.yaml`. To upgrade, read the chart's release notes, then change its `targetRevision` in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
 
 ## Proving it
 

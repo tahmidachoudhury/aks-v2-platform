@@ -55,7 +55,7 @@ The `platform` quota arithmetic with KEDA and Reloader is in [apps](../apps/READ
 
 ## Install each morning
 
-The `keda` Application installs it at wave 5 [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `keda` 2.21.1 with `values.yaml` and the `keda` client ID from `infra/argocd`, which the root's chart checks is a GUID. KEDA's ScaledJob CRD is too large for client-side apply, so it syncs with server-side apply, like every Application. To upgrade, read the release notes for CRD changes, then change its `targetRevision` in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
+The `keda` Application installs it at wave 5 ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). It renders chart `keda` 2.21.1 with `values.yaml` and the `keda` client ID from `infra/argocd`, which the root's chart checks is a GUID. KEDA's ScaledJob CRD is too large for client-side apply, so it syncs with server-side apply, like every Application. To upgrade, read the release notes for CRD changes, then change its `targetRevision` in `argocd/apps/templates/platform.yaml` and the version in the header of `values.yaml`.
 
 ## Proving it
 

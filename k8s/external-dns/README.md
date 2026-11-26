@@ -4,7 +4,7 @@
 
 ## Install
 
-You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). The `external-dns` Application installs it at wave 5 [argocd](../../argocd/README.md#how-the-cluster-comes-up). It renders chart `external-dns` 1.23.0, pinned in `argocd/apps/templates/platform.yaml`, with `values.yaml`. `infra/argocd` reads the client ID, the zone and its resource group by name, and takes the subscription ID from its own `subscription_id`. The Application passes the four as Helm values, so none of them is committed. The root's chart refuses a client ID or subscription that isn't a GUID, so the ServiceAccount is never annotated with `null`. See [Client IDs](../../infra/modules/workload-identity/README.md#client-ids).
+You need a platform apply, which creates the federated credential, then the NodePools and the `platform` namespace from [`../namespaces`](../namespaces) (P4-07, #54). The `external-dns` Application installs it at wave 5 ([argocd](../../argocd/README.md#how-the-cluster-comes-up)). It renders chart `external-dns` 1.23.0, pinned in `argocd/apps/templates/platform.yaml`, with `values.yaml`. `infra/argocd` reads the client ID, the zone and its resource group by name, and takes the subscription ID from its own `subscription_id`. The Application passes the four as Helm values, so none of them is committed. The root's chart refuses a client ID or subscription that isn't a GUID, so the ServiceAccount is never annotated with `null`. See [Client IDs](../../infra/modules/workload-identity/README.md#client-ids).
 
 ## Settings
 

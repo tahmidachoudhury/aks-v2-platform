@@ -157,11 +157,11 @@ The cost shows when only one `general` node is eligible: cordoned or drained, No
 
 With two nodes, a full node can still strand a pod, because the rule, not free CPU, picks the node. api-gateway at three replicas, two on node A and one on B, can put a fourth only on B. If B has no CPU left and A has room, the pod stays `Pending`. NAP can't help: Karpenter counts a new node as the place for it, and the limit has no room for a third. A rollout's surge pods hit the same case, since `pod-template-hash` spreads each revision on its own: with one new pod on A, the next must go on B, and with `maxUnavailable: 0` the rollout fails at its 300s deadline. This is rarer than under the zone rule, which had the same case and the same-zone one besides, but it is real. The two nodes run close to full at the quotas ([namespaces](../namespaces/README.md#capacity)).
 
-The same case can meet `make apps` at bring-up. If `platform` and `data` fill node A, NAP starts B for the overflow, and `general` is then at 4 of 4 vCPUs. Each of the five puts its first pod on B, where there is room. Its second must go on A, since a second on B would make the skew 2, and A has no CPU left. Karpenter's answer is a third node, which the limit refuses. The five sit at one pod each, their rollouts hit `ProgressDeadlineExceeded`, and `make apps` fails. Under `ScheduleAnyway` both pods would have run on B. This is a possible failure, not one seen yet: on 25 Nov 2026 the first node had room for one pod of each. To recover, move CPU from A to B by hand:
+The same case can meet the morning bring-up. If `platform` and `data` fill node A, NAP starts B for the overflow, and `general` is then at 4 of 4 vCPUs. Each of the five puts its first pod on B, where there is room. Its second must go on A, since a second on B would make the skew 2, and A has no CPU left. Karpenter's answer is a third node, which the limit refuses. The five sit at one pod each, their rollouts hit `ProgressDeadlineExceeded`, and Argo CD reports their Applications Degraded, so the root's last wave fails and it keeps retrying. Under `ScheduleAnyway` both pods would have run on B. This is a possible failure, not one seen yet: on 25 Nov 2026 the first node had room for one pod of each. To recover, move CPU from A to B by hand:
 
 1. `kubectl cordon` node A, so nothing new lands there.
 2. Delete `platform` pods on A, such as one Traefik pod or the External Secrets and KEDA pods, until about 40m is freed for each of the five's `Pending` pods. Their Deployments recreate them on B. Leave `postgres-0` and `redis-0` alone.
-3. Check the recreated pods are `Running` on B, then `kubectl uncordon` A. The five's `Pending` pods then take A, and `make apps` can run again.
+3. Check the recreated pods are `Running` on B, then `kubectl uncordon` A. The five's `Pending` pods then take A, their rollouts finish, and Argo CD reports them Healthy.
 
 This works only if B has room for what moves, which it does whenever `ScheduleAnyway` would have fitted the five there. If the two nodes can't hold the requests between them, no placement helps: lower a request or a quota. Deleting node A instead should also end with room, but it moves Postgres and Redis too, and NAP's drain waits on their budgets ([data](../data/README.md#scheduling-off-spot-and-safe-to-move)). Neither path has been tried on a live cluster yet.
 
@@ -496,7 +496,7 @@ Also check that the data namespace still works under default deny: `kubectl -n d
 
 **P6-03 (#64), criterion 10: a rollout under load has no errors, a broken image fails without taking traffic, and rolling the worker loses no messages.**
 
-Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another:
+Offline, the settings render as described: run [Validate](#validate) and check the second `yq` table. Live, run the load test from [loadtest](../loadtest/README.md) in one terminal, then in another. Step 2 uses the `argocd` CLI, so log in first as in [argocd](../../argocd/README.md#the-ui):
 
 ```bash
 CTX=aks-v2-platform

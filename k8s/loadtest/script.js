@@ -1,4 +1,4 @@
-// The P6 load test: run by make loadtest, never by make apps. See README.md.
+// The P6 load test: run by make loadtest, never by Argo CD. See README.md.
 //
 // Two scenarios against the public host, through Traefik and api-gateway:
 //   browse  RATE iterations a second of the dashboard page and a login. The

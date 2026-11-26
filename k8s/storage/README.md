@@ -71,24 +71,11 @@ Snapshots go to the node resource group, `rg-aks-v2-platform-nodes`, and are del
 
 ## Morning apply
 
-After the platform apply, `kubectl apply -k k8s/node-pools` and `kubectl apply -k k8s/namespaces`:
-
-```bash
-kubectl apply -k k8s/storage
-```
-
-The first apply to `default` prints a warning about a missing `last-applied-configuration` annotation. This is expected. AKS created the class, and kubectl adds the annotation.
+Argo CD's `storage` Application applies this folder at wave 1, after the NodePools and alongside `namespaces` ([argocd](../../argocd/README.md#how-the-cluster-comes-up)).
 
 ## Acceptance test
 
-This needs a live cluster with the NodePools applied, so the test pod lands on a NAP node. Run from the repo root.
-
-Preview the change first. Only the annotation on `default` and the two new objects should differ:
-
-```bash
-kubectl diff -k k8s/storage
-kubectl apply -k k8s/storage
-```
+This needs a live cluster after `make up`, which applies the NodePools, so the test pod lands on a NAP node. Run from the repo root.
 
 P4-01 (#48): only `premium-zrs` is the default.
 
